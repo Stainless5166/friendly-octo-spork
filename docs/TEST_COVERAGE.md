@@ -3,7 +3,10 @@
 **Status:** snapshot as of the M1a (source/dispatch pipeline) milestone,
 updated to add xfail coverage for two known M0 gaps, then updated again
 to cover most of M1's remainder (state DB, poll fallback, and settled-
-shape `NotImplementedError` stubs for the JMAP client/push listener).
+shape `NotImplementedError` stubs for the JMAP client/push listener),
+then updated once more: both M0 xfail gaps are now closed for real
+(`secretspec.toml` + `spork.core.secrets`, and Typer-based `--help`/
+`--version` for both entry points). **No xfail tests remain.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -26,16 +29,20 @@ scope — and that's expected, not a defect: a checklist item with no
 tests, in every case found, has no tests *because it has no
 implementation yet*, not because someone forgot to test working code.
 
-Two gaps that were previously "no test at all" — **M0's own exit
-criterion (`spork --help` / `sporkd --help` producing real output)**
-and **the missing `secretspec.toml`** — now have `xfail`-marked tests
-(`tests/cli/test_main.py`, `tests/daemon/test_main.py`,
-`tests/test_secretspec_config.py`) describing the actual target
-behavior from `docs/DESIGN.md`, verified to fail for the right reason
-(`--runxfail` shows the real `NotImplementedError`/missing-file error,
-not a bug in the test). `xfail_strict = true` (`pyproject.toml`) means
-if either ever starts passing without its marker being removed, the
-suite fails — so these can't quietly go stale once the feature lands.
+Both gaps that were previously "no test at all", then `xfail` — **M0's
+own exit criterion (`spork --help` / `sporkd --help` producing real
+output)** and **the missing `secretspec.toml`** — are now closed for
+real. `secretspec.toml` exists with `spork.core.secrets` wrapping the
+real SDK (tested against its own `env://` provider, not a mock — see
+`tests/core/test_secrets.py`); both entry points use Typer and pass
+their `--help`/`--version` tests without any marker
+(`tests/cli/test_main.py`, `tests/daemon/test_main.py`). Each
+graduation was verified with `--runxfail` *before* removing the
+marker, confirming the test passed for the reason it was supposed to,
+not by accident. `xfail_strict = true` (`pyproject.toml`) would have
+failed the suite if either marker had been left in place — it wasn't
+needed this time, but stays in place for the next gap that gets this
+treatment.
 
 Most of M1's remainder is now covered too. Three pieces turned out to
 be pure, network-free logic and were built and tested for real:
@@ -56,21 +63,21 @@ that hasn't been made. See the coverage tables below.
 
 ## Milestone coverage
 
-### M0 — Project scaffolding
+### M0 — Project scaffolding — **fully done**
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `uv init` / `pyproject.toml` scripts | ✅ | Not directly — no test asserts the entry points resolve |
 | `src/spork/` package layout | ✅ | Indirectly — every test's imports depend on it |
-| `secretspec.toml` w/ declared secrets | ❌ | `xfail` — test 46 |
+| `secretspec.toml` w/ declared secrets | ✅ | ✅ — test 46 (manifest structure) + tests 72–78 (resolution, `spork.core.secrets`) |
 | Lint/format/type-check config | ✅ | Validated by CI runs, not pytest |
 | CI: lint/type-check/tests on push+PR | ✅ | Validated by the workflows themselves, not pytest |
-| `spork --help` / `sporkd --help` work | ❌ (crashes) | `xfail` — tests 47, 48 |
+| `spork --help` / `sporkd --help` work | ✅ | ✅ — tests 47, 48 (`--help`) + tests 79, 80 (`--version`) |
 
-M0 was never meant to carry unit tests of its own (it's scaffolding).
-The `--help` and `secretspec.toml` gaps are now tracked as `xfail`
-tests rather than silent gaps — still not implemented, but no longer
-invisible to the suite.
+Every item is real now. `secretspec.toml`/`--help` were previously
+tracked as `xfail`; both graduated to ordinary passing tests once
+implemented (see the Verdict section above for how that was
+verified).
 
 ### M1 — JMAP connectivity
 
@@ -82,7 +89,7 @@ invisible to the suite.
 | EventSource push listener + backoff | 🟡 stub (listener) / ✅ (backoff math) | ✅ (that it raises) — tests 51, 52 / ✅ (math) — tests 16–19 |
 | Poll-based fallback | ✅ (real, network-free) | ✅ — tests 53–61 (9 tests) |
 | State DB (`push_cursor`, `processed_messages`) | ✅ | ✅ — tests 62–71 (10 tests) |
-| `spork doctor` | ❌ — deferred to M5 (no CLI framework chosen yet) | — |
+| `spork doctor` | ❌ — deferred to M5 (real subcommands haven't landed yet) | — |
 
 Three of these are genuinely done: mailbox resolution (unchanged),
 poll-based fallback (`IntervalTimer` + `FallbackSource`, pure control
@@ -98,9 +105,10 @@ honestly. Rather than leaving them untested, their shape is settled
 specific `NotImplementedError`, verified by a normal *passing* test
 (not `xfail` — the raise is the correct, specified behavior at this
 stage, not a stand-in for a real assertion). `spork doctor` is the one
-item left with no test of any kind, since it depends on both the
-still-unimplemented connectivity check and a CLI framework that hasn't
-been chosen.
+item left with no test of any kind: the CLI framework is decided now
+(Typer, M0), but the command itself is real subcommand work that
+belongs to M5, and would call into the still-unimplemented
+connectivity check regardless.
 
 ### M1a — Source / dispatch pipeline
 
@@ -151,7 +159,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (71 tests: 68 passing + 3 xfail)
+## Full test inventory (80 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -389,29 +397,83 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
     Counting trigger, `poll()` called 3x. Asserts `wait_calls == 3` —
     every poll re-triggers, not just the first.
 
-### xfail — known, specified, unimplemented (M0)
+### Graduated from xfail (M0 — now ordinary passing tests)
 
-These three are `pytest.mark.xfail`, not part of the "45 passing"
-count above. Each describes real target behavior from `docs/DESIGN.md`
-(not today's `NotImplementedError` placeholder), and each was verified
-with `--runxfail` to fail for the right reason before being marked.
+These three started as `pytest.mark.xfail`, each describing real
+target behavior from `docs/DESIGN.md` before it was implemented, each
+verified with `--runxfail` to fail for the right reason before being
+marked. All three are now implemented; each marker was removed only
+after re-verifying with `--runxfail` that the test passed for real.
 
 46. **`test_secretspec_config.py::test_secretspec_toml_declares_the_required_secrets`**
     Reads `secretspec.toml` from the repo root and parses it as TOML,
     then asserts `profiles.default` declares both `JMAP_API_TOKEN` and
     `ANTHROPIC_API_KEY` — the secrets `docs/DESIGN.md` §7.3 specifies.
-    Currently xfails because the file doesn't exist at all.
+    Passes now that the real manifest exists at the repo root.
 
 47. **`tests/cli/test_main.py::test_help_prints_usage_and_exits_zero`**
     Runs `python -m spork.cli.main --help` as a subprocess. Asserts exit
     code 0, "usage" present in stdout, and no traceback in stderr.
-    Currently xfails because `main()` ignores `argv` and unconditionally
-    raises `NotImplementedError`, so the process exits 1 with a
-    traceback instead.
+    Passes now that `spork.cli.main` is a Typer app.
 
 48. **`tests/daemon/test_main.py::test_help_prints_usage_and_exits_zero`**
-    Same as 47, for `python -m spork.daemon.main --help`. Same current
-    failure mode, same reasoning.
+    Same as 47, for `python -m spork.daemon.main --help`. Passes now
+    that `spork.daemon.main` is a Typer single-command app.
+
+### tests/core (secrets) — real implementation
+
+49–71 are jmap/sources/state, described earlier in their own
+sections above (numbers assigned in commit order, not file order —
+see each section heading). These pick back up at 72.
+
+72. **`test_secrets.py::test_resolve_secrets_reads_declared_values_via_env_provider`**
+    Writes a temp manifest declaring `FOO_TOKEN`, sets it as an env var,
+    calls `resolve_secrets(manifest, provider="env://", reason="test")`.
+    Asserts `secrets.get("FOO_TOKEN")` returns the env var's value —
+    exercised against the real SecretSpec SDK's `env://` provider, not
+    a mock.
+
+73. **`test_secrets.py::test_resolve_secrets_raises_on_missing_required_secret`**
+    Same manifest, but the env var is unset (`monkeypatch.delenv`).
+    Asserts `resolve_secrets()` raises `SecretsError` — a required
+    secret with nothing providing it fails at resolve time.
+
+74. **`test_secrets.py::test_secrets_get_raises_clear_error_for_undeclared_name`**
+    After a successful resolution, calls `secrets.get("NEVER_DECLARED")`.
+    Asserts `SecretsError`, not a bare `KeyError`.
+
+75. **`test_secrets.py::test_resolve_secrets_raises_for_a_nonexistent_manifest_file`**
+    Calls `resolve_secrets()` with a path that doesn't exist. Asserts
+    `SecretsError` — SecretSpec's own "no manifest found" error wrapped,
+    not leaked through unwrapped.
+
+76. **`test_secrets.py::test_resolve_secrets_supports_optional_secrets_without_error`**
+    A manifest with one `required = false` secret, nothing providing a
+    value. Asserts `resolve_secrets()` itself doesn't raise (only a
+    later `.get()` on that specific name would).
+
+77. **`test_secrets_edge_cases.py::test_resolve_secrets_wraps_malformed_toml_as_secrets_error`**
+    A manifest file containing deliberately broken TOML syntax. Asserts
+    `SecretsError`, confirming SecretSpec's own parse error (verified
+    empirically to also be a `SecretSpecError`) gets wrapped like every
+    other failure mode.
+
+78. **`test_secrets_edge_cases.py::test_resolve_secrets_respects_the_given_profile`**
+    A manifest where `FOO_TOKEN` is required under `profiles.default`
+    but `required = false` under `profiles.development`, with no value
+    provided. Asserts resolving with `profile="development"` succeeds
+    (would raise under the default profile) — proving `profile=` is
+    actually forwarded to SecretSpec, not silently ignored.
+
+79. **`tests/cli/test_main.py::test_version_prints_the_installed_version_and_exits_zero`**
+    Runs `python -m spork.cli.main --version` as a subprocess. Asserts
+    exit code 0 and `"spork"` present in stdout.
+
+80. **`tests/daemon/test_main.py::test_version_prints_the_installed_version_and_exits_zero`**
+    Runs `python -m spork.daemon.main --version` as a subprocess.
+    Asserts exit code 0 and `"sporkd"` present in stdout — and that it
+    exits cleanly rather than falling through to the daemon loop's
+    `NotImplementedError`.
 
 ### tests/core/jmap — NotImplementedError-catching (M1)
 
