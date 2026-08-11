@@ -31,21 +31,21 @@ CI runs on every push.
 **Goal:** the daemon can authenticate, resolve mailboxes, and fetch mail
 read-only. No actions taken yet.
 
-- [ ] `spork.core.jmap.client`: session bootstrap via `jmapc`, secrets
+- [ ] `spork.core.providers.jmap.client`: session bootstrap via `jmapc`, secrets
       wired through `secretspec` (M) — shape settled, `connect()` and
       `fetch_new_messages()` (also covers the `Email/query`+`Email/get`
       batched fetch item below) deliberately raise `NotImplementedError`:
       a real jmapc session against a live Fastmail account is real-network
       work this environment can't exercise honestly. See
-      `tests/core/jmap/test_client.py`.
+      `tests/core/providers/jmap/test_client.py`.
 - [x] Mailbox role resolution + caching (Inbox, Drafts, custom mailboxes) (S)
 - [ ] ~~`Email/query` + `Email/get` batched fetch of new mail since a cursor (M)~~
       — folded into `JmapClient.fetch_new_messages()` above, same status.
 - [ ] EventSource push listener with reconnect/backoff (M) — backoff
-      *scheduling* is done and tested (`spork.core.jmap.backoff`); the
+      *scheduling* is done and tested (`spork.core.providers.jmap.backoff`); the
       listener itself (`JmapPushTrigger.wait()`) is a settled-shape
       `NotImplementedError` stub for the same live-connection reason as
-      the client. See `tests/core/jmap/test_push.py`.
+      the client. See `tests/core/providers/jmap/test_push.py`.
 - [x] Poll-based fallback when push is unavailable/disconnected (S) —
       real, tested implementation (`spork.core.sources.timer.IntervalTimer`
       + `spork.core.sources.fallback.FallbackSource`), pure control flow

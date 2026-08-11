@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from spork.core.jmap.client import JmapClient
+from spork.core.providers.jmap.client import JmapClient
 
 
 def test_connect_raises_not_implemented() -> None:

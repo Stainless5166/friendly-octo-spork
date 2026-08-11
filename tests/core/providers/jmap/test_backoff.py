@@ -7,7 +7,7 @@ applies to this attempt" logic, not any retry/scheduling library.
 
 from __future__ import annotations
 
-from spork.core.jmap.backoff import next_delay
+from spork.core.providers.jmap.backoff import next_delay
 
 
 def test_next_delay_returns_schedule_value_for_attempt_in_range() -> None:

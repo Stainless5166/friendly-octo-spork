@@ -49,8 +49,8 @@ be pure, network-free logic and were built and tested for real:
 `spork.core.state` (the SQLite state store), and
 `spork.core.sources.timer`/`fallback` (poll-based fallback, composed
 from the `Trigger`/`Source` protocols M1a already established). Two
-pieces — `spork.core.jmap.client.JmapClient` and
-`spork.core.jmap.push.JmapPushTrigger` — genuinely need a live
+pieces — `spork.core.providers.jmap.client.JmapClient` and
+`spork.core.providers.jmap.push.JmapPushTrigger` — genuinely need a live
 Fastmail session to implement for real; rather than leaving them
 unspecified, their shape is settled and each method raises a specific
 `NotImplementedError`, verified by an ordinary *passing* test (not
@@ -253,7 +253,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
     no-op, not an error; "is this useful" is pushed to the Combiner
     layer.
 
-### tests/core/jmap
+### tests/core/providers/jmap
 
 16. **`test_backoff.py::test_next_delay_returns_schedule_value_for_attempt_in_range`**
     Schedule `[2,5,15,60,300]`; `next_delay(attempt=0)` and
@@ -475,7 +475,7 @@ see each section heading). These pick back up at 72.
     exits cleanly rather than falling through to the daemon loop's
     `NotImplementedError`.
 
-### tests/core/jmap — NotImplementedError-catching (M1)
+### tests/core/providers/jmap — NotImplementedError-catching (M1)
 
 These pass normally — raising `NotImplementedError` is the correct,
 specified behavior at this stage (see the M1 coverage table above),

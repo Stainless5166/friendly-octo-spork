@@ -5,15 +5,15 @@ structurally, so it plugs into `TriggeredSource` exactly like
 `ImmediateTrigger` or `IntervalTimer`. Its `wait()` would block on a
 live JMAP EventSource connection — real-network work this environment
 can't exercise honestly, so it's deliberately NotImplementedError-
-stubbed for the same reason as `spork.core.jmap.client.JmapClient` (see
+stubbed for the same reason as `spork.core.providers.jmap.client.JmapClient` (see
 that module's docstring). Reconnect/backoff *scheduling* is already
-implemented and tested separately (`spork.core.jmap.backoff`); what's
+implemented and tested separately (`spork.core.providers.jmap.backoff`); what's
 missing here is the actual listen loop that scheduling would drive.
 """
 
 from __future__ import annotations
 
-from spork.core.jmap.client import JmapClient
+from spork.core.providers.jmap.client import JmapClient
 
 
 class JmapPushTrigger:
