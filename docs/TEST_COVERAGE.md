@@ -1,6 +1,7 @@
 # Test Suite Inventory & Milestone Coverage
 
-**Status:** snapshot as of the M1a (source/dispatch pipeline) milestone.
+**Status:** snapshot as of the M1a (source/dispatch pipeline) milestone,
+updated to add xfail coverage for two known M0 gaps.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -22,13 +23,20 @@ What the suite is **not** is complete relative to the milestones' full
 scope — and that's expected, not a defect: a checklist item with no
 tests, in every case found, has no tests *because it has no
 implementation yet*, not because someone forgot to test working code.
-The coverage tables below make that gap explicit per milestone, and one
-real gap is worth calling out up front: **M0's own exit criterion
-(`spork --help` / `sporkd --help` producing real output) is currently
-false** — both crash with `NotImplementedError` — **and nothing in the
-suite would catch that**, since there are no CLI-level tests yet. That's
-the one place "no tests because no feature" and "a stated milestone
-requirement is silently unmet" coincide.
+
+Two gaps that were previously "no test at all" — **M0's own exit
+criterion (`spork --help` / `sporkd --help` producing real output)**
+and **the missing `secretspec.toml`** — now have `xfail`-marked tests
+(`tests/cli/test_main.py`, `tests/daemon/test_main.py`,
+`tests/test_secretspec_config.py`) describing the actual target
+behavior from `docs/DESIGN.md`, verified to fail for the right reason
+(`--runxfail` shows the real `NotImplementedError`/missing-file error,
+not a bug in the test). `xfail_strict = true` (`pyproject.toml`) means
+if either ever starts passing without its marker being removed, the
+suite fails — so these can't quietly go stale once the feature lands.
+The remaining gaps in M1/M2 don't have tests yet because their
+interfaces aren't designed yet, not because writing the test was
+skipped; see the coverage tables below.
 
 ---
 
@@ -40,16 +48,15 @@ requirement is silently unmet" coincide.
 |---|---|---|
 | `uv init` / `pyproject.toml` scripts | ✅ | Not directly — no test asserts the entry points resolve |
 | `src/spork/` package layout | ✅ | Indirectly — every test's imports depend on it |
-| `secretspec.toml` w/ declared secrets | ❌ | — |
+| `secretspec.toml` w/ declared secrets | ❌ | `xfail` — test 46 |
 | Lint/format/type-check config | ✅ | Validated by CI runs, not pytest |
 | CI: lint/type-check/tests on push+PR | ✅ | Validated by the workflows themselves, not pytest |
-| `spork --help` / `sporkd --help` work | ❌ (crashes) | ❌ — **gap**: nothing would catch this regressing further |
+| `spork --help` / `sporkd --help` work | ❌ (crashes) | `xfail` — tests 47, 48 |
 
-M0 was never meant to carry unit tests of its own (it's scaffolding),
-so the low direct-test count isn't a problem by itself. The `--help`
-line is the exception: it's a concrete, checkable exit criterion that's
-currently false, and there's no test — CLI or otherwise — that exercises
-either entry point's argument handling at all.
+M0 was never meant to carry unit tests of its own (it's scaffolding).
+The `--help` and `secretspec.toml` gaps are now tracked as `xfail`
+tests rather than silent gaps — still not implemented, but no longer
+invisible to the suite.
 
 ### M1 — JMAP connectivity
 
@@ -122,7 +129,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (45 tests)
+## Full test inventory (48 tests: 45 passing + 3 xfail)
 
 ### tests/core/classify
 
@@ -359,3 +366,27 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 45. **`test_triggered_edge_cases.py::test_triggered_source_re_triggers_on_every_poll_call`**
     Counting trigger, `poll()` called 3x. Asserts `wait_calls == 3` —
     every poll re-triggers, not just the first.
+
+### xfail — known, specified, unimplemented (M0)
+
+These three are `pytest.mark.xfail`, not part of the "45 passing"
+count above. Each describes real target behavior from `docs/DESIGN.md`
+(not today's `NotImplementedError` placeholder), and each was verified
+with `--runxfail` to fail for the right reason before being marked.
+
+46. **`test_secretspec_config.py::test_secretspec_toml_declares_the_required_secrets`**
+    Reads `secretspec.toml` from the repo root and parses it as TOML,
+    then asserts `profiles.default` declares both `JMAP_API_TOKEN` and
+    `ANTHROPIC_API_KEY` — the secrets `docs/DESIGN.md` §7.3 specifies.
+    Currently xfails because the file doesn't exist at all.
+
+47. **`tests/cli/test_main.py::test_help_prints_usage_and_exits_zero`**
+    Runs `python -m spork.cli.main --help` as a subprocess. Asserts exit
+    code 0, "usage" present in stdout, and no traceback in stderr.
+    Currently xfails because `main()` ignores `argv` and unconditionally
+    raises `NotImplementedError`, so the process exits 1 with a
+    traceback instead.
+
+48. **`tests/daemon/test_main.py::test_help_prints_usage_and_exits_zero`**
+    Same as 47, for `python -m spork.daemon.main --help`. Same current
+    failure mode, same reasoning.
