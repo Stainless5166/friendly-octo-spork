@@ -530,16 +530,21 @@ mail decomposes into two independent concerns:
 ```python
 class Trigger(Protocol):
     """Decides *when* to fetch — knows nothing about content."""
+
     def wait(self) -> None:
         """Block until it's time to fetch again."""
         ...
 
+
 class ContentFetcher(Protocol):
     """Decides *what* to fetch, once triggered — knows nothing about timing."""
+
     def fetch(self) -> Sequence[NormalizedMessage]: ...
+
 
 class Source(Protocol):
     """What the pipeline actually pulls from."""
+
     def poll(self) -> Sequence[NormalizedMessage]: ...
 ```
 
@@ -592,12 +597,16 @@ mechanisms:
 
    ```python
    class Combiner(Protocol):
-       def combine(self, results: Mapping[str, ClassificationResult | Exception]) -> ClassificationResult: ...
+       def combine(
+           self, results: Mapping[str, ClassificationResult | Exception]
+       ) -> ClassificationResult: ...
+
 
    class DispatchingClassifier:
        """A TextClassifier whose classify() dispatches to N targets and
        combines their results — from the rule engine's point of view,
        indistinguishable from a single classifier."""
+
        def __init__(self, dispatcher: Dispatcher, combiner: Combiner) -> None: ...
        def classify(self, message: NormalizedMessage) -> ClassificationResult: ...
    ```
