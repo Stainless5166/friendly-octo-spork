@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 
 import pytest
+
 from spork.core.models import NormalizedMessage
 
 
