@@ -22,7 +22,7 @@ spork = "spork.cli.main:app"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.2,<9",
+    "pytest>=9.0.3,<10",
     "pytest-cov>=5.0,<6",
     "ruff>=0.6,<1",
     "mypy>=1.11,<2",
