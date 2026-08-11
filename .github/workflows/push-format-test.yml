@@ -1,0 +1,85 @@
+# Fast feedback on every push: auto-format whatever changed and run
+# just the tests related to it. Deliberately lighter than pr-checks.yml
+# (no full lint/mypy/full-suite run) — this is the "catch it in seconds"
+# loop, PR checks are the real gate before main.
+name: Push format & related tests
+
+on:
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  format-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the pre-push commit to diff against; 2 is enough
+          # except for a branch's very first push, handled below.
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Resolve diff range
+        id: range
+        run: |
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            # First push of a new branch: nothing to diff against on
+            # this ref yet, so compare against the branch's own first
+            # commit (i.e. everything in the push is "changed").
+            echo "base=$(git rev-list --max-parents=0 HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "head=${{ github.event.after }}" >> "$GITHUB_OUTPUT"
+
+      - name: Auto-format changed files
+        id: format
+        run: |
+          changed=$(git diff --name-only --diff-filter=d "${{ steps.range.outputs.base }}" "${{ steps.range.outputs.head }}" -- '*.py')
+          if [ -z "$changed" ]; then
+            echo "No changed .py files."
+            exit 0
+          fi
+          echo "$changed" | xargs uv run ruff format
+          # --fix only; remaining (non-autofixable) lint issues are the
+          # PR gate's job (pr-checks.yml), not this fast-feedback loop's.
+          echo "$changed" | xargs uv run ruff check --fix || true
+
+      - name: Commit formatting fixes
+        run: |
+          if git diff --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -u
+          git commit -m "Auto-format changed files [skip ci]"
+          git push origin HEAD:"${{ github.ref_name }}"
+
+      - name: Run tests related to changed files
+        run: |
+          if ! find tests -name 'test_*.py' 2>/dev/null | grep -q .; then
+            # Pre-TDD-commit scaffolding pushes: no test files exist yet.
+            echo "No test files in the repo yet — nothing to run."
+            exit 0
+          fi
+          target=$(uv run python scripts/related_tests.py "${{ steps.range.outputs.base }}" "${{ steps.range.outputs.head }}")
+          if [ -z "$target" ]; then
+            echo "No related tests to run."
+          elif [ "$target" = "tests" ]; then
+            uv run pytest tests
+          else
+            uv run pytest $target
+          fi

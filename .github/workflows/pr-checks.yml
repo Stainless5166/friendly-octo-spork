@@ -1,0 +1,62 @@
+# Gate for PRs into main: the full test suite must pass, and the API
+# docs must build cleanly from the current docstrings/type hints (a
+# broken docs build usually means a signature/docstring drifted out of
+# sync with reality, which is worth catching same as a failing test).
+name: PR checks
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Lint, type-check, and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Ruff (lint)
+        run: uv run ruff check .
+
+      - name: Ruff (format check)
+        run: uv run ruff format --check .
+
+      - name: mypy
+        run: uv run mypy src
+
+      - name: pytest
+        run: uv run pytest --cov=spork --cov-report=term-missing
+
+  docs:
+    name: Build API docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # pdoc renders directly from the docstrings/type hints required by
+      # docs/DESIGN.md's "formal documentation" convention — no separate
+      # docs source to keep in sync.
+      - name: Generate docs with pdoc
+        run: uv run pdoc spork -o site
+
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-docs
+          path: site
