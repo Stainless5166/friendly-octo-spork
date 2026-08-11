@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from spork.core.secrets import SecretsError, resolve_secrets
 
 
@@ -41,7 +42,7 @@ def test_resolve_secrets_reads_declared_values_via_env_provider(
     )
     monkeypatch.setenv("FOO_TOKEN", "hello-from-env")
 
-    secrets = resolve_secrets(manifest, provider="env://")
+    secrets = resolve_secrets(manifest, provider="env://", reason="test")
 
     assert secrets.get("FOO_TOKEN") == "hello-from-env"
 
@@ -65,7 +66,7 @@ def test_resolve_secrets_raises_on_missing_required_secret(
     monkeypatch.delenv("FOO_TOKEN", raising=False)
 
     with pytest.raises(SecretsError):
-        resolve_secrets(manifest, provider="env://")
+        resolve_secrets(manifest, provider="env://", reason="test")
 
 
 def test_secrets_get_raises_clear_error_for_undeclared_name(
@@ -85,7 +86,7 @@ def test_secrets_get_raises_clear_error_for_undeclared_name(
         """,
     )
     monkeypatch.setenv("FOO_TOKEN", "hello")
-    secrets = resolve_secrets(manifest, provider="env://")
+    secrets = resolve_secrets(manifest, provider="env://", reason="test")
 
     with pytest.raises(SecretsError):
         secrets.get("NEVER_DECLARED")
@@ -95,7 +96,7 @@ def test_resolve_secrets_raises_for_a_nonexistent_manifest_file(tmp_path: Path) 
     """A missing secretspec.toml is a clear, specific failure, not a
     confusing SecretSpec-internal error leaking through unwrapped."""
     with pytest.raises(SecretsError):
-        resolve_secrets(tmp_path / "does-not-exist.toml", provider="env://")
+        resolve_secrets(tmp_path / "does-not-exist.toml", provider="env://", reason="test")
 
 
 def test_resolve_secrets_supports_optional_secrets_without_error(
@@ -116,7 +117,7 @@ def test_resolve_secrets_supports_optional_secrets_without_error(
     )
     monkeypatch.delenv("OPTIONAL_TOKEN", raising=False)
 
-    secrets = resolve_secrets(manifest, provider="env://")
+    secrets = resolve_secrets(manifest, provider="env://", reason="test")
 
     with pytest.raises(SecretsError):
         secrets.get("OPTIONAL_TOKEN")
