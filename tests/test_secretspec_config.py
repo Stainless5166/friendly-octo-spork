@@ -1,10 +1,11 @@
-"""Not-yet-implemented spec test for secretspec.toml (docs/ROADMAP.md M0).
+"""secretspec.toml exists and declares the required secrets (docs/ROADMAP.md M0).
 
-secretspec.toml was never actually created — docs/DESIGN.md §7.3 has a
-fully worked example, but no code, config file, or dependency for it
-exists in this repo yet (not even `secretspec` in pyproject.toml's
-dependencies). This test tracks that gap directly against the file, not
-against any Python API, since none exists yet either.
+Graduated from an `xfail` spec test: `secretspec.toml` and
+`spork.core.secrets` now exist for real (see `tests/core/test_secrets.py`
+for the resolution logic itself). This test only covers the manifest's
+own structure — that it exists and declares the right names — since
+resolving it for real needs a provider (keyring, 1Password, ...) this
+environment doesn't have.
 """
 
 from __future__ import annotations
@@ -12,17 +13,9 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-@pytest.mark.xfail(
-    reason="secretspec.toml doesn't exist — secretspec isn't wired into "
-    "the project at all yet (no config file, no dependency, no "
-    "spork.core.secrets module). See docs/DESIGN.md §7.3 and "
-    "docs/ROADMAP.md M0.",
-)
 def test_secretspec_toml_declares_the_required_secrets() -> None:
     """secretspec.toml should exist at the repo root and declare, under
     profiles.default, at least the two secrets every planned code path
