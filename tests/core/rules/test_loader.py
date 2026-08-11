@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from spork.core.rules.loader import RulesLoadError, load_rules
 
 
