@@ -154,6 +154,7 @@ src/spork/
 │   │       ├── backoff.py    # reconnect delay scheduling
 │   │       └── mailboxes.py  # mailbox role resolution & caching
 │   ├── models.py          # NormalizedMessage: transport-agnostic message shape
+│   ├── pipeline.py         # process_message(): idempotency + evaluate + act + audit (§9)
 │   ├── sources/
 │   │   ├── base.py         # Trigger, ContentFetcher, Source protocols
 │   │   ├── triggered.py     # TriggeredSource: composes any Trigger + ContentFetcher
@@ -494,6 +495,27 @@ output of a **local classifier** (§9.1) as one more condition input, so
 a rule can read e.g. "if the local classifier scores this `urgent` and
 the sender isn't a known list, escalate" without that scoring logic
 living in the rule engine itself.
+
+**Orchestration: `spork.core.pipeline.process_message()`** (M2) ties
+the idempotency check (`StateDB.has_processed`), the rule engine, the
+action executor, and the audit log into the single call a real message
+goes through: skip if already processed; otherwise evaluate, act (or
+not), record. A message is only ever marked processed *after* its
+action successfully applies — if the executor raises, nothing is
+recorded, so a retry (the next poll/push cycle) picks the same message
+up again rather than silently losing it.
+
+**Interim policy for `escalate` before Tier 2 exists (M3).** A verdict
+that resolves to `escalate` has nowhere to actually go until M3 builds
+the Claude call — `process_message()` doesn't call the action executor
+for it (which would reject `escalate` anyway, §9.3), writes an audit
+entry noting the message is escalated-pending-Tier-2, and marks it
+processed regardless, so the daemon doesn't re-evaluate (and re-pay any
+classifier cost for) the same message every cycle while Tier 2 remains
+unbuilt. This is a deliberate, temporary trade-off — once M3 lands,
+this policy is revisited so escalated messages actually get a Tier 2
+verdict instead of being marked done. Reprocessing an already-escalated
+message once Tier 2 exists is what `spork reclassify` (M5) is for.
 
 ### 9.1 Modularity: pluggable local classifiers
 
