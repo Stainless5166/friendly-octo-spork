@@ -846,6 +846,18 @@ spork doctor                  # secretspec check, JMAP auth check,
                                # systemd unit status, DB migration status
 ```
 
+`spork rules test` genuinely requires a live JMAP connection — spork is
+a pure client to JMAP as the source of truth (§9.3), with no local mail
+store to substitute (beyond, potentially, a transient cache to survive
+a mid-processing network drop, which is resilience, not an offline
+mode). There's no fixture-file fallback for "recent mail": testing
+against synthetic data isn't testing against recent mail, it's testing
+against synthetic data, and the command would say something else if
+that's what it did. Until M1's live JMAP fetch exists, `spork rules
+test` loads and validates the given `rules.toml` (real, useful on its
+own — catches a malformed file before it ever reaches the daemon) and
+then fails clearly rather than pretending to dry-run anything.
+
 ## 14. systemd integration
 
 `systemd/sporkd.service` (user unit, installed to

@@ -142,16 +142,23 @@ involved yet.
       into `spork.core.pipeline.process_message()`
 - [x] `audit_log` writes for every action taken (S)
 - [ ] `spork rules test <file>` dry-run against recent mail, no side effects (M)
+      — CLI wiring + rules loading (real, testable now) done;
+      "against recent mail" genuinely needs a live JMAP fetch (there's
+      no local mail store spork could substitute — it's a pure client
+      to JMAP as the source of truth, docs/DESIGN.md §9.3), so the
+      fetch step is a settled-shape `NotImplementedError` stub, same
+      blocker/treatment as `JmapClient.fetch_new_messages()` (M1). No
+      fixture-file workaround — that would just be testing against
+      fake data, not "recent mail".
 - [x] Unit tests: condition matching, idempotency (M) — dry-run output
-      still pending the CLI command above
+      still pending the JMAP fetch above
 
 **Exit criteria:** a hand-written `rules.toml` with 3–4 real rules
 correctly files live test mail with no LLM calls; `spork rules test`
-matches what actually happens when the rule goes live. **Partially
-met** — everything through action execution + idempotency + audit is
-real and tested (`process_message()`); the dry-run CLI command and
-"live test mail" both still need real JMAP (M1) or a documented
-fixture-based alternative.
+matches what actually happens when the rule goes live. **Not yet
+met** — blocked on the same live Fastmail account/API token as the
+rest of M1's real JMAP work. Everything through action execution +
+idempotency + audit is real and tested (`process_message()`).
 
 ## M3 — LLM escalation (Tier 2)
 
