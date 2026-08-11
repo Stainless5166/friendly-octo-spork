@@ -34,7 +34,13 @@ packages = ["src/spork"]
 # Acceptance/unit tests only — no live network, no live JMAP/LLM calls.
 # See docs/DESIGN.md §16 for the layered test strategy.
 testpaths = ["tests"]
-addopts = "--strict-markers"
+# importlib mode (rather than pytest's default sys.path-prepend mode)
+# so tests/<pkg>/test_<module>.py can mirror src/spork/<pkg>/<module>.py
+# 1:1 (per scripts/related_tests.py) without every test directory
+# needing an __init__.py, and without same-named test files in
+# different directories (e.g. tests/cli/test_main.py and
+# tests/daemon/test_main.py) colliding at collection time.
+addopts = "--strict-markers --import-mode=importlib"
 # xfail tests document not-yet-implemented, already-specified behavior
 # (docs/TEST_COVERAGE.md). Strict mode turns an unexpected XPASS into a
 # failure, forcing the xfail marker to be removed deliberately when a
