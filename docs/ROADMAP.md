@@ -129,17 +129,29 @@ the backend underneath it is actually implemented yet. **Met.**
 **Goal:** deterministic rules file drives real mailbox actions, no LLM
 involved yet.
 
-- [ ] Rule schema + `rules.toml` loader/validator (§7.5) (M)
-- [ ] Tier 1 evaluator (first-match-wins, closed condition set) (M)
-- [ ] Action executor: move/tag via `Email/set` `mailboxIds` (M)
-- [ ] `processed_messages` idempotency check before acting (S)
-- [ ] `audit_log` writes for every action taken (S)
+- [x] Rule schema + `rules.toml` loader/validator (§7.5) (M) —
+      schema (`Condition`/`Action`/`Rule`) now rejects unknown fields
+      (`extra="forbid"`), a real gap an edge-case test caught: a
+      typo'd field was previously silently ignored and fell back to
+      its default instead of failing to load.
+- [x] Tier 1 evaluator (first-match-wins, closed condition set) (M)
+- [x] Action executor: applies `move`/`tag`/`ignore` via an injected
+      `ActionApplier` (docs/DESIGN.md §9.3 — a provider's write side,
+      not JMAP-specific); rejects `escalate` outright (M)
+- [x] `processed_messages` idempotency check before acting (S) — wired
+      into `spork.core.pipeline.process_message()`
+- [x] `audit_log` writes for every action taken (S)
 - [ ] `spork rules test <file>` dry-run against recent mail, no side effects (M)
-- [ ] Unit tests: condition matching, dry-run output, idempotency (M)
+- [x] Unit tests: condition matching, idempotency (M) — dry-run output
+      still pending the CLI command above
 
 **Exit criteria:** a hand-written `rules.toml` with 3–4 real rules
 correctly files live test mail with no LLM calls; `spork rules test`
-matches what actually happens when the rule goes live.
+matches what actually happens when the rule goes live. **Partially
+met** — everything through action execution + idempotency + audit is
+real and tested (`process_message()`); the dry-run CLI command and
+"live test mail" both still need real JMAP (M1) or a documented
+fixture-based alternative.
 
 ## M3 — LLM escalation (Tier 2)
 

@@ -9,7 +9,11 @@ then updated once more: both M0 xfail gaps are now closed for real
 `--version` for both entry points). **No xfail tests remain.** Updated
 again for M1b: JMAP moved from `spork.core.jmap` to
 `spork.core.providers.jmap`, behind a new `Provider` adapter Protocol
-and a dynamic `importlib`-based loader.
+and a dynamic `importlib`-based loader. Updated once more for most of
+M2: the `rules.toml` loader, `audit_log`, `Provider`'s write side
+(`ActionApplier`), `ActionExecutor`, and the `process_message()`
+orchestration tying idempotency + evaluation + action + audit
+together. Only `spork rules test` (the dry-run CLI) remains.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -151,27 +155,25 @@ of whether the backend underneath is implemented.
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
-| Rule schema + `rules.toml` loader/validator | ✅ schema / ❌ loader | Schema: exercised implicitly via every engine test (27–35), no dedicated `test_schema.py` / Loader: — |
+| Rule schema + `rules.toml` loader/validator | ✅ | ✅ — schema: engine tests (27–35) + `extra="forbid"` edge cases (96, 97) / loader: tests 90–97 (8 tests) |
 | Tier 1 evaluator | ✅ | ✅ — tests 27–35 (9 tests) |
-| Action executor (`Email/set`) | ❌ | — |
-| `processed_messages` idempotency | ❌ | — |
-| `audit_log` writes | ❌ | — |
+| Action executor | ✅ (`ActionApplier`-agnostic, real backend still `NotImplementedError`-stubbed per M1) | ✅ — tests 107–113 (7 tests) |
+| `processed_messages` idempotency | ✅ — wired into `process_message()` | ✅ — tests 114–121 (8 tests) |
+| `audit_log` writes | ✅ | ✅ — tests 98–103 (6 tests) |
 | `spork rules test` dry-run | ❌ | — |
-| Unit tests: condition matching / dry-run / idempotency | ✅ (condition matching only) | — (dry-run, idempotency: nothing to test yet) |
+| Unit tests: condition matching / idempotency | ✅ | ✅ |
 
-The evaluator is thoroughly tested, including its edge cases (empty
-rule list, all-default condition, missing classifier, memoization).
-The schema (`Condition`/`Action`/`Rule`) has no dedicated test file,
-but every field it defines gets exercised through the engine tests
-that construct rules with it — including defaults (`enabled=True`,
-`description=""`) working correctly, since several tests rely on them
-implicitly rather than setting them explicitly. That's adequate, not
-ideal: a `test_schema.py` asserting validation behavior directly (e.g.
-an invalid `Action.type` value being rejected) doesn't exist.
-
-2 of 7 items done; both are well tested, including edge cases. The
-other 5 — loader, action executor, idempotency, audit log, dry-run CLI
-— have zero implementation and therefore zero tests.
+**6 of 7 items done.** The schema fix is worth calling out: an
+edge-case test (96) caught that pydantic's default `extra="ignore"`
+meant a typo'd field (e.g. `"enalbed"` instead of `"enabled"`) was
+silently dropped, falling back to its default instead of failing to
+load — `extra="forbid"` fixed it, verified red-then-green same as
+everything else. `ActionApplier` itself is documented under M1b (it's
+part of `Provider`'s contract, docs/DESIGN.md §9.3) but its *executor*
+(the provider-agnostic consumer) is M2 work, tested here. The one
+remaining item — `spork rules test` — needs the CLI command surface,
+which needs a decision on sample-message input format before it can
+follow the same TDD discipline as everything else in this table.
 
 ### M3–M7
 
@@ -179,7 +181,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (89 tests, all passing — 0 xfail)
+## Full test inventory (121 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -674,3 +676,148 @@ not a placeholder assertion.
     Calls `load_provider(f"{__name__}:_FixtureProvider", unexpected_kwarg=True)`
     — a kwarg the fixture class's `__init__` doesn't accept. Asserts
     `ProviderLoadError`, not a raw `TypeError`.
+
+### tests/core/rules (loader, M2)
+
+90. **`test_loader.py::test_load_rules_parses_valid_rules_toml`**
+    A well-formed rules.toml with two `[[rule]]` entries. Asserts the
+    parsed `Rule` objects match in id order, and that nested
+    `when`/`action` fields came through correctly.
+
+91. **`test_loader.py::test_load_rules_returns_empty_list_for_no_rules`**
+    An empty file. Asserts `load_rules()` returns `[]`, not an error.
+
+92. **`test_loader.py::test_load_rules_raises_for_malformed_toml`**
+    Broken TOML syntax. Asserts `RulesLoadError`, not a raw
+    `tomllib.TOMLDecodeError`.
+
+93. **`test_loader.py::test_load_rules_raises_for_invalid_rule_fields`**
+    A rule with `action.type = "delete"` (not in the closed set).
+    Asserts `RulesLoadError`, not a raw pydantic `ValidationError`.
+
+94. **`test_loader.py::test_load_rules_raises_for_duplicate_ids`**
+    Two `[[rule]]` entries sharing `id = "dup"`. Asserts
+    `RulesLoadError`.
+
+95. **`test_loader.py::test_load_rules_raises_for_missing_file`**
+    A path that doesn't exist. Asserts `RulesLoadError`, not a raw
+    `FileNotFoundError`.
+
+96. **`test_loader_edge_cases.py::test_load_rules_raises_for_unknown_field_in_a_rule`**
+    A rule with `enalbed = false` (typo for `enabled`). Asserts
+    `RulesLoadError` — confirmed red against the pre-fix schema before
+    `extra="forbid"` was added, proving the fix actually closes the
+    silent-typo gap it targets.
+
+97. **`test_loader_edge_cases.py::test_load_rules_raises_for_unknown_field_in_a_condition`**
+    Same, for a typo'd `when` field (`form_domain_in` instead of
+    `from_domain_in`). Same reasoning.
+
+### tests/core/state (audit_log, M2)
+
+98. **`test_audit_log.py::test_write_audit_entry_then_get_audit_entries_returns_it`**
+    Writes one entry, reads it back. Asserts all fields round-trip.
+
+99. **`test_audit_log.py::test_get_audit_entries_filters_by_jmap_id`**
+    Two entries for different `jmap_id`s. Asserts `jmap_id=` filtering
+    returns only the matching one.
+
+100. **`test_audit_log.py::test_get_audit_entries_returns_oldest_first`**
+    Two entries for the same message, written in order. Asserts they
+    come back in write order.
+
+101. **`test_audit_log.py::test_get_audit_entries_returns_empty_list_when_none_written`**
+    A fresh DB. Asserts `get_audit_entries()` returns `[]`.
+
+102. **`test_audit_log_edge_cases.py::test_get_audit_entries_for_unknown_jmap_id_returns_empty`**
+    Filters to a `jmap_id` with no entries (while others exist).
+    Asserts `[]`, not an error.
+
+103. **`test_audit_log_edge_cases.py::test_audit_log_persists_across_reopening_the_db_file`**
+    Writes an entry, closes the DB, reopens the same file with a fresh
+    `StateDB` instance. Asserts the entry is still there.
+
+### tests/core/providers (ActionApplier, M2)
+
+104. **`jmap/test_client.py::test_apply_action_raises_not_implemented`**
+    Calls `client.apply_action(message, Action(type="move", ...))`.
+    Asserts `NotImplementedError` — same live-session blocker as
+    `connect()`/`fetch_new_messages()`.
+
+105. **`jmap/test_provider.py::test_build_action_applier_returns_something_that_can_apply`**
+    Calls `provider.build_action_applier()`, then `.apply(...)` on the
+    result. Asserts `NotImplementedError` — the write-side counterpart
+    to `test_source_poll_raises_not_implemented`.
+
+106. **`jmap/test_provider.py::test_action_applier_delegates_to_the_client_directly`**
+    Constructs `_JmapActionApplier(client)` directly and calls
+    `.apply(...)`. Asserts `NotImplementedError`, propagated from
+    `JmapClient.apply_action()` — proving it's a real delegation, not
+    a second placeholder (mirrors the content-fetcher equivalent, 83).
+
+### tests/core/actions (ActionExecutor, M2)
+
+107. **`test_executor.py::test_executor_applies_move_action_via_the_applier`**
+    A move action, executed. Asserts the stub applier's `.apply()` was
+    called with the exact message/action.
+
+108. **`test_executor.py::test_executor_applies_tag_action_via_the_applier`**
+    Same, for `tag`.
+
+109. **`test_executor.py::test_executor_ignore_action_is_a_noop_applier_never_called`**
+    An `ignore` action. Asserts the applier's `.apply()` was never
+    called — nothing to apply.
+
+110. **`test_executor.py::test_executor_rejects_escalate_action`**
+    An `escalate` action. Asserts `ActionExecutionError`, and that the
+    applier was never called.
+
+111. **`test_executor.py::test_executor_rejects_move_action_without_a_mailbox`**
+    A `move` action with `mailbox=None`. Asserts `ActionExecutionError`
+    before the applier is ever reached.
+
+112. **`test_executor_edge_cases.py::test_executor_rejects_tag_action_without_a_mailbox`**
+    Same as 111, for `tag`.
+
+113. **`test_executor_edge_cases.py::test_executor_propagates_applier_failure`**
+    A stub applier that always raises. Asserts the exception
+    propagates out of `execute()` rather than being swallowed.
+
+### tests/core (pipeline, M2)
+
+114. **`test_pipeline.py::test_process_message_skips_already_processed_messages`**
+    A message already `mark_processed()`-ed. Asserts `process_message()`
+    returns `None` and never touches the applier.
+
+115. **`test_pipeline.py::test_process_message_applies_matched_rule_action_and_marks_processed`**
+    A message matching a `move` rule. Asserts the applier was called,
+    `has_processed()` becomes `True`, and the returned verdict matches.
+
+116. **`test_pipeline.py::test_process_message_writes_an_audit_entry_for_applied_actions`**
+    After processing, asserts exactly one audit entry exists with the
+    injected clock's timestamp.
+
+117. **`test_pipeline.py::test_process_message_handles_escalate_without_calling_executor`**
+    A verdict resolving to `escalate`. Asserts the applier was never
+    called, but the message is still marked processed (the interim
+    pending-Tier-2 policy, docs/DESIGN.md §9).
+
+118. **`test_pipeline.py::test_process_message_returns_the_verdict`**
+    Asserts the returned `RuleVerdict` matches what was actually acted
+    on.
+
+119. **`test_pipeline_edge_cases.py::test_process_message_propagates_executor_failure_and_does_not_mark_processed`**
+    A failing applier. Asserts the exception propagates AND that
+    neither `has_processed()` nor the audit log reflect the message —
+    the retry-on-next-cycle guarantee the ordering exists for.
+
+120. **`test_pipeline_edge_cases.py::test_mark_processed_uses_the_injected_clock`**
+    Checks `processed_messages.processed_at` directly (via a fresh
+    connection) after processing with a fixed clock. Asserts it
+    matches — not just the audit entry's timestamp, per 116.
+
+121. **`test_pipeline_edge_cases.py::test_default_clock_produces_a_real_parseable_timestamp`**
+    Calls `process_message()` without `now=` at all (the real default
+    clock). Asserts the recorded timestamp is genuinely parseable —
+    proving the default itself works, not just that a fake one can
+    replace it.
