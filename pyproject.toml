@@ -8,12 +8,17 @@ license = { text = "MIT" }
 dependencies = [
     "pydantic>=2.7,<3",
     "secretspec>=0.18,<1",
+    "typer>=0.27,<1",
 ]
 
 # Two executables, one shared package (spork.core) — see docs/DESIGN.md §6.
+# spork.cli.main:app is the Typer app object itself (callable, reads
+# sys.argv) — no separate wrapper needed. sporkd needs one (`run`)
+# since main() takes typer.Option-annotated args unusable if called
+# directly; see spork.daemon.main's module docstring.
 [project.scripts]
-sporkd = "spork.daemon.main:main"
-spork = "spork.cli.main:main"
+sporkd = "spork.daemon.main:run"
+spork = "spork.cli.main:app"
 
 [dependency-groups]
 dev = [
