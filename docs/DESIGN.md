@@ -182,7 +182,7 @@ src/spork/
 ├── daemon/
 │   └── main.py           # sporkd entrypoint: wires core, runs event loop
 └── cli/
-    ├── main.py           # spork entrypoint (click/typer)
+    ├── main.py           # spork entrypoint (Typer — see §6.3)
     └── commands/         # status.py, rules.py, config.py, logs.py, ...
 ```
 
@@ -221,6 +221,21 @@ push a "reload" request to the daemon if it's running so changes take
 effect without a restart.
 
 See §12 for the full command reference.
+
+**CLI framework: [Typer](https://typer.tiangolo.com/).** Chosen over
+plain Click for the same reason the rest of this codebase leans on
+type hints rather than docstring conventions or manual validation
+(docs/TEST_COVERAGE.md, the `Protocol`-based modularity in §9.1/§9.2):
+Typer derives each command's arguments/options/help text from type
+hints and `typer.Option`/`typer.Argument` annotations, so a command's
+signature *is* its CLI contract — no separate argparse/click
+boilerplate to keep in sync with it by hand. It's built directly on
+Click (so anything Click can do is still reachable if a future command
+needs it) and gets `--install-completion` and Rich-formatted help for
+free. `spork` is a Typer command **group** (`typer.Typer()` with
+`@app.callback()` — subcommands land per §12 as M5 builds them);
+`sporkd` is a single-command app (`typer.run(main)`) since the daemon
+never has subcommands, just flags.
 
 ## 7. Data & configuration
 
