@@ -203,3 +203,39 @@ Every milestone-sized change should touch, in its own commit(s):
 
 If a change doesn't touch these, ask whether it should before treating
 it as done.
+
+## Diagrams
+
+**All diagrams in this repo are written in Mermaid** (fenced
+` ```mermaid ` code blocks), never ASCII art and never another
+diagramming tool — GitHub (and most markdown renderers) render Mermaid
+natively, so a diagram stays readable without a build step or an
+external image asset to keep in sync. This applies everywhere a
+diagram could go: `docs/DESIGN.md` today, any future doc.
+
+- **`docs/DESIGN.md` §6.4** holds a UML class diagram for every
+  package under `src/spork/core` that has real classes/Protocols
+  today (plus `spork.cli`/`spork.daemon` where there's enough
+  structure to draw), one `classDiagram` block per module, in the same
+  order as §6.1's component tree. A module with no classes yet (a
+  stub package, or one that's just free functions) doesn't get a
+  diagram until it has something to diagram — same "don't fake what
+  isn't there" principle as the rest of this file.
+- **When a module's classes, Protocols, or relationships change**,
+  update its diagram in the same commit — treat §6.4 as part of
+  "keeping docs in sync" above, not a one-time snapshot.
+- **Protocol implementations are structural, not inheritance** (see
+  "Conventions" above) — draw them with a realization arrow
+  (`Interface <|.. Implementation`) labeled "structurally satisfies",
+  never a plain inheritance arrow, so the diagram doesn't imply a
+  subclassing relationship that doesn't exist in the code.
+- **Free functions** (e.g. `load_rules`, `resolve_secrets`,
+  `process_message`) are drawn as a class box stereotyped
+  `<<function>>` so their dependencies/raises are visible in the same
+  diagram — this is a diagramming convenience, not a claim that
+  they're actually classes.
+- **Cross-module types** referenced by a diagram but defined elsewhere
+  (e.g. `Source` inside `spork.core.providers.base`'s diagram) are
+  drawn as an empty box with just their stereotype (`<<Protocol>>`,
+  etc.) — enough for the relationship arrow to make sense, without
+  duplicating a definition that belongs to another module's diagram.
