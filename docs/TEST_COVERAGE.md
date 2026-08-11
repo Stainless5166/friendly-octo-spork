@@ -19,7 +19,11 @@ the abstraction itself generalizes beyond `JmapProvider`. Updated again
 for `spork rules test` (M2's last item): real CLI wiring + rules
 loading + clean error handling, with the live-JMAP-fetch step a
 settled-shape `NotImplementedError` reported cleanly rather than left
-to traceback. **M2 is now 7/7.**
+to traceback. **M2 is now 7/7.** Updated once more for `spork doctor`
+(M1's last unstubbed item): real CLI wiring, connectivity check a
+settled-shape `NotImplementedError`. **Every item in M0–M2 is now
+either fully implemented or a settled-shape stub with a passing test —
+none are unspecified.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -61,16 +65,16 @@ Most of M1's remainder is now covered too. Three pieces turned out to
 be pure, network-free logic and were built and tested for real:
 `spork.core.state` (the SQLite state store), and
 `spork.core.sources.timer`/`fallback` (poll-based fallback, composed
-from the `Trigger`/`Source` protocols M1a already established). Two
-pieces — `spork.core.providers.jmap.client.JmapClient` and
-`spork.core.providers.jmap.push.JmapPushTrigger` — genuinely need a live
-Fastmail session to implement for real; rather than leaving them
-unspecified, their shape is settled and each method raises a specific
-`NotImplementedError`, verified by an ordinary *passing* test (not
-`xfail` — the raise is the correct, specified behavior right now, not
-a stand-in for one). `spork doctor` is the one M1 item still with no
-test at all, deferred to M5 since it needs a CLI framework decision
-that hasn't been made. See the coverage tables below.
+from the `Trigger`/`Source` protocols M1a already established). Three
+pieces — `spork.core.providers.jmap.client.JmapClient`,
+`spork.core.providers.jmap.push.JmapPushTrigger`, and now `spork
+doctor`'s connectivity check — genuinely need a live Fastmail session
+to implement for real; rather than leaving them unspecified, their
+shape is settled and each raises a specific `NotImplementedError`,
+verified by an ordinary *passing* test (not `xfail` — the raise is the
+correct, specified behavior right now, not a stand-in for one). Every
+M1 item now has at least a settled shape and a test. See the coverage
+tables below.
 
 ---
 
@@ -102,7 +106,7 @@ verified).
 | EventSource push listener + backoff | 🟡 stub (listener) / ✅ (backoff math) | ✅ (that it raises) — tests 51, 52 / ✅ (math) — tests 16–19 |
 | Poll-based fallback | ✅ (real, network-free) | ✅ — tests 53–61 (9 tests) |
 | State DB (`push_cursor`, `processed_messages`) | ✅ | ✅ — tests 62–71 (10 tests) |
-| `spork doctor` | ❌ — deferred to M5 (real subcommands haven't landed yet) | — |
+| `spork doctor` | 🟡 stub — CLI wiring real, connectivity check raises `NotImplementedError` | ✅ (that it raises cleanly) — tests 147–149 |
 
 Three of these are genuinely done: mailbox resolution (unchanged),
 poll-based fallback (`IntervalTimer` + `FallbackSource`, pure control
@@ -110,18 +114,19 @@ flow, no network needed to build or test), and the state DB (SQLite,
 same story). The push-listener's backoff *scheduling* is real and
 tested too, separately from the listener itself.
 
-The other three — client session bootstrap, batched fetch, and the
-actual push listener — all genuinely require a live Fastmail session
-to implement for real, which this environment can't exercise
-honestly. Rather than leaving them untested, their shape is settled
-(constructor args, method names/signatures) and each raises a
-specific `NotImplementedError`, verified by a normal *passing* test
-(not `xfail` — the raise is the correct, specified behavior at this
-stage, not a stand-in for a real assertion). `spork doctor` is the one
-item left with no test of any kind: the CLI framework is decided now
-(Typer, M0), but the command itself is real subcommand work that
-belongs to M5, and would call into the still-unimplemented
-connectivity check regardless.
+The other four — client session bootstrap, batched fetch, the actual
+push listener, and now `spork doctor`'s connectivity check — all
+genuinely require a live Fastmail session to implement for real, which
+this environment can't exercise honestly. Rather than leaving them
+untested, their shape is settled (constructor args, method
+names/signatures, CLI wiring) and each raises a specific
+`NotImplementedError`, verified by a normal *passing* test (not
+`xfail` — the raise is the correct, specified behavior at this stage,
+not a stand-in for a real assertion). `spork doctor`'s CLI command
+itself is real (registered, `--help` works, appears in `spork --help`)
+— only the connectivity check underneath is stubbed, same relationship
+`spork rules test` has to its own live-fetch gap. **Every M1 item now
+has at least a settled shape and a test — none are unspecified.**
 
 ### M1a — Source / dispatch pipeline
 
@@ -953,3 +958,19 @@ not a placeholder assertion.
 
 146. **`test_rules_edge_cases.py::test_rules_group_help_lists_the_test_command`**
     `spork rules --help`. Asserts `"test"` is listed.
+
+### tests/cli/commands (spork doctor, M1)
+
+147. **`test_doctor.py::test_doctor_help_works`**
+    `spork doctor --help` via subprocess. Asserts exit 0 and usage
+    text.
+
+148. **`test_doctor.py::test_doctor_reports_a_clean_error_not_a_traceback`**
+    `spork doctor` with no live JMAP session available. Asserts exit
+    1, `"Error"` in stderr, no `"Traceback"` — the connectivity-check
+    `NotImplementedError` caught and reported cleanly.
+
+149. **`test_doctor.py::test_doctor_appears_in_top_level_help`**
+    `spork --help`. Asserts `"doctor"` is listed — confirms
+    `app.command("doctor")(doctor)` wiring, not just that the module
+    imports.

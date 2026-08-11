@@ -52,10 +52,15 @@ read-only. No actions taken yet.
       with no network dependency. Ready to compose with a real
       `JmapClient`-backed fetcher once that exists.
 - [x] State DB: `push_cursor`, `processed_messages` tables + migrations (S)
-- [ ] `spork doctor` reports JMAP auth + connectivity status (S) —
-      deferred to M5: it's a CLI command, and the CLI framework (§6.1:
-      click or typer) isn't chosen yet. The connectivity check it will
-      call is blocked on `JmapClient.connect()` above regardless.
+- [x] `spork doctor` reports JMAP auth + connectivity status (S) — CLI
+      wiring is real (the earlier "CLI framework isn't chosen yet"
+      note is stale: Typer's been in use since M2's `spork rules
+      test`); the connectivity check itself is a settled-shape
+      `NotImplementedError`, same blocker as `JmapClient.connect()`
+      above, caught and reported as a clean CLI error rather than a
+      traceback. Secrets/systemd/DB checks from docs/DESIGN.md §12
+      aren't wired in yet — they need `spork.core.config`, which
+      doesn't exist yet — so this command doesn't pretend to run them.
 
 **Exit criteria:** `sporkd` runs, logs each new inbox message's subject
 as it arrives (via push, verified by sending a real test email), survives
