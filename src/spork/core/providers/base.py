@@ -4,19 +4,33 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from spork.core.models import NormalizedMessage
+from spork.core.rules.schema import Action
 from spork.core.sources.base import Source
+
+
+class ActionApplier(Protocol):
+    """Applies one rule/verdict Action to a message on the remote backend.
+
+    A provider's write side. Not a separate DI concern from `Source`
+    (the read side) — see `Provider`'s docstring for why both belong
+    to the same contract.
+    """
+
+    def apply(self, message: NormalizedMessage, action: Action) -> None: ...
 
 
 class Provider(Protocol):
     """What every mail-backend integration (JMAP, IMAP, ...) adapts to.
 
-    Deliberately the smallest useful contract: the daemon's ingestion
-    loop only ever needs "give me a Source" — it doesn't care whether
-    that Source is backed by JMAP push, IMAP polling, or a replay
-    fixture. Capabilities specific to one backend (mailbox role
-    resolution, an action executor's mutation calls) are the
-    provider's own concern, reached through whatever it hands back,
-    not through this Protocol.
+    A provider is the daemon's *entire* relationship to one remote
+    source of truth: reading from it (`build_source`) and writing to
+    it (`build_action_applier`) are two operations against the same
+    backend, not separate concerns that happen to share one
+    implementation. Anything else backend-specific (mailbox role
+    resolution) is reached through whatever a provider hands back, not
+    through this Protocol — but read and write both belong here.
     """
 
     def build_source(self) -> Source: ...
+    def build_action_applier(self) -> ActionApplier: ...
