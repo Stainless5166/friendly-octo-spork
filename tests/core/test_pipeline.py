@@ -10,10 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from spork.core.pipeline import process_message
-
 from spork.core.actions.executor import ActionExecutor
 from spork.core.models import NormalizedMessage
+from spork.core.pipeline import process_message
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
 
