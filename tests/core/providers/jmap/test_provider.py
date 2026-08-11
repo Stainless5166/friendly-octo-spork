@@ -10,8 +10,9 @@ stub's NotImplementedError when actually used.
 from __future__ import annotations
 
 import pytest
-from spork.core.providers.jmap.provider import JmapProvider
 
+from spork.core.providers.jmap.client import JmapClient
+from spork.core.providers.jmap.provider import JmapProvider, _JmapContentFetcher
 from spork.core.sources.triggered import TriggeredSource
 
 
@@ -35,3 +36,15 @@ def test_source_poll_raises_not_implemented() -> None:
 
     with pytest.raises(NotImplementedError):
         source.poll()
+
+
+def test_content_fetcher_delegates_to_the_client_directly() -> None:
+    """The fetcher half of build_source()'s composition also raises
+    NotImplementedError on its own (not just when reached via the
+    trigger firing first) — it's a real delegation to
+    JmapClient.fetch_new_messages(), not a second placeholder."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+    fetcher = _JmapContentFetcher(client)
+
+    with pytest.raises(NotImplementedError):
+        fetcher.fetch()

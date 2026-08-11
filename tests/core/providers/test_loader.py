@@ -8,6 +8,7 @@ test, not any concrete provider's behavior.
 from __future__ import annotations
 
 import pytest
+
 from spork.core.providers.loader import ProviderLoadError, load_provider
 
 
