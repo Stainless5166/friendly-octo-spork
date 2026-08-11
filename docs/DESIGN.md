@@ -60,6 +60,7 @@ key design decisions. See `ROADMAP.md` for phasing.
 | **Source** | A Trigger + ContentFetcher pair (sometimes fused, sometimes composed) that yields `NormalizedMessage` batches. |
 | **Dispatch target** | A named `TextClassifier` backend a message can be fanned out to. |
 | **Combiner** | Reduces N dispatch targets' results to the single `ClassificationResult` a decision acts on. |
+| **Provider** | An adapter from one mail backend (JMAP, IMAP, ...) to a `Source`; loaded dynamically by spec string, never hardcoded. |
 
 ## 5. Architecture
 
@@ -142,10 +143,15 @@ src/spork/
 ├── core/
 │   ├── config.py        # load/validate config.toml
 │   ├── secrets.py        # secretspec integration
-│   ├── jmap/
-│   │   ├── client.py     # thin wrapper over jmapc: session, batching
-│   │   ├── push.py       # EventSource listener + reconnect/backoff
-│   │   └── mailboxes.py  # mailbox role resolution & caching
+│   ├── providers/
+│   │   ├── base.py         # Provider protocol — the adapter target (§9.3)
+│   │   ├── loader.py        # load_provider(): "module:Class" spec -> Provider, via importlib
+│   │   └── jmap/
+│   │       ├── provider.py   # JmapProvider: the Adapter, composes client+push into a Source
+│   │       ├── client.py     # thin wrapper over jmapc: session, batching
+│   │       ├── push.py       # EventSource listener Trigger
+│   │       ├── backoff.py    # reconnect delay scheduling
+│   │       └── mailboxes.py  # mailbox role resolution & caching
 │   ├── models.py          # NormalizedMessage: transport-agnostic message shape
 │   ├── sources/
 │   │   ├── base.py         # Trigger, ContentFetcher, Source protocols
@@ -640,6 +646,57 @@ confidence score. Both are swappable the same way classifier backends
 are — a `Combiner` is a small enough contract that a bespoke one
 (majority vote, "escalate if any target says urgent") is cheap to add
 later without touching `Dispatcher` or `DispatchingClassifier`.
+
+### 9.3 Modularity: pluggable mail-backend providers
+
+§9.2 settled *how a message gets acquired* (`Trigger`+`ContentFetcher`
+→ `Source`) as a transport-agnostic shape. This section settles the
+layer above it: JMAP is the only backend spork talks to today, but
+it's built as one **provider** behind a common adapter, not baked into
+the daemon, so a second backend (IMAP was the running example back in
+§9.2) is an addition, not a rewrite.
+
+```python
+class Provider(Protocol):
+    """What every mail-backend integration adapts to.
+
+    Deliberately the smallest useful contract: the daemon's ingestion
+    loop only ever needs "give me a Source" — it doesn't care whether
+    that Source is backed by JMAP push, IMAP polling, or a replay
+    fixture. Capabilities specific to one backend (mailbox role
+    resolution, an action executor's mutation calls) are the
+    provider's own concern, reached through whatever the provider
+    hands back, not through this Protocol.
+    """
+
+    def build_source(self) -> Source: ...
+```
+
+- **Package layout: `spork.core.providers.<name>`.** JMAP's
+  client/push/mailbox/backoff modules move from
+  `spork.core.jmap` to `spork.core.providers.jmap` — a future IMAP
+  backend lands as a sibling package (`spork.core.providers.imap`),
+  not a special case bolted onto the JMAP one.
+- **The Adapter: `JmapProvider`.** Wraps `JmapClient` +
+  `JmapPushTrigger` (§8) into a `Source` via the existing
+  `TriggeredSource` (§9.2) — `JmapProvider` doesn't reimplement
+  fetch/push logic, it composes the pieces that already exist into the
+  shape `Provider` promises.
+- **Loadable at runtime: `spork.core.providers.loader`.** A provider is
+  named in config as a `"module.path:ClassName"` spec (e.g.
+  `"spork.core.providers.jmap.provider:JmapProvider"`) and resolved via
+  `importlib` at startup, the same way `tiering.local_classifier`
+  names a classifier backend (§9.1) — except here the payoff is bigger:
+  spork never imports a provider's dependencies (`jmapc`, an eventual
+  IMAP library) unless that provider is the one actually configured.
+  Swapping providers, or adding a third-party one, is a config change
+  plus an installed package — never an edit to `spork.core.providers`
+  itself.
+- **Fails loud on a bad spec.** A malformed spec, an unimportable
+  module, a missing class, or a constructor that rejects the given
+  config all raise a single `ProviderLoadError` — `spork doctor` (M5)
+  catches this the same way it catches an unknown classifier name
+  (§9.1).
 
 ## 10. LLM integration (Claude API)
 
