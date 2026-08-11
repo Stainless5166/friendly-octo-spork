@@ -1,25 +1,42 @@
 """Entry point for the `sporkd` executable.
 
-This is a placeholder: the daemon event loop (JMAP session, push
+A single-command Typer app (docs/DESIGN.md §6.3) — sporkd never has
+subcommands, just flags, unlike the `spork` CLI group. `--help`/
+`--version` work now; the actual event loop (JMAP session, push
 listener, rule engine, action executor, alerting, control socket —
-docs/DESIGN.md §6.2) lands incrementally across the roadmap milestones
-in docs/ROADMAP.md, each behind its own acceptance tests. Wiring it up
-here before those pieces exist would give a runnable-looking daemon that
-does nothing correct, which is worse than an explicit "not yet".
+§6.2) lands incrementally across the roadmap milestones
+(docs/ROADMAP.md), each behind its own acceptance tests. `run()` (not
+`main` directly) is the registered console-script target because
+`main`'s `version` argument is a `typer.Option` marker object, not a
+real default — calling `main()` directly bypasses Typer's argument
+parsing entirely.
 """
 
+from __future__ import annotations
 
-def main() -> None:
-    """Process entry point registered as the `sporkd` console script.
+import typer
 
-    Raises NotImplementedError until the roadmap milestones that build
-    the daemon's actual event loop (M1-M6) land; exists now purely so
-    `uv run sporkd` resolves to something during scaffolding.
-    """
+from spork import __version__
+
+
+def main(
+    version: bool = typer.Option(
+        False, "--version", help="Show the version and exit.", is_eager=True
+    ),
+) -> None:
+    """Tiered JMAP email triage daemon. Run as a systemd user service."""
+    if version:
+        typer.echo(f"sporkd {__version__}")
+        raise typer.Exit()
     raise NotImplementedError(
-        "sporkd is not implemented yet — see docs/ROADMAP.md for milestone status."
+        "sporkd's daemon loop is not implemented yet — see docs/ROADMAP.md for milestone status."
     )
 
 
+def run() -> None:
+    """Console-script entry point registered as `sporkd` in pyproject.toml."""
+    typer.run(main)
+
+
 if __name__ == "__main__":
-    main()
+    run()
