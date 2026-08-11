@@ -9,9 +9,9 @@ involved.
 from __future__ import annotations
 
 import pytest
-from spork.core.sources.fallback import FallbackSource
 
 from spork.core.models import NormalizedMessage
+from spork.core.sources.fallback import FallbackSource
 
 
 class _FixedSource:
