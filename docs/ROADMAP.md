@@ -27,17 +27,37 @@ CI runs on every push.
 read-only. No actions taken yet.
 
 - [ ] `spork.core.jmap.client`: session bootstrap via `jmapc`, secrets
-      wired through `secretspec` (M)
-- [ ] Mailbox role resolution + caching (Inbox, Drafts, custom mailboxes) (S)
-- [ ] `Email/query` + `Email/get` batched fetch of new mail since a cursor (M)
-- [ ] EventSource push listener with reconnect/backoff (M)
-- [ ] Poll-based fallback when push is unavailable/disconnected (S)
-- [ ] State DB: `push_cursor`, `processed_messages` tables + migrations (S)
-- [ ] `spork doctor` reports JMAP auth + connectivity status (S)
+      wired through `secretspec` (M) — shape settled, `connect()` and
+      `fetch_new_messages()` (also covers the `Email/query`+`Email/get`
+      batched fetch item below) deliberately raise `NotImplementedError`:
+      a real jmapc session against a live Fastmail account is real-network
+      work this environment can't exercise honestly. See
+      `tests/core/jmap/test_client.py`.
+- [x] Mailbox role resolution + caching (Inbox, Drafts, custom mailboxes) (S)
+- [ ] ~~`Email/query` + `Email/get` batched fetch of new mail since a cursor (M)~~
+      — folded into `JmapClient.fetch_new_messages()` above, same status.
+- [ ] EventSource push listener with reconnect/backoff (M) — backoff
+      *scheduling* is done and tested (`spork.core.jmap.backoff`); the
+      listener itself (`JmapPushTrigger.wait()`) is a settled-shape
+      `NotImplementedError` stub for the same live-connection reason as
+      the client. See `tests/core/jmap/test_push.py`.
+- [x] Poll-based fallback when push is unavailable/disconnected (S) —
+      real, tested implementation (`spork.core.sources.timer.IntervalTimer`
+      + `spork.core.sources.fallback.FallbackSource`), pure control flow
+      with no network dependency. Ready to compose with a real
+      `JmapClient`-backed fetcher once that exists.
+- [x] State DB: `push_cursor`, `processed_messages` tables + migrations (S)
+- [ ] `spork doctor` reports JMAP auth + connectivity status (S) —
+      deferred to M5: it's a CLI command, and the CLI framework (§6.1:
+      click or typer) isn't chosen yet. The connectivity check it will
+      call is blocked on `JmapClient.connect()` above regardless.
 
 **Exit criteria:** `sporkd` runs, logs each new inbox message's subject
 as it arrives (via push, verified by sending a real test email), survives
-a forced network drop and reconnects.
+a forced network drop and reconnects. **Not yet met** — still blocked on
+a real `jmapc` session (`JmapClient.connect()`/`JmapPushTrigger.wait()`),
+which needs a live Fastmail account and API token to actually build and
+test against, not just design.
 
 ## M1a — Source / dispatch pipeline
 

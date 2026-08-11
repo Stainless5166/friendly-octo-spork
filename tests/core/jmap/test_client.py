@@ -15,6 +15,7 @@ correct, specified behavior at this stage.
 from __future__ import annotations
 
 import pytest
+
 from spork.core.jmap.client import JmapClient
 
 

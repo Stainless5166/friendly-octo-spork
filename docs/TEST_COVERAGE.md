@@ -1,7 +1,9 @@
 # Test Suite Inventory & Milestone Coverage
 
 **Status:** snapshot as of the M1a (source/dispatch pipeline) milestone,
-updated to add xfail coverage for two known M0 gaps.
+updated to add xfail coverage for two known M0 gaps, then updated again
+to cover most of M1's remainder (state DB, poll fallback, and settled-
+shape `NotImplementedError` stubs for the JMAP client/push listener).
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -34,9 +36,21 @@ behavior from `docs/DESIGN.md`, verified to fail for the right reason
 not a bug in the test). `xfail_strict = true` (`pyproject.toml`) means
 if either ever starts passing without its marker being removed, the
 suite fails — so these can't quietly go stale once the feature lands.
-The remaining gaps in M1/M2 don't have tests yet because their
-interfaces aren't designed yet, not because writing the test was
-skipped; see the coverage tables below.
+
+Most of M1's remainder is now covered too. Three pieces turned out to
+be pure, network-free logic and were built and tested for real:
+`spork.core.state` (the SQLite state store), and
+`spork.core.sources.timer`/`fallback` (poll-based fallback, composed
+from the `Trigger`/`Source` protocols M1a already established). Two
+pieces — `spork.core.jmap.client.JmapClient` and
+`spork.core.jmap.push.JmapPushTrigger` — genuinely need a live
+Fastmail session to implement for real; rather than leaving them
+unspecified, their shape is settled and each method raises a specific
+`NotImplementedError`, verified by an ordinary *passing* test (not
+`xfail` — the raise is the correct, specified behavior right now, not
+a stand-in for one). `spork doctor` is the one M1 item still with no
+test at all, deferred to M5 since it needs a CLI framework decision
+that hasn't been made. See the coverage tables below.
 
 ---
 
@@ -62,23 +76,31 @@ invisible to the suite.
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
-| `jmap.client` session bootstrap (`jmapc`) | ❌ | — |
+| `jmap.client` session bootstrap (`jmapc`) | 🟡 stub — raises `NotImplementedError` | ✅ (that it raises) — tests 49, 50 |
 | Mailbox role resolution + caching | ✅ | ✅ — tests 20–26 (7 tests) |
-| `Email/query`+`Email/get` batched fetch | ❌ | — |
-| EventSource push listener + backoff | ❌ (listener) / ✅ (backoff math only) | ❌ (listener) / ✅ (backoff math: tests 16–19) |
-| Poll-based fallback | ❌ | — |
-| State DB (`push_cursor`, `processed_messages`) | ❌ | — |
-| `spork doctor` | ❌ | — |
+| `Email/query`+`Email/get` batched fetch | 🟡 stub — same `JmapClient.fetch_new_messages()` | ✅ (that it raises) — test 50 |
+| EventSource push listener + backoff | 🟡 stub (listener) / ✅ (backoff math) | ✅ (that it raises) — tests 51, 52 / ✅ (math) — tests 16–19 |
+| Poll-based fallback | ✅ (real, network-free) | ✅ — tests 53–61 (9 tests) |
+| State DB (`push_cursor`, `processed_messages`) | ✅ | ✅ — tests 62–71 (10 tests) |
+| `spork doctor` | ❌ — deferred to M5 (no CLI framework chosen yet) | — |
 
-One nuance: tests 16–19 test `next_delay()`'s scheduling math
-correctly and thoroughly, but that's a helper *for* the "EventSource
-push listener with reconnect/backoff" checklist item, not the listener
-itself — the listener doesn't exist, so the checklist item as a whole
-is still untested where it matters (does a real disconnect actually
-trigger a reconnect on this schedule).
+Three of these are genuinely done: mailbox resolution (unchanged),
+poll-based fallback (`IntervalTimer` + `FallbackSource`, pure control
+flow, no network needed to build or test), and the state DB (SQLite,
+same story). The push-listener's backoff *scheduling* is real and
+tested too, separately from the listener itself.
 
-1 of 7 items is actually done (mailbox resolution), and it's well
-tested. The other 6 are simply not built yet.
+The other three — client session bootstrap, batched fetch, and the
+actual push listener — all genuinely require a live Fastmail session
+to implement for real, which this environment can't exercise
+honestly. Rather than leaving them untested, their shape is settled
+(constructor args, method names/signatures) and each raises a
+specific `NotImplementedError`, verified by a normal *passing* test
+(not `xfail` — the raise is the correct, specified behavior at this
+stage, not a stand-in for a real assertion). `spork doctor` is the one
+item left with no test of any kind, since it depends on both the
+still-unimplemented connectivity check and a CLI framework that hasn't
+been chosen.
 
 ### M1a — Source / dispatch pipeline
 
@@ -129,7 +151,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (48 tests: 45 passing + 3 xfail)
+## Full test inventory (71 tests: 68 passing + 3 xfail)
 
 ### tests/core/classify
 
@@ -390,3 +412,134 @@ with `--runxfail` to fail for the right reason before being marked.
 48. **`tests/daemon/test_main.py::test_help_prints_usage_and_exits_zero`**
     Same as 47, for `python -m spork.daemon.main --help`. Same current
     failure mode, same reasoning.
+
+### tests/core/jmap — NotImplementedError-catching (M1)
+
+These pass normally — raising `NotImplementedError` is the correct,
+specified behavior at this stage (see the M1 coverage table above),
+not a placeholder assertion.
+
+49. **`test_client.py::test_connect_raises_not_implemented`**
+    Constructs `JmapClient(host=..., api_token=...)` and calls
+    `connect()`. Asserts `NotImplementedError`, confirming the
+    session-bootstrap placeholder is in place with the right shape.
+
+50. **`test_client.py::test_fetch_new_messages_raises_not_implemented`**
+    Calls `client.fetch_new_messages(since_cursor=None)`. Asserts
+    `NotImplementedError`, covering the batched-fetch checklist item
+    (folded into this same method).
+
+51. **`test_push.py::test_wait_raises_not_implemented`**
+    Constructs `JmapPushTrigger(client)` and calls `wait()` directly.
+    Asserts `NotImplementedError`.
+
+52. **`test_push.py::test_composes_into_triggered_source_like_any_other_trigger`**
+    Wires a `JmapPushTrigger` into a real `TriggeredSource` alongside a
+    fetcher that would raise `AssertionError` if ever called. Asserts
+    calling `source.poll()` raises `NotImplementedError` (from
+    `wait()`, before the fetcher runs), proving `JmapPushTrigger`
+    satisfies the `Trigger` contract structurally — it plugs into the
+    M1a machinery exactly like `ImmediateTrigger`/`IntervalTimer` do,
+    even though its own behavior isn't implemented yet.
+
+### tests/core/sources — timer + fallback (M1)
+
+53. **`test_timer.py::test_interval_timer_sleeps_for_the_configured_interval`**
+    Constructs `IntervalTimer(30.0, sleep=slept.append)` (an injected
+    fake sleep) and calls `wait()`. Asserts `slept == [30.0]`.
+
+54. **`test_timer.py::test_interval_timer_waits_again_on_every_call`**
+    Calls `wait()` three times on one timer. Asserts the fake sleep was
+    invoked three times with the same interval — every call re-waits,
+    not just the first.
+
+55. **`test_timer_edge_cases.py::test_interval_timer_rejects_non_positive_interval`**
+    Attempts `IntervalTimer(0.0)` and `IntervalTimer(-1.0)`. Asserts
+    both raise `ValueError` at construction.
+
+56. **`test_fallback.py::test_fallback_uses_primary_when_it_succeeds`**
+    Builds a `FallbackSource` from a working primary and a
+    `_FailingSource` secondary. Asserts `poll()` returns the primary's
+    result, confirming the secondary is never touched when primary
+    works.
+
+57. **`test_fallback.py::test_fallback_switches_to_secondary_when_primary_raises`**
+    Primary is `_FailingSource` (raises `ConnectionError`), secondary
+    returns fixed messages. Asserts `poll()` returns the secondary's
+    result instead of propagating the error.
+
+58. **`test_fallback.py::test_fallback_retries_primary_on_the_next_poll_call`**
+    A `RecoveringSource` fails only on its first call. After one
+    fallback-triggering `poll()`, a second `poll()` is asserted to
+    return the (now-recovered) primary's result — proving the source
+    doesn't latch onto the secondary permanently.
+
+59. **`test_fallback.py::test_fallback_only_catches_configured_exception_types`**
+    Constructs `FallbackSource(..., catch=(TimeoutError,))` with a
+    primary that raises `ConnectionError`. Asserts `ConnectionError`
+    propagates uncaught, confirming `catch` actually narrows what
+    triggers a fallback rather than swallowing everything.
+
+60. **`test_fallback_edge_cases.py::test_fallback_propagates_when_both_primary_and_secondary_fail`**
+    Both primary and secondary are failing sources. Asserts the
+    resulting `poll()` call still raises — nothing left to fall back
+    to, so the error isn't hidden.
+
+61. **`test_fallback_edge_cases.py::test_fallback_does_not_catch_baseexception_subclasses`**
+    Primary raises `KeyboardInterrupt` (a `BaseException`, not
+    `Exception`). Asserts it propagates through the default
+    `catch=(Exception,)` rather than being swallowed — a daemon must
+    never suppress a shutdown signal because it superficially resembles
+    a connection error.
+
+### tests/core/state (M1)
+
+62. **`test_db.py::test_set_and_get_cursor_roundtrips`**
+    Opens a `StateDB` against a tmp-path file, calls
+    `set_cursor("account-1", "state-abc123")`, then `get_cursor`.
+    Asserts the exact value round-trips.
+
+63. **`test_db.py::test_get_cursor_returns_none_when_never_set`**
+    Calls `get_cursor` for an account with no prior `set_cursor` call.
+    Asserts `None`, not an error.
+
+64. **`test_db.py::test_set_cursor_overwrites_previous_value`**
+    Calls `set_cursor` twice for the same account with different
+    values. Asserts `get_cursor` returns the second (latest) value.
+
+65. **`test_db.py::test_has_processed_is_false_for_unknown_message`**
+    Calls `has_processed("msg-1")` with nothing ever marked. Asserts
+    `False`.
+
+66. **`test_db.py::test_mark_processed_then_has_processed_is_true`**
+    Calls `mark_processed("msg-1", ...)` then `has_processed("msg-1")`.
+    Asserts `True` — the idempotency primitive M2's action executor
+    will consult.
+
+67. **`test_db.py::test_schema_is_created_on_a_fresh_db_file`**
+    Opens `StateDB` against a path that doesn't exist yet, performs one
+    write. Asserts the file now exists — schema creation is automatic,
+    no separate init step.
+
+68. **`test_db_edge_cases.py::test_mark_processed_twice_updates_the_record`**
+    Calls `mark_processed` twice for the same `jmap_id` with different
+    `action_taken`/`processed_at` values, then reads the row back via a
+    *separate* SQLite connection to the same file (not `StateDB`'s own
+    internals). Asserts the second call's values won — an upsert, not
+    an error on the duplicate key.
+
+69. **`test_db_edge_cases.py::test_multiple_accounts_have_independent_push_cursors`**
+    Sets different cursors for `"account-1"` and `"account-2"`. Asserts
+    each `get_cursor` call returns only its own account's value —
+    no cross-account bleed.
+
+70. **`test_db_edge_cases.py::test_reopening_an_existing_db_file_preserves_data`**
+    Writes a cursor and a processed-message record via one `StateDB`
+    instance, closes it, opens a *new* `StateDB` instance against the
+    same file path. Asserts both pieces of data are still there —
+    genuine on-disk persistence, not in-memory-only state.
+
+71. **`test_db_edge_cases.py::test_using_the_db_after_close_raises`**
+    Calls `close()`, then calls `get_cursor` on the same instance.
+    Asserts an exception is raised (sqlite3's `ProgrammingError` on a
+    closed connection) rather than the call silently no-op-ing.

@@ -13,9 +13,9 @@ listen loop.
 from __future__ import annotations
 
 import pytest
+
 from spork.core.jmap.client import JmapClient
 from spork.core.jmap.push import JmapPushTrigger
-
 from spork.core.sources.triggered import TriggeredSource
 
 
