@@ -48,3 +48,17 @@ def test_duplicate_role_across_mailboxes_raises_ambiguous_error() -> None:
 
     with pytest.raises(AmbiguousMailboxRoleError):
         resolver.resolve("inbox")
+
+
+def test_mailboxes_without_a_role_are_ignored() -> None:
+    """A custom, role-less mailbox (most user-created folders) doesn't
+    interfere with resolving the roles that *are* present — the
+    resolver must skip it rather than erroring or mis-mapping it."""
+    resolver = MailboxResolver(
+        lambda: [
+            MailboxInfo(id="mb-1", name="Inbox", role="inbox"),
+            MailboxInfo(id="mb-2", name="My Custom Folder", role=None),
+        ]
+    )
+
+    assert resolver.resolve("inbox") == "mb-1"
