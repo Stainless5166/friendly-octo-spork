@@ -95,6 +95,35 @@ connection; a `DispatchingClassifier` wrapping two stub classifiers and
 a `HighestConfidenceCombiner` produces a single verdict the rule engine
 accepts unmodified.
 
+## M1b — Provider abstraction
+
+**Goal:** JMAP restructured from a hardcoded package into one
+**provider** behind a common adapter (docs/DESIGN.md §9.3), loaded by
+config-string spec via `importlib` rather than a static import —
+so a second backend (IMAP) is an addition later, not a rewrite, and
+spork never imports a provider's dependencies unless that provider is
+actually configured.
+
+- [x] `spork.core.jmap` moved to `spork.core.providers.jmap` (pure
+      structural move, no logic changes; git tracked as renames) (S)
+- [x] `spork.core.providers.base.Provider`: the one-method adapter
+      Protocol (`build_source() -> Source`) (S)
+- [x] `spork.core.providers.jmap.provider.JmapProvider`: the Adapter,
+      composing the existing `JmapClient` + `JmapPushTrigger` into a
+      `Source` via `TriggeredSource` — no fetch/push logic
+      reimplemented (S)
+- [x] `spork.core.providers.loader.load_provider()`: `"module:Class"`
+      spec -> constructed `Provider`, via `importlib`; every failure
+      mode (malformed spec, unimportable module, missing class,
+      rejected constructor args) raises one `ProviderLoadError` (M)
+
+**Exit criteria:** `load_provider("spork.core.providers.jmap.provider:JmapProvider", host=..., api_token=...)`
+returns a working `JmapProvider`; its `build_source()` composes a real
+`Source` whose `.poll()` still raises `NotImplementedError` (propagated
+honestly from the still-stubbed `JmapClient`/`JmapPushTrigger` — M1),
+proving the adapter/loader machinery is correct independent of whether
+the backend underneath it is actually implemented yet. **Met.**
+
 ## M2 — Rule engine (Tier 1) + action executor
 
 **Goal:** deterministic rules file drives real mailbox actions, no LLM
