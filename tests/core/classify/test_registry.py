@@ -9,10 +9,10 @@ correctness.
 from __future__ import annotations
 
 import pytest
-from spork.core.classify.base import ClassificationResult, TextClassifier
-from spork.core.models import NormalizedMessage
 
 from spork.core.classify import registry
+from spork.core.classify.base import ClassificationResult, TextClassifier
+from spork.core.models import NormalizedMessage
 
 
 class _StubClassifier:
