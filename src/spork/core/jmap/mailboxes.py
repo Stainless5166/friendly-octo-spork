@@ -38,6 +38,17 @@ class UnknownMailboxRoleError(KeyError):
     """
 
 
+class AmbiguousMailboxRoleError(ValueError):
+    """Raised when two or more mailboxes report the same role.
+
+    A well-formed JMAP account should never have two "inbox"-role
+    mailboxes, but nothing stops a server (or a mid-migration account)
+    from reporting one anyway. Picking a winner silently would risk
+    filing mail into the *wrong* one of the two — safer to refuse and
+    surface it than to guess.
+    """
+
+
 class MailboxResolver:
     """Resolves JMAP mailbox roles to mailbox IDs, fetched once and cached.
 
@@ -77,5 +88,18 @@ class MailboxResolver:
 
         Split out from resolve() so the "how do raw mailboxes become a
         lookup table" step is a pure, independently-readable function.
+        Raises AmbiguousMailboxRoleError (rather than letting a later
+        entry silently overwrite an earlier one) if the same role
+        appears twice — see that error's docstring for why.
         """
-        return {mailbox.role: mailbox.id for mailbox in mailboxes if mailbox.role is not None}
+        by_role: dict[str, str] = {}
+        for mailbox in mailboxes:
+            if mailbox.role is None:
+                continue
+            if mailbox.role in by_role:
+                raise AmbiguousMailboxRoleError(
+                    f"role {mailbox.role!r} matches more than one mailbox: "
+                    f"{by_role[mailbox.role]!r} and {mailbox.id!r}"
+                )
+            by_role[mailbox.role] = mailbox.id
+        return by_role
