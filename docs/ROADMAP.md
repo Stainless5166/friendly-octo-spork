@@ -11,15 +11,20 @@ Sizing tags (`S`/`M`/`L`) are rough effort, not calendar time.
 **Goal:** `uv run` works for both executables against a stub pipeline;
 CI runs on every push.
 
-- [ ] `uv init`, `pyproject.toml` with `[project.scripts] sporkd`, `spork` (S)
-- [ ] `src/spork/` package layout per `DESIGN.md` §6.1 (S)
-- [ ] `secretspec.toml` with declared secrets (§7.3) (S)
-- [ ] Lint/format/type-check config (ruff + mypy or pyright) (S)
-- [ ] CI: lint, type-check, unit tests on push/PR (S)
+- [x] `uv init`, `pyproject.toml` with `[project.scripts] sporkd`, `spork` (S)
+- [x] `src/spork/` package layout per `DESIGN.md` §6.1 (S)
+- [ ] `secretspec.toml` with declared secrets (§7.3) (S) — tracked as
+      `xfail`, `tests/test_secretspec_config.py`
+- [x] Lint/format/type-check config (ruff + mypy or pyright) (S)
+- [x] CI: lint, type-check, unit tests on push/PR (S)
 - [ ] `spork --help` / `sporkd --help` produce real (if empty) output (S)
+      — tracked as `xfail`, `tests/cli/test_main.py`,
+      `tests/daemon/test_main.py`; blocked on a CLI framework choice
+      (click vs. typer, §6.1, undecided)
 
 **Exit criteria:** fresh clone → `uv sync && uv run sporkd --help` and
 `uv run spork --help` both work with no manual setup beyond secrets.
+**Not yet met** — both crash with `NotImplementedError` today.
 
 ## M1 — JMAP connectivity
 
