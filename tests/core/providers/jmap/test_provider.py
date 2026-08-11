@@ -12,7 +12,8 @@ from __future__ import annotations
 import pytest
 
 from spork.core.providers.jmap.client import JmapClient
-from spork.core.providers.jmap.provider import JmapProvider, _JmapContentFetcher
+from spork.core.providers.jmap.provider import JmapProvider, _JmapActionApplier, _JmapContentFetcher
+from spork.core.rules.schema import Action
 from spork.core.sources.triggered import TriggeredSource
 
 
@@ -48,3 +49,26 @@ def test_content_fetcher_delegates_to_the_client_directly() -> None:
 
     with pytest.raises(NotImplementedError):
         fetcher.fetch()
+
+
+def test_build_action_applier_returns_something_that_can_apply(make_message) -> None:
+    """build_action_applier() returns an object satisfying ActionApplier
+    (has an .apply() method) — the write half of the Provider contract,
+    per docs/DESIGN.md §9.3's "read and write are the same relationship"."""
+    provider = JmapProvider(host="api.fastmail.com", api_token="fake-token")
+
+    applier = provider.build_action_applier()
+
+    with pytest.raises(NotImplementedError):
+        applier.apply(make_message(), Action(type="move", mailbox="Reading"))
+
+
+def test_action_applier_delegates_to_the_client_directly(make_message) -> None:
+    """The applier is a real delegation to JmapClient.apply_action(),
+    not a second placeholder — mirrors
+    test_content_fetcher_delegates_to_the_client_directly."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+    applier = _JmapActionApplier(client)
+
+    with pytest.raises(NotImplementedError):
+        applier.apply(make_message(), Action(type="tag", mailbox="Urgent"))
