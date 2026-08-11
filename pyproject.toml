@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "pydantic>=2.7,<3",
+    "secretspec>=0.18,<1",
 ]
 
 # Two executables, one shared package (spork.core) — see docs/DESIGN.md §6.
