@@ -141,10 +141,15 @@ src/spork/
 │   │   ├── client.py     # thin wrapper over jmapc: session, batching
 │   │   ├── push.py       # EventSource listener + reconnect/backoff
 │   │   └── mailboxes.py  # mailbox role resolution & caching
+│   ├── models.py          # NormalizedMessage: transport-agnostic message shape
 │   ├── rules/
 │   │   ├── schema.py     # rule dataclasses / pydantic models
 │   │   ├── engine.py     # Tier 1 evaluation
 │   │   └── loader.py     # rules.toml (or .d/ directory) parsing
+│   ├── classify/
+│   │   ├── base.py        # TextClassifier protocol + ClassificationResult
+│   │   ├── registry.py     # name -> TextClassifier factory lookup
+│   │   └── keyword.py      # default zero-dependency heuristic backend
 │   ├── llm/
 │   │   ├── client.py     # Claude API wrapper (Messages API)
 │   │   ├── prompts.py    # system prompt + verdict schema
@@ -248,6 +253,9 @@ reconnect_backoff_seconds = [2, 5, 15, 60, 300]
 default_unmatched_action = "escalate"   # "escalate" | "notify" | "ignore"
 tier2_confidence_alert_threshold = 0.55  # below this, always alert (Tier 3)
 tier2_confidence_autoact_threshold = 0.85 # above this, act without alert
+local_classifier = "keyword_heuristic"    # name registered in classify/registry.py — swap
+                                           # to experiment with a different local text-processing
+                                           # backend; see §9.1
 
 [llm]
 model = "claude-sonnet-5"
@@ -351,7 +359,19 @@ description = "Fallback: anything unmatched goes to the LLM"
 when = { always = true }
 action = { type = "escalate" }
 enabled = true
+
+[[rule]]
+id = "locally-scored-urgent"
+description = "Local classifier (§9.1) flags urgency; skip straight to alert"
+when = { local_classifier_category_in = ["urgent"] }
+action = { type = "escalate", reason = "local_classifier_urgent" }
+enabled = true
 ```
+
+`local_classifier_category_in` is resolved by calling the configured
+`TextClassifier` backend (§9.1) once per message and checking its
+`category` — swapping `tiering.local_classifier` in `config.toml`
+changes what this condition sees without editing the rule.
 
 `when` conditions are a closed, declarative set (sender/domain lists,
 subject/header regex, mailbox membership, list-unsubscribe header
@@ -432,6 +452,58 @@ autoact threshold        alert threshold
      └── confidence between thresholds: apply action AND alert
           (acted on, but flagged for the human to sanity-check)
 ```
+
+Rule *conditions* in the diagram above are plain deterministic matching
+(sender, headers, regex — §7.5). Rules may additionally reference the
+output of a **local classifier** (§9.1) as one more condition input, so
+a rule can read e.g. "if the local classifier scores this `urgent` and
+the sender isn't a known list, escalate" without that scoring logic
+living in the rule engine itself.
+
+### 9.1 Modularity: pluggable local classifiers
+
+Tier 2 (Claude) is the expensive, capable tier; Tier 1 rules (§7.5) are
+free but purely deterministic. There's a useful middle tier — cheap,
+local, *non*-LLM text processing (keyword/regex scoring today; nothing
+rules out a small local model, spaCy pipeline, fastText classifier, or a
+scikit-learn bag-of-words model later) that can produce signals like
+"looks urgent" or "looks like a newsletter" for rules to key off, without
+spending an API call. This is explicitly designed as a swap point, not a
+fixed implementation, because the right technique here is genuinely an
+open experiment — what scores well on one person's mail may not on
+another's.
+
+The contract is a small `Protocol` (`spork.core.classify.base.TextClassifier`):
+
+```python
+class TextClassifier(Protocol):
+    def classify(self, message: NormalizedMessage) -> ClassificationResult:
+        """Score/label a message. Must be local and fast — no network
+        calls, no LLM. Implementations decide their own labels/scores;
+        rules opt into whichever ones they care about by name."""
+        ...
+```
+
+- **`ClassificationResult`** is deliberately loose (a category label plus
+  an open `scores: dict[str, float]` bag) rather than a fixed enum, so a
+  new backend isn't forced into categories designed for a different
+  technique.
+- **Registry, not inheritance.** Backends self-register under a string
+  name (`spork.core.classify.registry`); `config.toml`'s
+  `tiering.local_classifier` picks one by name. Swapping techniques is a
+  one-line config change, never a code change to the rule engine or the
+  daemon pipeline.
+- **Default backend ships dependency-free**: a keyword/regex heuristic
+  (`classify/keyword.py`) so the tool works out of the box with zero
+  extra installs. Anything heavier (spaCy, a local embedding model, a
+  small fine-tuned classifier) is an additional backend module behind
+  the same `Protocol` — added, not swapped in by editing existing code.
+- **No implicit fallback.** An unresolvable/misconfigured classifier name
+  is a startup-time config error (`spork doctor` catches it), not a
+  silent no-op — a rule that references classifier output should never
+  quietly stop firing because a backend failed to load.
+- This tier is optional: rules that don't reference classifier output
+  never invoke it, so it costs nothing for a config that doesn't use it.
 
 ## 10. LLM integration (Claude API)
 
