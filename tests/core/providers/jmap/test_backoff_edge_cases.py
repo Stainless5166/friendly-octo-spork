@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from spork.core.jmap.backoff import next_delay
+from spork.core.providers.jmap.backoff import next_delay
 
 
 def test_next_delay_raises_on_empty_schedule() -> None:

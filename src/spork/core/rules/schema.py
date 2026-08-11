@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class Condition(BaseModel):
@@ -25,6 +25,13 @@ class Condition(BaseModel):
     evaluate, and a new thing that's safe to run against untrusted
     rule files.
     """
+
+    # extra="forbid": a hand-edited rules.toml with a typo'd field
+    # (e.g. "enalbed" instead of "enabled") must be rejected loudly,
+    # not silently ignored while the mistyped field quietly falls back
+    # to its default — that's exactly the kind of mistake that makes a
+    # rule behave differently from what its author intended.
+    model_config = ConfigDict(extra="forbid")
 
     always: bool = False
     from_domain_in: list[str] | None = None
@@ -46,6 +53,8 @@ class Action(BaseModel):
     acted, not just that it did.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["move", "tag", "escalate", "ignore"]
     mailbox: str | None = None
     reason: str | None = None
@@ -60,6 +69,8 @@ class Rule(BaseModel):
     authored, reviewed, and dry-run (`spork rules test`) before it's
     allowed to affect real mail.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     id: str
     description: str = ""

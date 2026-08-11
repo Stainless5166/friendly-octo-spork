@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from spork.core.jmap.mailboxes import MailboxInfo, MailboxResolver, UnknownMailboxRoleError
+from spork.core.providers.jmap.mailboxes import (
+    MailboxInfo,
+    MailboxResolver,
+    UnknownMailboxRoleError,
+)
 
 
 def test_resolve_returns_mailbox_id_for_known_role() -> None:

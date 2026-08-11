@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import pytest
 
-from spork.core.jmap.client import JmapClient
+from spork.core.providers.jmap.client import JmapClient
+from spork.core.rules.schema import Action
 
 
 def test_connect_raises_not_implemented() -> None:
@@ -34,3 +35,12 @@ def test_fetch_new_messages_raises_not_implemented() -> None:
 
     with pytest.raises(NotImplementedError):
         client.fetch_new_messages(since_cursor=None)
+
+
+def test_apply_action_raises_not_implemented(make_message) -> None:
+    """apply_action() would mutate the mailbox via Email/set against a
+    live session (docs/DESIGN.md §9.3) — not built yet."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+
+    with pytest.raises(NotImplementedError):
+        client.apply_action(make_message(), Action(type="move", mailbox="Reading"))

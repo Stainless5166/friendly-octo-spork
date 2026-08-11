@@ -31,31 +31,36 @@ CI runs on every push.
 **Goal:** the daemon can authenticate, resolve mailboxes, and fetch mail
 read-only. No actions taken yet.
 
-- [ ] `spork.core.jmap.client`: session bootstrap via `jmapc`, secrets
+- [ ] `spork.core.providers.jmap.client`: session bootstrap via `jmapc`, secrets
       wired through `secretspec` (M) — shape settled, `connect()` and
       `fetch_new_messages()` (also covers the `Email/query`+`Email/get`
       batched fetch item below) deliberately raise `NotImplementedError`:
       a real jmapc session against a live Fastmail account is real-network
       work this environment can't exercise honestly. See
-      `tests/core/jmap/test_client.py`.
+      `tests/core/providers/jmap/test_client.py`.
 - [x] Mailbox role resolution + caching (Inbox, Drafts, custom mailboxes) (S)
 - [ ] ~~`Email/query` + `Email/get` batched fetch of new mail since a cursor (M)~~
       — folded into `JmapClient.fetch_new_messages()` above, same status.
 - [ ] EventSource push listener with reconnect/backoff (M) — backoff
-      *scheduling* is done and tested (`spork.core.jmap.backoff`); the
+      *scheduling* is done and tested (`spork.core.providers.jmap.backoff`); the
       listener itself (`JmapPushTrigger.wait()`) is a settled-shape
       `NotImplementedError` stub for the same live-connection reason as
-      the client. See `tests/core/jmap/test_push.py`.
+      the client. See `tests/core/providers/jmap/test_push.py`.
 - [x] Poll-based fallback when push is unavailable/disconnected (S) —
       real, tested implementation (`spork.core.sources.timer.IntervalTimer`
       + `spork.core.sources.fallback.FallbackSource`), pure control flow
       with no network dependency. Ready to compose with a real
       `JmapClient`-backed fetcher once that exists.
 - [x] State DB: `push_cursor`, `processed_messages` tables + migrations (S)
-- [ ] `spork doctor` reports JMAP auth + connectivity status (S) —
-      deferred to M5: it's a CLI command, and the CLI framework (§6.1:
-      click or typer) isn't chosen yet. The connectivity check it will
-      call is blocked on `JmapClient.connect()` above regardless.
+- [x] `spork doctor` reports JMAP auth + connectivity status (S) — CLI
+      wiring is real (the earlier "CLI framework isn't chosen yet"
+      note is stale: Typer's been in use since M2's `spork rules
+      test`); the connectivity check itself is a settled-shape
+      `NotImplementedError`, same blocker as `JmapClient.connect()`
+      above, caught and reported as a clean CLI error rather than a
+      traceback. Secrets/systemd/DB checks from docs/DESIGN.md §12
+      aren't wired in yet — they need `spork.core.config`, which
+      doesn't exist yet — so this command doesn't pretend to run them.
 
 **Exit criteria:** `sporkd` runs, logs each new inbox message's subject
 as it arrives (via push, verified by sending a real test email), survives
@@ -95,22 +100,87 @@ connection; a `DispatchingClassifier` wrapping two stub classifiers and
 a `HighestConfidenceCombiner` produces a single verdict the rule engine
 accepts unmodified.
 
+## M1b — Provider abstraction
+
+**Goal:** JMAP restructured from a hardcoded package into one
+**provider** behind a common adapter (docs/DESIGN.md §9.3), loaded by
+config-string spec via `importlib` rather than a static import —
+so a second backend (IMAP) is an addition later, not a rewrite, and
+spork never imports a provider's dependencies unless that provider is
+actually configured.
+
+- [x] `spork.core.jmap` moved to `spork.core.providers.jmap` (pure
+      structural move, no logic changes; git tracked as renames) (S)
+- [x] `spork.core.providers.base.Provider`: the one-method adapter
+      Protocol (`build_source() -> Source`) (S)
+- [x] `spork.core.providers.jmap.provider.JmapProvider`: the Adapter,
+      composing the existing `JmapClient` + `JmapPushTrigger` into a
+      `Source` via `TriggeredSource` — no fetch/push logic
+      reimplemented (S)
+- [x] `spork.core.providers.loader.load_provider()`: `"module:Class"`
+      spec -> constructed `Provider`, via `importlib`; every failure
+      mode (malformed spec, unimportable module, missing class,
+      rejected constructor args) raises one `ProviderLoadError` (M)
+- [x] `spork.core.providers.file.provider.FileProvider`: a second,
+      fully real `Provider` Adapter — a local JSON messages file for
+      `build_source()`, a JSON-lines applied-actions log for
+      `build_action_applier()`, no `NotImplementedError` anywhere (S)
+      — proves the `Provider` abstraction itself (not just the
+      loader) generalizes beyond JMAP, independent of `JmapProvider`
+      ever reaching a live session. Not a "recent mail" fixture
+      mechanism (docs/DESIGN.md §9.3/§13) — a real, honestly-named
+      backend in its own right.
+
+**Exit criteria:** `load_provider("spork.core.providers.jmap.provider:JmapProvider", host=..., api_token=...)`
+returns a working `JmapProvider`; its `build_source()` composes a real
+`Source` whose `.poll()` still raises `NotImplementedError` (propagated
+honestly from the still-stubbed `JmapClient`/`JmapPushTrigger` — M1),
+proving the adapter/loader machinery is correct independent of whether
+the backend underneath it is actually implemented yet. `FileProvider`
+goes one step further: loaded the same way, its `build_source()` and
+`build_action_applier()` both actually work end to end, no live
+network involved. **Met.**
+
 ## M2 — Rule engine (Tier 1) + action executor
 
 **Goal:** deterministic rules file drives real mailbox actions, no LLM
 involved yet.
 
-- [ ] Rule schema + `rules.toml` loader/validator (§7.5) (M)
-- [ ] Tier 1 evaluator (first-match-wins, closed condition set) (M)
-- [ ] Action executor: move/tag via `Email/set` `mailboxIds` (M)
-- [ ] `processed_messages` idempotency check before acting (S)
-- [ ] `audit_log` writes for every action taken (S)
-- [ ] `spork rules test <file>` dry-run against recent mail, no side effects (M)
-- [ ] Unit tests: condition matching, dry-run output, idempotency (M)
+- [x] Rule schema + `rules.toml` loader/validator (§7.5) (M) —
+      schema (`Condition`/`Action`/`Rule`) now rejects unknown fields
+      (`extra="forbid"`), a real gap an edge-case test caught: a
+      typo'd field was previously silently ignored and fell back to
+      its default instead of failing to load.
+- [x] Tier 1 evaluator (first-match-wins, closed condition set) (M)
+- [x] Action executor: applies `move`/`tag`/`ignore` via an injected
+      `ActionApplier` (docs/DESIGN.md §9.3 — a provider's write side,
+      not JMAP-specific); rejects `escalate` outright (M)
+- [x] `processed_messages` idempotency check before acting (S) — wired
+      into `spork.core.pipeline.process_message()`
+- [x] `audit_log` writes for every action taken (S)
+- [x] `spork rules test <file>` dry-run against recent mail, no side effects (M)
+      — CLI wiring + rules loading is real, tested, and shipped
+      (`spork.cli.commands.rules`, `tests/cli/commands/test_rules.py`);
+      "against recent mail" itself genuinely needs a live JMAP fetch
+      (there's no local mail store spork could substitute — it's a
+      pure client to JMAP as the source of truth, docs/DESIGN.md
+      §9.3), so that step is a settled-shape `NotImplementedError`,
+      caught and reported as a clean CLI error rather than a
+      traceback, same blocker/treatment as
+      `JmapClient.fetch_new_messages()` (M1). No fixture-file
+      workaround — `FileProvider` (M1b) proves the `Provider`
+      abstraction generalizes, but it isn't and was never meant to be
+      a stand-in for "recent mail" here.
+- [x] Unit tests: condition matching, idempotency (M) — dry-run output
+      still pending the JMAP fetch above
 
 **Exit criteria:** a hand-written `rules.toml` with 3–4 real rules
 correctly files live test mail with no LLM calls; `spork rules test`
-matches what actually happens when the rule goes live.
+matches what actually happens when the rule goes live. **Not yet
+met** — blocked on the same live Fastmail account/API token as the
+rest of M1's real JMAP work. Everything through action execution +
+idempotency + audit + the CLI command's own loading/error-handling is
+real and tested; only the live fetch inside `spork rules test` remains.
 
 ## M3 — LLM escalation (Tier 2)
 

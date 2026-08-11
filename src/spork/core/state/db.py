@@ -8,14 +8,14 @@ for yet (docs/DESIGN.md §7.4).
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 
 # CREATE TABLE IF NOT EXISTS makes opening a fresh vs. an existing DB
 # file the same code path — no separate "run migrations" step exists
-# yet. Column sets match docs/DESIGN.md §7.4 exactly for the two M1
-# tables; audit_log/rule_stats/llm_usage are added by the milestones
-# that actually need them.
+# yet. Column sets match docs/DESIGN.md §7.4 exactly; rule_stats/
+# llm_usage are added by the milestones that actually need them.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS push_cursor (
     account_id TEXT PRIMARY KEY,
@@ -31,7 +31,28 @@ CREATE TABLE IF NOT EXISTS processed_messages (
     action_taken TEXT,
     processed_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    jmap_id TEXT NOT NULL,
+    event TEXT NOT NULL,
+    detail_json TEXT
+);
 """
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEntry:
+    """One row from the audit_log table — the human-readable trail
+    `spork logs` (M5) reads from, and what §11's "why did this happen
+    to this email" answer ultimately comes from."""
+
+    id: int
+    ts: str
+    jmap_id: str
+    event: str
+    detail_json: str | None
 
 
 class StateDB:
@@ -134,3 +155,36 @@ class StateDB:
             ),
         )
         self._conn.commit()
+
+    # --- audit log: the human-readable "why did this happen" trail --
+
+    def write_audit_entry(
+        self,
+        *,
+        ts: str,
+        jmap_id: str,
+        event: str,
+        detail_json: str | None = None,
+    ) -> None:
+        """Append one audit log entry. Append-only — audit entries are
+        never updated or overwritten, unlike processed_messages."""
+        self._conn.execute(
+            "INSERT INTO audit_log (ts, jmap_id, event, detail_json) VALUES (?, ?, ?, ?)",
+            (ts, jmap_id, event, detail_json),
+        )
+        self._conn.commit()
+
+    def get_audit_entries(self, *, jmap_id: str | None = None) -> list[AuditEntry]:
+        """Return audit entries oldest-first, optionally filtered to
+        one message's `jmap_id`."""
+        if jmap_id is None:
+            rows = self._conn.execute(
+                "SELECT id, ts, jmap_id, event, detail_json FROM audit_log ORDER BY id"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT id, ts, jmap_id, event, detail_json FROM audit_log "
+                "WHERE jmap_id = ? ORDER BY id",
+                (jmap_id,),
+            ).fetchall()
+        return [AuditEntry(*row) for row in rows]

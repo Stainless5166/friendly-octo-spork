@@ -60,6 +60,8 @@ key design decisions. See `ROADMAP.md` for phasing.
 | **Source** | A Trigger + ContentFetcher pair (sometimes fused, sometimes composed) that yields `NormalizedMessage` batches. |
 | **Dispatch target** | A named `TextClassifier` backend a message can be fanned out to. |
 | **Combiner** | Reduces N dispatch targets' results to the single `ClassificationResult` a decision acts on. |
+| **Provider** | The daemon's whole relationship to one remote mail backend (JMAP, IMAP, ...): both read (`build_source`) and write (`build_action_applier`); loaded dynamically by spec string, never hardcoded. |
+| **ActionApplier** | A provider's write side — applies one rule/verdict `Action` to a message on the remote backend. |
 
 ## 5. Architecture
 
@@ -142,11 +144,20 @@ src/spork/
 ├── core/
 │   ├── config.py        # load/validate config.toml
 │   ├── secrets.py        # secretspec integration
-│   ├── jmap/
-│   │   ├── client.py     # thin wrapper over jmapc: session, batching
-│   │   ├── push.py       # EventSource listener + reconnect/backoff
-│   │   └── mailboxes.py  # mailbox role resolution & caching
+│   ├── providers/
+│   │   ├── base.py         # Provider + ActionApplier protocols — the adapter targets (§9.3)
+│   │   ├── loader.py        # load_provider(): "module:Class" spec -> Provider, via importlib
+│   │   ├── jmap/
+│   │   │   ├── provider.py   # JmapProvider: the Adapter — build_source() + build_action_applier()
+│   │   │   ├── client.py     # thin wrapper over jmapc: session, batching, Email/set mutation
+│   │   │   ├── push.py       # EventSource listener Trigger
+│   │   │   ├── backoff.py    # reconnect delay scheduling
+│   │   │   └── mailboxes.py  # mailbox role resolution & caching
+│   │   └── file/
+│   │       ├── provider.py   # FileProvider: a second, fully real Adapter (no NotImplementedError)
+│   │       └── messages.py   # loads NormalizedMessages from a JSON file
 │   ├── models.py          # NormalizedMessage: transport-agnostic message shape
+│   ├── pipeline.py         # process_message(): idempotency + evaluate + act + audit (§9)
 │   ├── sources/
 │   │   ├── base.py         # Trigger, ContentFetcher, Source protocols
 │   │   ├── triggered.py     # TriggeredSource: composes any Trigger + ContentFetcher
@@ -167,7 +178,8 @@ src/spork/
 │   │   ├── prompts.py    # system prompt + verdict schema
 │   │   └── verdict.py    # structured output model + validation
 │   ├── actions/
-│   │   ├── executor.py   # apply a Verdict via JMAP Email/set
+│   │   ├── executor.py   # ActionExecutor: applies move/tag/ignore via an injected
+│   │   │                 # ActionApplier (§9.3) — provider-agnostic, rejects escalate
 │   │   └── drafts.py     # draft creation (never EmailSubmission)
 │   ├── alerts/
 │   │   ├── base.py       # Alerter protocol
@@ -487,6 +499,27 @@ a rule can read e.g. "if the local classifier scores this `urgent` and
 the sender isn't a known list, escalate" without that scoring logic
 living in the rule engine itself.
 
+**Orchestration: `spork.core.pipeline.process_message()`** (M2) ties
+the idempotency check (`StateDB.has_processed`), the rule engine, the
+action executor, and the audit log into the single call a real message
+goes through: skip if already processed; otherwise evaluate, act (or
+not), record. A message is only ever marked processed *after* its
+action successfully applies — if the executor raises, nothing is
+recorded, so a retry (the next poll/push cycle) picks the same message
+up again rather than silently losing it.
+
+**Interim policy for `escalate` before Tier 2 exists (M3).** A verdict
+that resolves to `escalate` has nowhere to actually go until M3 builds
+the Claude call — `process_message()` doesn't call the action executor
+for it (which would reject `escalate` anyway, §9.3), writes an audit
+entry noting the message is escalated-pending-Tier-2, and marks it
+processed regardless, so the daemon doesn't re-evaluate (and re-pay any
+classifier cost for) the same message every cycle while Tier 2 remains
+unbuilt. This is a deliberate, temporary trade-off — once M3 lands,
+this policy is revisited so escalated messages actually get a Tier 2
+verdict instead of being marked done. Reprocessing an already-escalated
+message once Tier 2 exists is what `spork reclassify` (M5) is for.
+
 ### 9.1 Modularity: pluggable local classifiers
 
 Tier 2 (Claude) is the expensive, capable tier; Tier 1 rules (§7.5) are
@@ -641,6 +674,99 @@ are — a `Combiner` is a small enough contract that a bespoke one
 (majority vote, "escalate if any target says urgent") is cheap to add
 later without touching `Dispatcher` or `DispatchingClassifier`.
 
+### 9.3 Modularity: pluggable mail-backend providers
+
+§9.2 settled *how a message gets acquired* (`Trigger`+`ContentFetcher`
+→ `Source`) as a transport-agnostic shape. This section settles the
+layer above it: JMAP is the only backend spork talks to today, but
+it's built as one **provider** behind a common adapter, not baked into
+the daemon, so a second backend (IMAP was the running example back in
+§9.2) is an addition, not a rewrite.
+
+```python
+class ActionApplier(Protocol):
+    """Applies one rule/verdict Action to a message on the remote backend."""
+
+    def apply(self, message: NormalizedMessage, action: Action) -> None: ...
+
+
+class Provider(Protocol):
+    """What every mail-backend integration adapts to.
+
+    A provider is the daemon's *entire* relationship to one remote
+    source of truth — reading from it (`build_source`) and writing to
+    it (`build_action_applier`) are two operations against the same
+    backend, not separate concerns that happen to share one. Mailbox
+    role resolution and anything else backend-specific is reached
+    through whatever a provider hands back, not through this Protocol
+    — but read and write both belong here.
+    """
+
+    def build_source(self) -> Source: ...
+    def build_action_applier(self) -> ActionApplier: ...
+```
+
+`spork.core.actions.executor.ActionExecutor` (M2) is the one consumer
+of `ActionApplier` — it takes whatever a provider's
+`build_action_applier()` returns, applies `move`/`tag`/`ignore`
+actions, and rejects `escalate` outright (reaching the executor with
+one means something upstream routed a Tier-2-only action to the
+terminal step by mistake). `ActionApplier` lives in
+`spork.core.providers.base` alongside `Provider`, not in
+`spork.core.actions` — it's provider-owned I/O; `ActionExecutor` is
+generic business logic that depends on it, not the reverse.
+
+- **Package layout: `spork.core.providers.<name>`.** JMAP's
+  client/push/mailbox/backoff modules move from
+  `spork.core.jmap` to `spork.core.providers.jmap` — a future IMAP
+  backend lands as a sibling package (`spork.core.providers.imap`),
+  not a special case bolted onto the JMAP one.
+- **The Adapter: `JmapProvider`.** Wraps `JmapClient` +
+  `JmapPushTrigger` (§8) into a `Source` via the existing
+  `TriggeredSource` (§9.2) for `build_source()`, and wraps
+  `JmapClient.apply_action()` (the third `NotImplementedError` stub
+  alongside `connect()`/`fetch_new_messages()`, same reason — a live
+  session is real-network work) for `build_action_applier()`.
+  `JmapProvider` doesn't reimplement fetch/push/mutate logic, it
+  composes pieces that already exist into the shape `Provider`
+  promises.
+- **Loadable at runtime: `spork.core.providers.loader`.** A provider is
+  named in config as a `"module.path:ClassName"` spec (e.g.
+  `"spork.core.providers.jmap.provider:JmapProvider"`) and resolved via
+  `importlib` at startup, the same way `tiering.local_classifier`
+  names a classifier backend (§9.1) — except here the payoff is bigger:
+  spork never imports a provider's dependencies (`jmapc`, an eventual
+  IMAP library) unless that provider is the one actually configured.
+  Swapping providers, or adding a third-party one, is a config change
+  plus an installed package — never an edit to `spork.core.providers`
+  itself.
+- **Fails loud on a bad spec.** A malformed spec, an unimportable
+  module, a missing class, or a constructor that rejects the given
+  config all raise a single `ProviderLoadError` — `spork doctor` (M5)
+  catches this the same way it catches an unknown classifier name
+  (§9.1).
+- **A second, fully real Adapter: `FileProvider`.** `JmapProvider` is
+  the only provider spork ships that talks to a live backend, and it's
+  still mid-M1 (`connect()`/`fetch_new_messages()`/`apply_action()` are
+  settled-shape `NotImplementedError` stubs) — which means until a
+  live Fastmail session exists, nothing has ever actually exercised
+  `Provider` as an *abstraction* end to end, only as one
+  half-implemented instance of it. `spork.core.providers.file.FileProvider`
+  closes that gap: it adapts a literal, explicitly-supplied JSON file
+  of messages to `Provider`, with no NotImplementedError anywhere.
+  `build_source()` replays the file's messages once via
+  `ImmediateTrigger` + `SequenceContentFetcher` (§9.2); `build_action_applier()`
+  appends every applied action to a JSON-lines log instead of mutating
+  anything, since there's no real mailbox underneath to mutate. It is
+  **not** a way to fake "recent mail" for `JmapProvider` or for `spork
+  rules test` (§13) — spork has no local mail store to substitute for
+  one, and `FileProvider` doesn't pretend to be JMAP or claim to be
+  live mail at all. Its purpose is narrower and more useful: proving,
+  with a real second implementation, that `Provider`'s read/write split
+  actually holds for a backend other than JMAP — plus a genuinely handy
+  building block for local dev/demo/CI work that wants a Provider
+  without any network dependency.
+
 ## 10. LLM integration (Claude API)
 
 - **Model:** configurable, default `claude-sonnet-5` — cheap enough for
@@ -743,6 +869,21 @@ spork reclassify <message-id> # force a message back through the pipeline
 spork doctor                  # secretspec check, JMAP auth check,
                                # systemd unit status, DB migration status
 ```
+
+`spork rules test` genuinely requires a live JMAP connection — spork is
+a pure client to JMAP as the source of truth (§9.3), with no local mail
+store to substitute (beyond, potentially, a transient cache to survive
+a mid-processing network drop, which is resilience, not an offline
+mode). There's no fixture-file fallback for "recent mail": testing
+against synthetic data isn't testing against recent mail, it's testing
+against synthetic data, and the command would say something else if
+that's what it did. Until M1's live JMAP fetch exists, `spork rules
+test` loads and validates the given `rules.toml` (real, useful on its
+own — catches a malformed file before it ever reaches the daemon) and
+then fails clearly rather than pretending to dry-run anything.
+`FileProvider` (§9.3) doesn't change this: it exists to prove the
+`Provider` abstraction itself, not to give this command a fixture mode
+it deliberately doesn't have.
 
 ## 14. systemd integration
 

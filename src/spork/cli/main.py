@@ -12,6 +12,8 @@ from __future__ import annotations
 import typer
 
 from spork import __version__
+from spork.cli.commands.doctor import doctor
+from spork.cli.commands.rules import app as rules_app
 
 app = typer.Typer(
     name="spork",
@@ -19,6 +21,8 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+app.add_typer(rules_app, name="rules")
+app.command("doctor")(doctor)
 
 
 @app.callback(invoke_without_command=True)

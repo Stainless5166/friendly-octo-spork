@@ -6,7 +6,24 @@ to cover most of M1's remainder (state DB, poll fallback, and settled-
 shape `NotImplementedError` stubs for the JMAP client/push listener),
 then updated once more: both M0 xfail gaps are now closed for real
 (`secretspec.toml` + `spork.core.secrets`, and Typer-based `--help`/
-`--version` for both entry points). **No xfail tests remain.**
+`--version` for both entry points). **No xfail tests remain.** Updated
+again for M1b: JMAP moved from `spork.core.jmap` to
+`spork.core.providers.jmap`, behind a new `Provider` adapter Protocol
+and a dynamic `importlib`-based loader. Updated once more for most of
+M2: the `rules.toml` loader, `audit_log`, `Provider`'s write side
+(`ActionApplier`), `ActionExecutor`, and the `process_message()`
+orchestration tying idempotency + evaluation + action + audit
+together. Updated once more for `FileProvider` (M1b): a second, fully
+real `Provider` Adapter with no `NotImplementedError` anywhere, proving
+the abstraction itself generalizes beyond `JmapProvider`. Updated again
+for `spork rules test` (M2's last item): real CLI wiring + rules
+loading + clean error handling, with the live-JMAP-fetch step a
+settled-shape `NotImplementedError` reported cleanly rather than left
+to traceback. **M2 is now 7/7.** Updated once more for `spork doctor`
+(M1's last unstubbed item): real CLI wiring, connectivity check a
+settled-shape `NotImplementedError`. **Every item in M0–M2 is now
+either fully implemented or a settled-shape stub with a passing test —
+none are unspecified.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -48,16 +65,16 @@ Most of M1's remainder is now covered too. Three pieces turned out to
 be pure, network-free logic and were built and tested for real:
 `spork.core.state` (the SQLite state store), and
 `spork.core.sources.timer`/`fallback` (poll-based fallback, composed
-from the `Trigger`/`Source` protocols M1a already established). Two
-pieces — `spork.core.jmap.client.JmapClient` and
-`spork.core.jmap.push.JmapPushTrigger` — genuinely need a live
-Fastmail session to implement for real; rather than leaving them
-unspecified, their shape is settled and each method raises a specific
-`NotImplementedError`, verified by an ordinary *passing* test (not
-`xfail` — the raise is the correct, specified behavior right now, not
-a stand-in for one). `spork doctor` is the one M1 item still with no
-test at all, deferred to M5 since it needs a CLI framework decision
-that hasn't been made. See the coverage tables below.
+from the `Trigger`/`Source` protocols M1a already established). Three
+pieces — `spork.core.providers.jmap.client.JmapClient`,
+`spork.core.providers.jmap.push.JmapPushTrigger`, and now `spork
+doctor`'s connectivity check — genuinely need a live Fastmail session
+to implement for real; rather than leaving them unspecified, their
+shape is settled and each raises a specific `NotImplementedError`,
+verified by an ordinary *passing* test (not `xfail` — the raise is the
+correct, specified behavior right now, not a stand-in for one). Every
+M1 item now has at least a settled shape and a test. See the coverage
+tables below.
 
 ---
 
@@ -89,7 +106,7 @@ verified).
 | EventSource push listener + backoff | 🟡 stub (listener) / ✅ (backoff math) | ✅ (that it raises) — tests 51, 52 / ✅ (math) — tests 16–19 |
 | Poll-based fallback | ✅ (real, network-free) | ✅ — tests 53–61 (9 tests) |
 | State DB (`push_cursor`, `processed_messages`) | ✅ | ✅ — tests 62–71 (10 tests) |
-| `spork doctor` | ❌ — deferred to M5 (real subcommands haven't landed yet) | — |
+| `spork doctor` | 🟡 stub — CLI wiring real, connectivity check raises `NotImplementedError` | ✅ (that it raises cleanly) — tests 147–149 |
 
 Three of these are genuinely done: mailbox resolution (unchanged),
 poll-based fallback (`IntervalTimer` + `FallbackSource`, pure control
@@ -97,18 +114,19 @@ flow, no network needed to build or test), and the state DB (SQLite,
 same story). The push-listener's backoff *scheduling* is real and
 tested too, separately from the listener itself.
 
-The other three — client session bootstrap, batched fetch, and the
-actual push listener — all genuinely require a live Fastmail session
-to implement for real, which this environment can't exercise
-honestly. Rather than leaving them untested, their shape is settled
-(constructor args, method names/signatures) and each raises a
-specific `NotImplementedError`, verified by a normal *passing* test
-(not `xfail` — the raise is the correct, specified behavior at this
-stage, not a stand-in for a real assertion). `spork doctor` is the one
-item left with no test of any kind: the CLI framework is decided now
-(Typer, M0), but the command itself is real subcommand work that
-belongs to M5, and would call into the still-unimplemented
-connectivity check regardless.
+The other four — client session bootstrap, batched fetch, the actual
+push listener, and now `spork doctor`'s connectivity check — all
+genuinely require a live Fastmail session to implement for real, which
+this environment can't exercise honestly. Rather than leaving them
+untested, their shape is settled (constructor args, method
+names/signatures, CLI wiring) and each raises a specific
+`NotImplementedError`, verified by a normal *passing* test (not
+`xfail` — the raise is the correct, specified behavior at this stage,
+not a stand-in for a real assertion). `spork doctor`'s CLI command
+itself is real (registered, `--help` works, appears in `spork --help`)
+— only the connectivity check underneath is stubbed, same relationship
+`spork rules test` has to its own live-fetch gap. **Every M1 item now
+has at least a settled shape and a test — none are unspecified.**
 
 ### M1a — Source / dispatch pipeline
 
@@ -127,31 +145,60 @@ name.** This is the one milestone where "implemented" and "tested"
 are both complete — 21 of the 45 suite tests exist for this milestone
 alone.
 
+### M1b — Provider abstraction
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `spork.core.jmap` → `spork.core.providers.jmap` move | ✅ | ✅ — same 26 jmap tests, unchanged assertions, just new import paths |
+| `Provider` protocol | ✅ | ✅ — exercised via `JmapProvider` and `FileProvider` (protocols aren't directly testable, only structurally) |
+| `JmapProvider` (the Adapter) | ✅ | ✅ — tests 81–83 |
+| `load_provider()` (the dynamic loader) | ✅ | ✅ — tests 84–89 |
+| `FileProvider` (a second, fully real Adapter) | ✅ | ✅ — tests 122–138 (17 tests), 100% line coverage |
+
+**5 of 5 items done, all tested, 100% coverage on `spork.core.providers`.**
+Two things worth calling out. First: `JmapProvider`'s tests only prove
+*composition* is correct (it assembles `JmapClient` + `JmapPushTrigger`
+into a working `Source` shape) — they can't prove real fetch/push
+behavior, because there isn't any yet (M1). That's expected, not a gap:
+the adapter and loader machinery is independently correct regardless
+of whether the backend underneath is implemented. Second: `FileProvider`
+exists precisely to close the resulting hole — until a live JMAP
+session exists, `JmapProvider` can never prove `Provider`'s read/write
+split *actually works end to end*, only that it's wired up correctly.
+`FileProvider` is a second, unrelated, fully working `Provider` with no
+`NotImplementedError` anywhere, so the abstraction itself is proven
+sound independent of JMAP ever going live. It is explicitly not a
+"recent mail" fixture mechanism for `spork rules test` (docs/DESIGN.md
+§9.3, §13) — that command still has no fixture-file mode and won't
+until M1's real JMAP fetch exists.
+
 ### M2 — Rule engine (Tier 1) + action executor
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
-| Rule schema + `rules.toml` loader/validator | ✅ schema / ❌ loader | Schema: exercised implicitly via every engine test (27–35), no dedicated `test_schema.py` / Loader: — |
+| Rule schema + `rules.toml` loader/validator | ✅ | ✅ — schema: engine tests (27–35) + `extra="forbid"` edge cases (96, 97) / loader: tests 90–97 (8 tests) |
 | Tier 1 evaluator | ✅ | ✅ — tests 27–35 (9 tests) |
-| Action executor (`Email/set`) | ❌ | — |
-| `processed_messages` idempotency | ❌ | — |
-| `audit_log` writes | ❌ | — |
-| `spork rules test` dry-run | ❌ | — |
-| Unit tests: condition matching / dry-run / idempotency | ✅ (condition matching only) | — (dry-run, idempotency: nothing to test yet) |
+| Action executor | ✅ (`ActionApplier`-agnostic, real backend still `NotImplementedError`-stubbed per M1) | ✅ — tests 107–113 (7 tests) |
+| `processed_messages` idempotency | ✅ — wired into `process_message()` | ✅ — tests 114–121 (8 tests) |
+| `audit_log` writes | ✅ | ✅ — tests 98–103 (6 tests) |
+| `spork rules test` dry-run | ✅ (loading+errors real; live-fetch step `NotImplementedError`, M1) | ✅ — tests 139–146 (8 tests) |
+| Unit tests: condition matching / idempotency | ✅ | ✅ |
 
-The evaluator is thoroughly tested, including its edge cases (empty
-rule list, all-default condition, missing classifier, memoization).
-The schema (`Condition`/`Action`/`Rule`) has no dedicated test file,
-but every field it defines gets exercised through the engine tests
-that construct rules with it — including defaults (`enabled=True`,
-`description=""`) working correctly, since several tests rely on them
-implicitly rather than setting them explicitly. That's adequate, not
-ideal: a `test_schema.py` asserting validation behavior directly (e.g.
-an invalid `Action.type` value being rejected) doesn't exist.
-
-2 of 7 items done; both are well tested, including edge cases. The
-other 5 — loader, action executor, idempotency, audit log, dry-run CLI
-— have zero implementation and therefore zero tests.
+**7 of 7 items done.** The schema fix is worth calling out: an
+edge-case test (96) caught that pydantic's default `extra="ignore"`
+meant a typo'd field (e.g. `"enalbed"` instead of `"enabled"`) was
+silently dropped, falling back to its default instead of failing to
+load — `extra="forbid"` fixed it, verified red-then-green same as
+everything else. `ActionApplier` itself is documented under M1b (it's
+part of `Provider`'s contract, docs/DESIGN.md §9.3) but its *executor*
+(the provider-agnostic consumer) is M2 work, tested here. `spork rules
+test` is "done" in the same sense `JmapProvider` is done under M1b:
+everything buildable without a live JMAP session is real and tested
+(CLI wiring, rules loading, clean error handling for both bad and
+missing files), and the one piece that isn't — the actual fetch of
+recent mail — is a settled-shape `NotImplementedError`, caught and
+reported as a clean CLI error (test 140) rather than left to produce a
+raw traceback.
 
 ### M3–M7
 
@@ -159,7 +206,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (80 tests, all passing — 0 xfail)
+## Full test inventory (121 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -253,7 +300,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
     no-op, not an error; "is this useful" is pushed to the Combiner
     layer.
 
-### tests/core/jmap
+### tests/core/providers/jmap
 
 16. **`test_backoff.py::test_next_delay_returns_schedule_value_for_attempt_in_range`**
     Schedule `[2,5,15,60,300]`; `next_delay(attempt=0)` and
@@ -475,7 +522,7 @@ see each section heading). These pick back up at 72.
     exits cleanly rather than falling through to the daemon loop's
     `NotImplementedError`.
 
-### tests/core/jmap — NotImplementedError-catching (M1)
+### tests/core/providers/jmap — NotImplementedError-catching (M1)
 
 These pass normally — raising `NotImplementedError` is the correct,
 specified behavior at this stage (see the M1 coverage table above),
@@ -605,3 +652,325 @@ not a placeholder assertion.
     Calls `close()`, then calls `get_cursor` on the same instance.
     Asserts an exception is raised (sqlite3's `ProgrammingError` on a
     closed connection) rather than the call silently no-op-ing.
+
+### tests/core/providers (M1b)
+
+81. **`jmap/test_provider.py::test_build_source_returns_a_triggered_source`**
+    Constructs `JmapProvider(host=..., api_token=...)` and calls
+    `build_source()`. Asserts the result is a `TriggeredSource` —
+    the same composition shape any `Source` consumer expects.
+
+82. **`jmap/test_provider.py::test_source_poll_raises_not_implemented`**
+    Calls `.poll()` on the built `Source`. Asserts `NotImplementedError`,
+    propagated from `JmapPushTrigger.wait()` — proving `JmapProvider`
+    wires the real (if still-stubbed) pieces together.
+
+83. **`jmap/test_provider.py::test_content_fetcher_delegates_to_the_client_directly`**
+    Constructs `_JmapContentFetcher(client)` directly (not via
+    `build_source()`, where `wait()` would raise first and mask this)
+    and calls `.fetch()`. Asserts `NotImplementedError`, propagated from
+    `JmapClient.fetch_new_messages()` — proving the fetcher half is a
+    real delegation, not a second placeholder.
+
+84. **`test_loader.py::test_load_provider_imports_and_instantiates_by_spec`**
+    Calls `load_provider(f"{__name__}:_FixtureProvider")` (a fixture
+    class defined in the test module, self-referenced via `__name__`).
+    Asserts the result is an instance of that class with its default
+    `label`.
+
+85. **`test_loader.py::test_load_provider_passes_through_constructor_kwargs`**
+    Same, but with `label="custom"` passed to `load_provider()`.
+    Asserts the constructed instance's `label` reflects it — kwargs
+    reach the provider unmodified.
+
+86. **`test_loader.py::test_load_provider_raises_for_malformed_spec`**
+    Calls `load_provider("no-colon-in-this-spec")`. Asserts
+    `ProviderLoadError` — a spec missing the `:` separator is rejected
+    before any import is attempted.
+
+87. **`test_loader_edge_cases.py::test_load_provider_raises_for_unimportable_module`**
+    Calls `load_provider("this.module.does.not.exist:Whatever")`.
+    Asserts `ProviderLoadError`, not a raw `ImportError`.
+
+88. **`test_loader_edge_cases.py::test_load_provider_raises_for_missing_class_attribute`**
+    Calls `load_provider(f"{__name__}:ThisClassDoesNotExist")` against a
+    real, importable module that just doesn't define that class.
+    Asserts `ProviderLoadError`, not a raw `AttributeError`.
+
+89. **`test_loader_edge_cases.py::test_load_provider_raises_when_construction_fails`**
+    Calls `load_provider(f"{__name__}:_FixtureProvider", unexpected_kwarg=True)`
+    — a kwarg the fixture class's `__init__` doesn't accept. Asserts
+    `ProviderLoadError`, not a raw `TypeError`.
+
+### tests/core/rules (loader, M2)
+
+90. **`test_loader.py::test_load_rules_parses_valid_rules_toml`**
+    A well-formed rules.toml with two `[[rule]]` entries. Asserts the
+    parsed `Rule` objects match in id order, and that nested
+    `when`/`action` fields came through correctly.
+
+91. **`test_loader.py::test_load_rules_returns_empty_list_for_no_rules`**
+    An empty file. Asserts `load_rules()` returns `[]`, not an error.
+
+92. **`test_loader.py::test_load_rules_raises_for_malformed_toml`**
+    Broken TOML syntax. Asserts `RulesLoadError`, not a raw
+    `tomllib.TOMLDecodeError`.
+
+93. **`test_loader.py::test_load_rules_raises_for_invalid_rule_fields`**
+    A rule with `action.type = "delete"` (not in the closed set).
+    Asserts `RulesLoadError`, not a raw pydantic `ValidationError`.
+
+94. **`test_loader.py::test_load_rules_raises_for_duplicate_ids`**
+    Two `[[rule]]` entries sharing `id = "dup"`. Asserts
+    `RulesLoadError`.
+
+95. **`test_loader.py::test_load_rules_raises_for_missing_file`**
+    A path that doesn't exist. Asserts `RulesLoadError`, not a raw
+    `FileNotFoundError`.
+
+96. **`test_loader_edge_cases.py::test_load_rules_raises_for_unknown_field_in_a_rule`**
+    A rule with `enalbed = false` (typo for `enabled`). Asserts
+    `RulesLoadError` — confirmed red against the pre-fix schema before
+    `extra="forbid"` was added, proving the fix actually closes the
+    silent-typo gap it targets.
+
+97. **`test_loader_edge_cases.py::test_load_rules_raises_for_unknown_field_in_a_condition`**
+    Same, for a typo'd `when` field (`form_domain_in` instead of
+    `from_domain_in`). Same reasoning.
+
+### tests/core/state (audit_log, M2)
+
+98. **`test_audit_log.py::test_write_audit_entry_then_get_audit_entries_returns_it`**
+    Writes one entry, reads it back. Asserts all fields round-trip.
+
+99. **`test_audit_log.py::test_get_audit_entries_filters_by_jmap_id`**
+    Two entries for different `jmap_id`s. Asserts `jmap_id=` filtering
+    returns only the matching one.
+
+100. **`test_audit_log.py::test_get_audit_entries_returns_oldest_first`**
+    Two entries for the same message, written in order. Asserts they
+    come back in write order.
+
+101. **`test_audit_log.py::test_get_audit_entries_returns_empty_list_when_none_written`**
+    A fresh DB. Asserts `get_audit_entries()` returns `[]`.
+
+102. **`test_audit_log_edge_cases.py::test_get_audit_entries_for_unknown_jmap_id_returns_empty`**
+    Filters to a `jmap_id` with no entries (while others exist).
+    Asserts `[]`, not an error.
+
+103. **`test_audit_log_edge_cases.py::test_audit_log_persists_across_reopening_the_db_file`**
+    Writes an entry, closes the DB, reopens the same file with a fresh
+    `StateDB` instance. Asserts the entry is still there.
+
+### tests/core/providers (ActionApplier, M2)
+
+104. **`jmap/test_client.py::test_apply_action_raises_not_implemented`**
+    Calls `client.apply_action(message, Action(type="move", ...))`.
+    Asserts `NotImplementedError` — same live-session blocker as
+    `connect()`/`fetch_new_messages()`.
+
+105. **`jmap/test_provider.py::test_build_action_applier_returns_something_that_can_apply`**
+    Calls `provider.build_action_applier()`, then `.apply(...)` on the
+    result. Asserts `NotImplementedError` — the write-side counterpart
+    to `test_source_poll_raises_not_implemented`.
+
+106. **`jmap/test_provider.py::test_action_applier_delegates_to_the_client_directly`**
+    Constructs `_JmapActionApplier(client)` directly and calls
+    `.apply(...)`. Asserts `NotImplementedError`, propagated from
+    `JmapClient.apply_action()` — proving it's a real delegation, not
+    a second placeholder (mirrors the content-fetcher equivalent, 83).
+
+### tests/core/actions (ActionExecutor, M2)
+
+107. **`test_executor.py::test_executor_applies_move_action_via_the_applier`**
+    A move action, executed. Asserts the stub applier's `.apply()` was
+    called with the exact message/action.
+
+108. **`test_executor.py::test_executor_applies_tag_action_via_the_applier`**
+    Same, for `tag`.
+
+109. **`test_executor.py::test_executor_ignore_action_is_a_noop_applier_never_called`**
+    An `ignore` action. Asserts the applier's `.apply()` was never
+    called — nothing to apply.
+
+110. **`test_executor.py::test_executor_rejects_escalate_action`**
+    An `escalate` action. Asserts `ActionExecutionError`, and that the
+    applier was never called.
+
+111. **`test_executor.py::test_executor_rejects_move_action_without_a_mailbox`**
+    A `move` action with `mailbox=None`. Asserts `ActionExecutionError`
+    before the applier is ever reached.
+
+112. **`test_executor_edge_cases.py::test_executor_rejects_tag_action_without_a_mailbox`**
+    Same as 111, for `tag`.
+
+113. **`test_executor_edge_cases.py::test_executor_propagates_applier_failure`**
+    A stub applier that always raises. Asserts the exception
+    propagates out of `execute()` rather than being swallowed.
+
+### tests/core (pipeline, M2)
+
+114. **`test_pipeline.py::test_process_message_skips_already_processed_messages`**
+    A message already `mark_processed()`-ed. Asserts `process_message()`
+    returns `None` and never touches the applier.
+
+115. **`test_pipeline.py::test_process_message_applies_matched_rule_action_and_marks_processed`**
+    A message matching a `move` rule. Asserts the applier was called,
+    `has_processed()` becomes `True`, and the returned verdict matches.
+
+116. **`test_pipeline.py::test_process_message_writes_an_audit_entry_for_applied_actions`**
+    After processing, asserts exactly one audit entry exists with the
+    injected clock's timestamp.
+
+117. **`test_pipeline.py::test_process_message_handles_escalate_without_calling_executor`**
+    A verdict resolving to `escalate`. Asserts the applier was never
+    called, but the message is still marked processed (the interim
+    pending-Tier-2 policy, docs/DESIGN.md §9).
+
+118. **`test_pipeline.py::test_process_message_returns_the_verdict`**
+    Asserts the returned `RuleVerdict` matches what was actually acted
+    on.
+
+119. **`test_pipeline_edge_cases.py::test_process_message_propagates_executor_failure_and_does_not_mark_processed`**
+    A failing applier. Asserts the exception propagates AND that
+    neither `has_processed()` nor the audit log reflect the message —
+    the retry-on-next-cycle guarantee the ordering exists for.
+
+120. **`test_pipeline_edge_cases.py::test_mark_processed_uses_the_injected_clock`**
+    Checks `processed_messages.processed_at` directly (via a fresh
+    connection) after processing with a fixed clock. Asserts it
+    matches — not just the audit entry's timestamp, per 116.
+
+121. **`test_pipeline_edge_cases.py::test_default_clock_produces_a_real_parseable_timestamp`**
+    Calls `process_message()` without `now=` at all (the real default
+    clock). Asserts the recorded timestamp is genuinely parseable —
+    proving the default itself works, not just that a fake one can
+    replace it.
+
+### tests/core/providers/file (FileProvider, M1b)
+
+122. **`test_messages.py::test_load_messages_parses_a_valid_json_file`**
+    A well-formed messages.json with two entries. Asserts
+    `NormalizedMessage`s come back in file order with the right fields,
+    including a non-default `headers`/`mailbox_ids`.
+
+123. **`test_messages.py::test_load_messages_returns_empty_list_for_empty_array`**
+    A file containing `[]`. Asserts zero messages, not an error.
+
+124. **`test_messages.py::test_load_messages_raises_for_malformed_json`**
+    Broken JSON syntax. Asserts `MessagesLoadError`, not a raw
+    `json.JSONDecodeError`.
+
+125. **`test_messages.py::test_load_messages_raises_for_non_array_json`**
+    A file whose top level is a JSON object, not an array. Asserts
+    `MessagesLoadError`.
+
+126. **`test_messages.py::test_load_messages_raises_for_missing_required_field`**
+    An entry missing `thread_id` etc. Asserts `MessagesLoadError`
+    naming the field, not a raw `KeyError`.
+
+127. **`test_messages.py::test_load_messages_raises_for_missing_file`**
+    A nonexistent path. Asserts `MessagesLoadError`, not a raw
+    `FileNotFoundError`.
+
+128. **`test_provider.py::test_build_source_returns_a_triggered_source`**
+    Asserts `FileProvider.build_source()` returns a `TriggeredSource` —
+    the same generic composition any `Source` consumer expects
+    (docs/DESIGN.md §9.2), not a bespoke shape.
+
+129. **`test_provider.py::test_source_poll_replays_every_message_then_settles_empty`**
+    Two messages in the file. Asserts the first `poll()` returns both,
+    in order, and the second `poll()` returns `[]` — the same
+    steady-state a live, caught-up source settles into.
+
+130. **`test_provider.py::test_build_action_applier_returns_something_that_can_apply`**
+    Asserts calling `.apply()` on what `build_action_applier()` returns
+    actually creates the actions log file — the write half of the
+    `Provider` contract, real, not a placeholder.
+
+131. **`test_provider.py::test_action_applier_appends_one_jsonl_entry_per_apply_call`**
+    Two `.apply()` calls. Asserts two JSON-lines entries land in order,
+    each with the right `message_id`/`action_type`/`mailbox`.
+
+132. **`test_messages_edge_cases.py::test_load_messages_raises_when_an_entry_is_not_an_object`**
+    An array containing a bare string instead of an object. Asserts
+    `MessagesLoadError` naming the index.
+
+133. **`test_messages_edge_cases.py::test_load_messages_defaults_headers_and_mailbox_ids_when_omitted`**
+    An entry with no `headers`/`mailbox_ids` keys at all. Asserts
+    `NormalizedMessage`'s own empty defaults, not a load error.
+
+134. **`test_messages_edge_cases.py::test_load_messages_ignores_unknown_fields_on_an_entry`**
+    An entry with an extra field `NormalizedMessage` doesn't have.
+    Asserts it loads anyway — deliberately unlike `rules.schema`'s
+    `extra="forbid"`, since a message fixture isn't hand-edited config.
+
+135. **`test_messages_edge_cases.py::test_load_messages_accepts_a_str_path`**
+    Calls `load_messages()` with a `str` instead of a `Path`. Asserts
+    it works the same.
+
+136. **`test_provider_edge_cases.py::test_build_source_with_an_empty_messages_file_polls_to_nothing`**
+    An empty messages.json. Asserts `poll()` returns `[]`, not an
+    error.
+
+137. **`test_provider_edge_cases.py::test_action_applier_appends_across_separate_build_calls`**
+    Two separately-obtained appliers pointed at the same log path.
+    Asserts both entries land — `build_action_applier()` doesn't own
+    exclusive state a second call would reset.
+
+138. **`test_provider_edge_cases.py::test_file_provider_accepts_str_paths`**
+    Constructs `FileProvider` with `str` paths for both arguments.
+    Asserts both `build_source()` and `build_action_applier()` still
+    work.
+
+### tests/cli/commands (spork rules test, M2)
+
+139. **`test_rules.py::test_rules_test_help_works`**
+    `spork rules test --help` via subprocess. Asserts exit 0 and usage
+    text.
+
+140. **`test_rules.py::test_rules_test_with_a_valid_file_loads_then_fails_on_the_live_jmap_gap`**
+    A well-formed rules.toml. Asserts exit 1, `"Loaded 1 rule"` really
+    printed (proving loading isn't stubbed), and no raw traceback in
+    stderr for the live-JMAP `NotImplementedError`.
+
+141. **`test_rules.py::test_rules_test_with_an_invalid_file_reports_a_clean_error`**
+    Malformed TOML. Asserts exit 1, `"Error"` in stderr, no
+    `"Traceback"` — `RulesLoadError` caught and reported cleanly, not
+    left to propagate.
+
+142. **`test_rules.py::test_rules_test_with_a_missing_file_reports_a_clean_error`**
+    A nonexistent path. Same clean-error assertions as 141.
+
+143. **`test_rules.py::test_rules_group_appears_in_top_level_help`**
+    `spork --help`. Asserts `"rules"` appears — confirms
+    `app.add_typer()` wiring, not just that the module imports.
+
+144. **`test_rules_edge_cases.py::test_rules_test_with_a_file_containing_no_rules_still_loads_then_hits_the_gap`**
+    An empty rules.toml (zero `[[rule]]` entries — valid, per
+    `load_rules()`). Asserts `"Loaded 0 rule(s)"` and still reaches the
+    live-JMAP gap, same as a file with rules.
+
+145. **`test_rules_edge_cases.py::test_rules_test_with_no_file_argument_is_a_usage_error`**
+    Omits the required `rules_file` argument entirely. Asserts exit 2
+    (Typer's own usage error) and no traceback — proves this path never
+    reaches `load_rules()` at all.
+
+146. **`test_rules_edge_cases.py::test_rules_group_help_lists_the_test_command`**
+    `spork rules --help`. Asserts `"test"` is listed.
+
+### tests/cli/commands (spork doctor, M1)
+
+147. **`test_doctor.py::test_doctor_help_works`**
+    `spork doctor --help` via subprocess. Asserts exit 0 and usage
+    text.
+
+148. **`test_doctor.py::test_doctor_reports_a_clean_error_not_a_traceback`**
+    `spork doctor` with no live JMAP session available. Asserts exit
+    1, `"Error"` in stderr, no `"Traceback"` — the connectivity-check
+    `NotImplementedError` caught and reported cleanly.
+
+149. **`test_doctor.py::test_doctor_appears_in_top_level_help`**
+    `spork --help`. Asserts `"doctor"` is listed — confirms
+    `app.command("doctor")(doctor)` wiring, not just that the module
+    imports.

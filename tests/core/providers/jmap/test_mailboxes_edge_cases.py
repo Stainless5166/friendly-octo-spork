@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from spork.core.jmap.mailboxes import AmbiguousMailboxRoleError, MailboxInfo, MailboxResolver
+from spork.core.providers.jmap.mailboxes import (
+    AmbiguousMailboxRoleError,
+    MailboxInfo,
+    MailboxResolver,
+)
 
 
 def test_a_failed_fetch_is_not_cached() -> None:
