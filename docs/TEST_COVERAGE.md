@@ -6,7 +6,10 @@ to cover most of M1's remainder (state DB, poll fallback, and settled-
 shape `NotImplementedError` stubs for the JMAP client/push listener),
 then updated once more: both M0 xfail gaps are now closed for real
 (`secretspec.toml` + `spork.core.secrets`, and Typer-based `--help`/
-`--version` for both entry points). **No xfail tests remain.**
+`--version` for both entry points). **No xfail tests remain.** Updated
+again for M1b: JMAP moved from `spork.core.jmap` to
+`spork.core.providers.jmap`, behind a new `Provider` adapter Protocol
+and a dynamic `importlib`-based loader.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -127,6 +130,23 @@ name.** This is the one milestone where "implemented" and "tested"
 are both complete — 21 of the 45 suite tests exist for this milestone
 alone.
 
+### M1b — Provider abstraction
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `spork.core.jmap` → `spork.core.providers.jmap` move | ✅ | ✅ — same 26 jmap tests, unchanged assertions, just new import paths |
+| `Provider` protocol | ✅ | ✅ — exercised via `JmapProvider` (protocols aren't directly testable, only structurally) |
+| `JmapProvider` (the Adapter) | ✅ | ✅ — tests 81–83 |
+| `load_provider()` (the dynamic loader) | ✅ | ✅ — tests 84–89 |
+
+**4 of 4 items done, all tested, 100% coverage on `spork.core.providers`.**
+The one thing worth calling out: `JmapProvider`'s tests only prove
+*composition* is correct (it assembles `JmapClient` + `JmapPushTrigger`
+into a working `Source` shape) — they can't prove real fetch/push
+behavior, because there isn't any yet (M1). That's expected, not a gap:
+the adapter and loader machinery is independently correct regardless
+of whether the backend underneath is implemented.
+
 ### M2 — Rule engine (Tier 1) + action executor
 
 | Checklist item | Implemented | Tested |
@@ -159,7 +179,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (80 tests, all passing — 0 xfail)
+## Full test inventory (89 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -605,3 +625,52 @@ not a placeholder assertion.
     Calls `close()`, then calls `get_cursor` on the same instance.
     Asserts an exception is raised (sqlite3's `ProgrammingError` on a
     closed connection) rather than the call silently no-op-ing.
+
+### tests/core/providers (M1b)
+
+81. **`jmap/test_provider.py::test_build_source_returns_a_triggered_source`**
+    Constructs `JmapProvider(host=..., api_token=...)` and calls
+    `build_source()`. Asserts the result is a `TriggeredSource` —
+    the same composition shape any `Source` consumer expects.
+
+82. **`jmap/test_provider.py::test_source_poll_raises_not_implemented`**
+    Calls `.poll()` on the built `Source`. Asserts `NotImplementedError`,
+    propagated from `JmapPushTrigger.wait()` — proving `JmapProvider`
+    wires the real (if still-stubbed) pieces together.
+
+83. **`jmap/test_provider.py::test_content_fetcher_delegates_to_the_client_directly`**
+    Constructs `_JmapContentFetcher(client)` directly (not via
+    `build_source()`, where `wait()` would raise first and mask this)
+    and calls `.fetch()`. Asserts `NotImplementedError`, propagated from
+    `JmapClient.fetch_new_messages()` — proving the fetcher half is a
+    real delegation, not a second placeholder.
+
+84. **`test_loader.py::test_load_provider_imports_and_instantiates_by_spec`**
+    Calls `load_provider(f"{__name__}:_FixtureProvider")` (a fixture
+    class defined in the test module, self-referenced via `__name__`).
+    Asserts the result is an instance of that class with its default
+    `label`.
+
+85. **`test_loader.py::test_load_provider_passes_through_constructor_kwargs`**
+    Same, but with `label="custom"` passed to `load_provider()`.
+    Asserts the constructed instance's `label` reflects it — kwargs
+    reach the provider unmodified.
+
+86. **`test_loader.py::test_load_provider_raises_for_malformed_spec`**
+    Calls `load_provider("no-colon-in-this-spec")`. Asserts
+    `ProviderLoadError` — a spec missing the `:` separator is rejected
+    before any import is attempted.
+
+87. **`test_loader_edge_cases.py::test_load_provider_raises_for_unimportable_module`**
+    Calls `load_provider("this.module.does.not.exist:Whatever")`.
+    Asserts `ProviderLoadError`, not a raw `ImportError`.
+
+88. **`test_loader_edge_cases.py::test_load_provider_raises_for_missing_class_attribute`**
+    Calls `load_provider(f"{__name__}:ThisClassDoesNotExist")` against a
+    real, importable module that just doesn't define that class.
+    Asserts `ProviderLoadError`, not a raw `AttributeError`.
+
+89. **`test_loader_edge_cases.py::test_load_provider_raises_when_construction_fails`**
+    Calls `load_provider(f"{__name__}:_FixtureProvider", unexpected_kwarg=True)`
+    — a kwarg the fixture class's `__init__` doesn't accept. Asserts
+    `ProviderLoadError`, not a raw `TypeError`.
