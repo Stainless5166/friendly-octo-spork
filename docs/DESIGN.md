@@ -55,6 +55,11 @@ key design decisions. See `ROADMAP.md` for phasing.
 | **Rule** | A user-authored condition → action mapping, evaluated at Tier 1. |
 | **Action** | A mailbox mutation: move, tag (add/remove mailbox), draft, notify, no-op. |
 | **Verdict** | The structured output of a Tier 1 or Tier 2 classification pass. |
+| **Trigger** | Decides *when* to fetch — a push connection, a timer, an immediate no-op for tests. |
+| **ContentFetcher** | Decides *what* to fetch, given a trigger fired — knows nothing about timing. |
+| **Source** | A Trigger + ContentFetcher pair (sometimes fused, sometimes composed) that yields `NormalizedMessage` batches. |
+| **Dispatch target** | A named `TextClassifier` backend a message can be fanned out to. |
+| **Combiner** | Reduces N dispatch targets' results to the single `ClassificationResult` a decision acts on. |
 
 ## 5. Architecture
 
@@ -142,6 +147,10 @@ src/spork/
 │   │   ├── push.py       # EventSource listener + reconnect/backoff
 │   │   └── mailboxes.py  # mailbox role resolution & caching
 │   ├── models.py          # NormalizedMessage: transport-agnostic message shape
+│   ├── sources/
+│   │   ├── base.py         # Trigger, ContentFetcher, Source protocols
+│   │   ├── triggered.py     # TriggeredSource: composes any Trigger + ContentFetcher
+│   │   └── replay.py        # ImmediateTrigger + SequenceContentFetcher (tests/demos)
 │   ├── rules/
 │   │   ├── schema.py     # rule dataclasses / pydantic models
 │   │   ├── engine.py     # Tier 1 evaluation
@@ -150,6 +159,9 @@ src/spork/
 │   │   ├── base.py        # TextClassifier protocol + ClassificationResult
 │   │   ├── registry.py     # name -> TextClassifier factory lookup
 │   │   └── keyword.py      # default zero-dependency heuristic backend
+│   ├── dispatch/
+│   │   ├── dispatcher.py    # fan a message out to N named TextClassifier targets
+│   │   └── combine.py       # Combiner protocol + DispatchingClassifier
 │   ├── llm/
 │   │   ├── client.py     # Claude API wrapper (Messages API)
 │   │   ├── prompts.py    # system prompt + verdict schema
@@ -504,6 +516,106 @@ class TextClassifier(Protocol):
   quietly stop firing because a backend failed to load.
 - This tier is optional: rules that don't reference classifier output
   never invoke it, so it costs nothing for a config that doesn't use it.
+
+### 9.2 Modularity: message sources and multi-target dispatch
+
+§9.1 makes *which classifier* swappable. This section makes *where
+messages come from* and *how many classifiers see each one* swappable
+too, using the same "protocol + small composable pieces" approach
+rather than one bespoke pipeline hardcoded to JMAP.
+
+**Sources: decoupling *when* from *what*.** Every way spork receives
+mail decomposes into two independent concerns:
+
+```python
+class Trigger(Protocol):
+    """Decides *when* to fetch — knows nothing about content."""
+    def wait(self) -> None:
+        """Block until it's time to fetch again."""
+        ...
+
+class ContentFetcher(Protocol):
+    """Decides *what* to fetch, once triggered — knows nothing about timing."""
+    def fetch(self) -> Sequence[NormalizedMessage]: ...
+
+class Source(Protocol):
+    """What the pipeline actually pulls from."""
+    def poll(self) -> Sequence[NormalizedMessage]: ...
+```
+
+A generic `TriggeredSource(trigger, fetcher)` composes any `Trigger` +
+any `ContentFetcher` into a `Source` by calling `trigger.wait()` then
+`fetcher.fetch()`. Three concrete shapes this takes:
+
+| Trigger | ContentFetcher | Notes |
+|---|---|---|
+| JMAP `EventSource` push | `Email/query`+`Email/get` batch | In practice implemented as one `Source`, not composed — the push payload's state token *is* the fetch call's argument, so splitting them buys nothing here. |
+| Interval timer | IMAP `FETCH` | A real case for composing two independently-testable, independently-swappable pieces via `TriggeredSource`. |
+| `ImmediateTrigger` (no-op wait) | `SequenceContentFetcher` (pre-loaded list) | The "replay a test/demo file through a for-loop" debug source — gets built for free from two small, otherwise-reusable pieces, no bespoke class needed. |
+
+Only the third row exists yet (docs/ROADMAP.md); JMAP push and
+IMAP-polling `Source`/`Trigger`/`ContentFetcher` implementations are
+real-I/O work that lands with M1's remainder. The point of settling the
+protocol now is that the rest of the pipeline (dispatch, rule engine)
+never needs to know which row produced a given `NormalizedMessage`.
+
+**Dispatch: one message, one or many classifier targets.** A
+`Dispatcher` fans a single message out to any number of named
+`TextClassifier` backends (§9.1) — "one" is just the N=1 case, no
+special-cased path:
+
+```python
+class Dispatcher:
+    def __init__(self, targets: Mapping[str, TextClassifier]) -> None: ...
+    def dispatch(self, message: NormalizedMessage) -> dict[str, ClassificationResult | Exception]:
+        """Run every target; a target that raises is captured as its
+        own result entry rather than aborting the others — one broken
+        experimental backend must never take production classification
+        down with it."""
+```
+
+Failure isolation is deliberate: the whole reason to dispatch to
+multiple targets is to run a *candidate* classifier alongside a
+*production* one, and a candidate is allowed to be half-finished or
+flaky.
+
+That one primitive supports two different things people mean by
+"running classifiers in parallel," without needing two different
+mechanisms:
+
+1. **Evaluation / shadow mode.** Call `dispatcher.dispatch()` directly
+   and log/compare all N results. The actual triage decision is
+   unaffected — a candidate classifier gets to prove itself on live
+   traffic before anyone trusts its output.
+2. **Ensemble feeding one decision.** Wrap the `Dispatcher` and a
+   `Combiner` (reduces N results to 1) in a `DispatchingClassifier`:
+
+   ```python
+   class Combiner(Protocol):
+       def combine(self, results: Mapping[str, ClassificationResult | Exception]) -> ClassificationResult: ...
+
+   class DispatchingClassifier:
+       """A TextClassifier whose classify() dispatches to N targets and
+       combines their results — from the rule engine's point of view,
+       indistinguishable from a single classifier."""
+       def __init__(self, dispatcher: Dispatcher, combiner: Combiner) -> None: ...
+       def classify(self, message: NormalizedMessage) -> ClassificationResult: ...
+   ```
+
+   Because `DispatchingClassifier` satisfies the same `TextClassifier`
+   protocol as any single backend, `spork.core.rules.engine.evaluate()`
+   (§9) needs **zero changes** to consume an ensemble instead of one
+   classifier — it was already decoupled from "how many techniques
+   produced this answer" by §9.1's design.
+
+Two built-in combiners cover the common cases: one that always defers
+to a named primary target (shadow-mode-as-a-classifier: the others ran
+and are inspectable, but only the primary's opinion is the decision),
+and one that picks whichever successful result reports the highest
+confidence score. Both are swappable the same way classifier backends
+are — a `Combiner` is a small enough contract that a bespoke one
+(majority vote, "escalate if any target says urgent") is cheap to add
+later without touching `Dispatcher` or `DispatchingClassifier`.
 
 ## 10. LLM integration (Claude API)
 

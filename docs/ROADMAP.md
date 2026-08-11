@@ -39,6 +39,37 @@ read-only. No actions taken yet.
 as it arrives (via push, verified by sending a real test email), survives
 a forced network drop and reconnects.
 
+## M1a — Source / dispatch pipeline
+
+**Goal:** message acquisition (Trigger/ContentFetcher/Source) and
+classifier fan-out (Dispatcher/Combiner) exist as protocols + pure-logic
+implementations (docs/DESIGN.md §9.2), independent of any real JMAP/IMAP
+I/O. Unblocks M1's JMAP `Source` and M2's rule engine consuming an
+ensemble classifier, without either depending on live network access to
+be developed or tested.
+
+- [ ] `spork.core.sources.base`: `Trigger`, `ContentFetcher`, `Source`
+      protocols (S)
+- [ ] `spork.core.sources.triggered.TriggeredSource`: composes any
+      Trigger + ContentFetcher into a Source (S)
+- [ ] `spork.core.sources.replay`: `ImmediateTrigger` +
+      `SequenceContentFetcher` — the test/demo "replay a fixture
+      through a for-loop" source (S)
+- [ ] `spork.core.dispatch.dispatcher.Dispatcher`: fan a message out to
+      N named `TextClassifier` targets, isolating per-target failures (M)
+- [ ] `spork.core.dispatch.combine`: `Combiner` protocol +
+      `PrimaryCombiner` + `HighestConfidenceCombiner` (S)
+- [ ] `spork.core.dispatch.combine.DispatchingClassifier`: Dispatcher +
+      Combiner wrapped as a `TextClassifier`, so `rules.engine.evaluate`
+      needs no changes to consume an ensemble (S)
+
+**Exit criteria:** a `TriggeredSource` built from `ImmediateTrigger` +
+`SequenceContentFetcher` replays a fixture list of messages through the
+existing Tier 1 rule engine end-to-end in a test, with no real JMAP/IMAP
+connection; a `DispatchingClassifier` wrapping two stub classifiers and
+a `HighestConfidenceCombiner` produces a single verdict the rule engine
+accepts unmodified.
+
 ## M2 — Rule engine (Tier 1) + action executor
 
 **Goal:** deterministic rules file drives real mailbox actions, no LLM
