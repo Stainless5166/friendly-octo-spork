@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated API docs (pdoc output) — rebuilt by CI, not committed.
+/site/
