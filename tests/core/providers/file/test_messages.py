@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from spork.core.providers.file.messages import MessagesLoadError, load_messages
 
 

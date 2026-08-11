@@ -14,7 +14,6 @@ import json
 from pathlib import Path
 
 from spork.core.providers.file.provider import FileProvider
-
 from spork.core.rules.schema import Action
 from spork.core.sources.triggered import TriggeredSource
 
