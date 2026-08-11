@@ -7,12 +7,18 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "pydantic>=2.7,<3",
+    "secretspec>=0.18,<1",
+    "typer>=0.27,<1",
 ]
 
 # Two executables, one shared package (spork.core) — see docs/DESIGN.md §6.
+# spork.cli.main:app is the Typer app object itself (callable, reads
+# sys.argv) — no separate wrapper needed. sporkd needs one (`run`)
+# since main() takes typer.Option-annotated args unusable if called
+# directly; see spork.daemon.main's module docstring.
 [project.scripts]
-sporkd = "spork.daemon.main:main"
-spork = "spork.cli.main:main"
+sporkd = "spork.daemon.main:run"
+spork = "spork.cli.main:app"
 
 [dependency-groups]
 dev = [
@@ -34,7 +40,19 @@ packages = ["src/spork"]
 # Acceptance/unit tests only — no live network, no live JMAP/LLM calls.
 # See docs/DESIGN.md §16 for the layered test strategy.
 testpaths = ["tests"]
-addopts = "--strict-markers"
+# importlib mode (rather than pytest's default sys.path-prepend mode)
+# so tests/<pkg>/test_<module>.py can mirror src/spork/<pkg>/<module>.py
+# 1:1 (per scripts/related_tests.py) without every test directory
+# needing an __init__.py, and without same-named test files in
+# different directories (e.g. tests/cli/test_main.py and
+# tests/daemon/test_main.py) colliding at collection time.
+addopts = "--strict-markers --import-mode=importlib"
+# xfail tests document not-yet-implemented, already-specified behavior
+# (docs/TEST_COVERAGE.md). Strict mode turns an unexpected XPASS into a
+# failure, forcing the xfail marker to be removed deliberately when a
+# feature actually lands, rather than a stale marker silently hiding
+# that it's done.
+xfail_strict = true
 
 [tool.ruff]
 line-length = 100
@@ -48,3 +66,10 @@ python_version = "3.11"
 strict = true
 packages = ["spork"]
 mypy_path = "src"
+
+# secretspec ships no py.typed marker / stubs (it's a pyo3 native
+# extension wrapper) — this is the one place we trust its runtime
+# behavior without static checking, not a general opt-out.
+[[tool.mypy.overrides]]
+module = "secretspec"
+ignore_missing_imports = true

@@ -1,23 +1,37 @@
 """Entry point for the `spork` executable.
 
-Placeholder for the same reason as `spork.daemon.main`: the command
-surface in docs/DESIGN.md §12 (status/rules/config/logs/...) is built
-milestone-by-milestone against acceptance tests, not stubbed out ahead
-of the logic it would call.
+A Typer command *group* (docs/DESIGN.md §6.3): `spork` grows real
+subcommands (status/rules/config/logs/... — §12) milestone-by-milestone
+as M5 builds them, each behind its own acceptance tests. For now it's
+just enough to satisfy M0's exit criteria (`--help` works) without
+inventing subcommand behavior nobody's designed yet.
 """
 
+from __future__ import annotations
 
-def main() -> None:
-    """Process entry point registered as the `spork` console script.
+import typer
 
-    Raises NotImplementedError until the CLI command surface (M5 in
-    docs/ROADMAP.md) is built; exists now purely so `uv run spork`
-    resolves to something during scaffolding.
-    """
-    raise NotImplementedError(
-        "spork CLI is not implemented yet — see docs/ROADMAP.md for milestone status."
-    )
+from spork import __version__
+
+app = typer.Typer(
+    name="spork",
+    help="Status, config, and rule management for the sporkd daemon.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+
+
+@app.callback(invoke_without_command=True)
+def main(
+    version: bool = typer.Option(
+        False, "--version", help="Show the version and exit.", is_eager=True
+    ),
+) -> None:
+    """Status, config, and rule management for the sporkd daemon."""
+    if version:
+        typer.echo(f"spork {__version__}")
+        raise typer.Exit()
 
 
 if __name__ == "__main__":
-    main()
+    app()

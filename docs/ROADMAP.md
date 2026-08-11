@@ -11,15 +11,20 @@ Sizing tags (`S`/`M`/`L`) are rough effort, not calendar time.
 **Goal:** `uv run` works for both executables against a stub pipeline;
 CI runs on every push.
 
-- [ ] `uv init`, `pyproject.toml` with `[project.scripts] sporkd`, `spork` (S)
-- [ ] `src/spork/` package layout per `DESIGN.md` §6.1 (S)
-- [ ] `secretspec.toml` with declared secrets (§7.3) (S)
-- [ ] Lint/format/type-check config (ruff + mypy or pyright) (S)
-- [ ] CI: lint, type-check, unit tests on push/PR (S)
-- [ ] `spork --help` / `sporkd --help` produce real (if empty) output (S)
+- [x] `uv init`, `pyproject.toml` with `[project.scripts] sporkd`, `spork` (S)
+- [x] `src/spork/` package layout per `DESIGN.md` §6.1 (S)
+- [x] `secretspec.toml` with declared secrets (§7.3) (S) — plus
+      `spork.core.secrets.resolve_secrets()`, the SDK wrapper §7.3
+      describes sporkd will use at startup (`tests/core/test_secrets.py`)
+- [x] Lint/format/type-check config (ruff + mypy or pyright) (S)
+- [x] CI: lint, type-check, unit tests on push/PR (S)
+- [x] `spork --help` / `sporkd --help` produce real (if empty) output (S)
+      — CLI framework decided (§6.3: Typer); both also get `--version`
+      for free (`tests/cli/test_main.py`, `tests/daemon/test_main.py`)
 
 **Exit criteria:** fresh clone → `uv sync && uv run sporkd --help` and
 `uv run spork --help` both work with no manual setup beyond secrets.
+**Met.**
 
 ## M1 — JMAP connectivity
 
@@ -27,17 +32,68 @@ CI runs on every push.
 read-only. No actions taken yet.
 
 - [ ] `spork.core.jmap.client`: session bootstrap via `jmapc`, secrets
-      wired through `secretspec` (M)
-- [ ] Mailbox role resolution + caching (Inbox, Drafts, custom mailboxes) (S)
-- [ ] `Email/query` + `Email/get` batched fetch of new mail since a cursor (M)
-- [ ] EventSource push listener with reconnect/backoff (M)
-- [ ] Poll-based fallback when push is unavailable/disconnected (S)
-- [ ] State DB: `push_cursor`, `processed_messages` tables + migrations (S)
-- [ ] `spork doctor` reports JMAP auth + connectivity status (S)
+      wired through `secretspec` (M) — shape settled, `connect()` and
+      `fetch_new_messages()` (also covers the `Email/query`+`Email/get`
+      batched fetch item below) deliberately raise `NotImplementedError`:
+      a real jmapc session against a live Fastmail account is real-network
+      work this environment can't exercise honestly. See
+      `tests/core/jmap/test_client.py`.
+- [x] Mailbox role resolution + caching (Inbox, Drafts, custom mailboxes) (S)
+- [ ] ~~`Email/query` + `Email/get` batched fetch of new mail since a cursor (M)~~
+      — folded into `JmapClient.fetch_new_messages()` above, same status.
+- [ ] EventSource push listener with reconnect/backoff (M) — backoff
+      *scheduling* is done and tested (`spork.core.jmap.backoff`); the
+      listener itself (`JmapPushTrigger.wait()`) is a settled-shape
+      `NotImplementedError` stub for the same live-connection reason as
+      the client. See `tests/core/jmap/test_push.py`.
+- [x] Poll-based fallback when push is unavailable/disconnected (S) —
+      real, tested implementation (`spork.core.sources.timer.IntervalTimer`
+      + `spork.core.sources.fallback.FallbackSource`), pure control flow
+      with no network dependency. Ready to compose with a real
+      `JmapClient`-backed fetcher once that exists.
+- [x] State DB: `push_cursor`, `processed_messages` tables + migrations (S)
+- [ ] `spork doctor` reports JMAP auth + connectivity status (S) —
+      deferred to M5: it's a CLI command, and the CLI framework (§6.1:
+      click or typer) isn't chosen yet. The connectivity check it will
+      call is blocked on `JmapClient.connect()` above regardless.
 
 **Exit criteria:** `sporkd` runs, logs each new inbox message's subject
 as it arrives (via push, verified by sending a real test email), survives
-a forced network drop and reconnects.
+a forced network drop and reconnects. **Not yet met** — still blocked on
+a real `jmapc` session (`JmapClient.connect()`/`JmapPushTrigger.wait()`),
+which needs a live Fastmail account and API token to actually build and
+test against, not just design.
+
+## M1a — Source / dispatch pipeline
+
+**Goal:** message acquisition (Trigger/ContentFetcher/Source) and
+classifier fan-out (Dispatcher/Combiner) exist as protocols + pure-logic
+implementations (docs/DESIGN.md §9.2), independent of any real JMAP/IMAP
+I/O. Unblocks M1's JMAP `Source` and M2's rule engine consuming an
+ensemble classifier, without either depending on live network access to
+be developed or tested.
+
+- [x] `spork.core.sources.base`: `Trigger`, `ContentFetcher`, `Source`
+      protocols (S)
+- [x] `spork.core.sources.triggered.TriggeredSource`: composes any
+      Trigger + ContentFetcher into a Source (S)
+- [x] `spork.core.sources.replay`: `ImmediateTrigger` +
+      `SequenceContentFetcher` — the test/demo "replay a fixture
+      through a for-loop" source (S)
+- [x] `spork.core.dispatch.dispatcher.Dispatcher`: fan a message out to
+      N named `TextClassifier` targets, isolating per-target failures (M)
+- [x] `spork.core.dispatch.combine`: `Combiner` protocol +
+      `PrimaryCombiner` + `HighestConfidenceCombiner` (S)
+- [x] `spork.core.dispatch.combine.DispatchingClassifier`: Dispatcher +
+      Combiner wrapped as a `TextClassifier`, so `rules.engine.evaluate`
+      needs no changes to consume an ensemble (S)
+
+**Exit criteria:** a `TriggeredSource` built from `ImmediateTrigger` +
+`SequenceContentFetcher` replays a fixture list of messages through the
+existing Tier 1 rule engine end-to-end in a test, with no real JMAP/IMAP
+connection; a `DispatchingClassifier` wrapping two stub classifiers and
+a `HighestConfidenceCombiner` produces a single verdict the rule engine
+accepts unmodified.
 
 ## M2 — Rule engine (Tier 1) + action executor
 
