@@ -153,15 +153,19 @@ involved yet.
 - [x] `processed_messages` idempotency check before acting (S) — wired
       into `spork.core.pipeline.process_message()`
 - [x] `audit_log` writes for every action taken (S)
-- [ ] `spork rules test <file>` dry-run against recent mail, no side effects (M)
-      — CLI wiring + rules loading (real, testable now) done;
-      "against recent mail" genuinely needs a live JMAP fetch (there's
-      no local mail store spork could substitute — it's a pure client
-      to JMAP as the source of truth, docs/DESIGN.md §9.3), so the
-      fetch step is a settled-shape `NotImplementedError` stub, same
-      blocker/treatment as `JmapClient.fetch_new_messages()` (M1). No
-      fixture-file workaround — that would just be testing against
-      fake data, not "recent mail".
+- [x] `spork rules test <file>` dry-run against recent mail, no side effects (M)
+      — CLI wiring + rules loading is real, tested, and shipped
+      (`spork.cli.commands.rules`, `tests/cli/commands/test_rules.py`);
+      "against recent mail" itself genuinely needs a live JMAP fetch
+      (there's no local mail store spork could substitute — it's a
+      pure client to JMAP as the source of truth, docs/DESIGN.md
+      §9.3), so that step is a settled-shape `NotImplementedError`,
+      caught and reported as a clean CLI error rather than a
+      traceback, same blocker/treatment as
+      `JmapClient.fetch_new_messages()` (M1). No fixture-file
+      workaround — `FileProvider` (M1b) proves the `Provider`
+      abstraction generalizes, but it isn't and was never meant to be
+      a stand-in for "recent mail" here.
 - [x] Unit tests: condition matching, idempotency (M) — dry-run output
       still pending the JMAP fetch above
 
@@ -170,7 +174,8 @@ correctly files live test mail with no LLM calls; `spork rules test`
 matches what actually happens when the rule goes live. **Not yet
 met** — blocked on the same live Fastmail account/API token as the
 rest of M1's real JMAP work. Everything through action execution +
-idempotency + audit is real and tested (`process_message()`).
+idempotency + audit + the CLI command's own loading/error-handling is
+real and tested; only the live fetch inside `spork rules test` remains.
 
 ## M3 — LLM escalation (Tier 2)
 

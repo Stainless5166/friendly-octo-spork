@@ -13,10 +13,13 @@ and a dynamic `importlib`-based loader. Updated once more for most of
 M2: the `rules.toml` loader, `audit_log`, `Provider`'s write side
 (`ActionApplier`), `ActionExecutor`, and the `process_message()`
 orchestration tying idempotency + evaluation + action + audit
-together. Only `spork rules test` (the dry-run CLI) remains. Updated
-once more for `FileProvider` (M1b): a second, fully real `Provider`
-Adapter with no `NotImplementedError` anywhere, proving the abstraction
-itself generalizes beyond `JmapProvider`.
+together. Updated once more for `FileProvider` (M1b): a second, fully
+real `Provider` Adapter with no `NotImplementedError` anywhere, proving
+the abstraction itself generalizes beyond `JmapProvider`. Updated again
+for `spork rules test` (M2's last item): real CLI wiring + rules
+loading + clean error handling, with the live-JMAP-fetch step a
+settled-shape `NotImplementedError` reported cleanly rather than left
+to traceback. **M2 is now 7/7.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -173,20 +176,24 @@ until M1's real JMAP fetch exists.
 | Action executor | ✅ (`ActionApplier`-agnostic, real backend still `NotImplementedError`-stubbed per M1) | ✅ — tests 107–113 (7 tests) |
 | `processed_messages` idempotency | ✅ — wired into `process_message()` | ✅ — tests 114–121 (8 tests) |
 | `audit_log` writes | ✅ | ✅ — tests 98–103 (6 tests) |
-| `spork rules test` dry-run | ❌ | — |
+| `spork rules test` dry-run | ✅ (loading+errors real; live-fetch step `NotImplementedError`, M1) | ✅ — tests 139–146 (8 tests) |
 | Unit tests: condition matching / idempotency | ✅ | ✅ |
 
-**6 of 7 items done.** The schema fix is worth calling out: an
+**7 of 7 items done.** The schema fix is worth calling out: an
 edge-case test (96) caught that pydantic's default `extra="ignore"`
 meant a typo'd field (e.g. `"enalbed"` instead of `"enabled"`) was
 silently dropped, falling back to its default instead of failing to
 load — `extra="forbid"` fixed it, verified red-then-green same as
 everything else. `ActionApplier` itself is documented under M1b (it's
 part of `Provider`'s contract, docs/DESIGN.md §9.3) but its *executor*
-(the provider-agnostic consumer) is M2 work, tested here. The one
-remaining item — `spork rules test` — needs the CLI command surface,
-which needs a decision on sample-message input format before it can
-follow the same TDD discipline as everything else in this table.
+(the provider-agnostic consumer) is M2 work, tested here. `spork rules
+test` is "done" in the same sense `JmapProvider` is done under M1b:
+everything buildable without a live JMAP session is real and tested
+(CLI wiring, rules loading, clean error handling for both bad and
+missing files), and the one piece that isn't — the actual fetch of
+recent mail — is a settled-shape `NotImplementedError`, caught and
+reported as a clean CLI error (test 140) rather than left to produce a
+raw traceback.
 
 ### M3–M7
 
@@ -910,3 +917,39 @@ not a placeholder assertion.
     Constructs `FileProvider` with `str` paths for both arguments.
     Asserts both `build_source()` and `build_action_applier()` still
     work.
+
+### tests/cli/commands (spork rules test, M2)
+
+139. **`test_rules.py::test_rules_test_help_works`**
+    `spork rules test --help` via subprocess. Asserts exit 0 and usage
+    text.
+
+140. **`test_rules.py::test_rules_test_with_a_valid_file_loads_then_fails_on_the_live_jmap_gap`**
+    A well-formed rules.toml. Asserts exit 1, `"Loaded 1 rule"` really
+    printed (proving loading isn't stubbed), and no raw traceback in
+    stderr for the live-JMAP `NotImplementedError`.
+
+141. **`test_rules.py::test_rules_test_with_an_invalid_file_reports_a_clean_error`**
+    Malformed TOML. Asserts exit 1, `"Error"` in stderr, no
+    `"Traceback"` — `RulesLoadError` caught and reported cleanly, not
+    left to propagate.
+
+142. **`test_rules.py::test_rules_test_with_a_missing_file_reports_a_clean_error`**
+    A nonexistent path. Same clean-error assertions as 141.
+
+143. **`test_rules.py::test_rules_group_appears_in_top_level_help`**
+    `spork --help`. Asserts `"rules"` appears — confirms
+    `app.add_typer()` wiring, not just that the module imports.
+
+144. **`test_rules_edge_cases.py::test_rules_test_with_a_file_containing_no_rules_still_loads_then_hits_the_gap`**
+    An empty rules.toml (zero `[[rule]]` entries — valid, per
+    `load_rules()`). Asserts `"Loaded 0 rule(s)"` and still reaches the
+    live-JMAP gap, same as a file with rules.
+
+145. **`test_rules_edge_cases.py::test_rules_test_with_no_file_argument_is_a_usage_error`**
+    Omits the required `rules_file` argument entirely. Asserts exit 2
+    (Typer's own usage error) and no traceback — proves this path never
+    reaches `load_rules()` at all.
+
+146. **`test_rules_edge_cases.py::test_rules_group_help_lists_the_test_command`**
+    `spork rules --help`. Asserts `"test"` is listed.
