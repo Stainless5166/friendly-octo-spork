@@ -9,8 +9,8 @@ provider's mutation logic.
 from __future__ import annotations
 
 import pytest
-from spork.core.actions.executor import ActionExecutionError, ActionExecutor
 
+from spork.core.actions.executor import ActionExecutionError, ActionExecutor
 from spork.core.models import NormalizedMessage
 from spork.core.rules.schema import Action
 
