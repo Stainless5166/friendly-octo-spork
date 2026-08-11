@@ -13,7 +13,10 @@ and a dynamic `importlib`-based loader. Updated once more for most of
 M2: the `rules.toml` loader, `audit_log`, `Provider`'s write side
 (`ActionApplier`), `ActionExecutor`, and the `process_message()`
 orchestration tying idempotency + evaluation + action + audit
-together. Only `spork rules test` (the dry-run CLI) remains.
+together. Only `spork rules test` (the dry-run CLI) remains. Updated
+once more for `FileProvider` (M1b): a second, fully real `Provider`
+Adapter with no `NotImplementedError` anywhere, proving the abstraction
+itself generalizes beyond `JmapProvider`.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -139,17 +142,27 @@ alone.
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `spork.core.jmap` → `spork.core.providers.jmap` move | ✅ | ✅ — same 26 jmap tests, unchanged assertions, just new import paths |
-| `Provider` protocol | ✅ | ✅ — exercised via `JmapProvider` (protocols aren't directly testable, only structurally) |
+| `Provider` protocol | ✅ | ✅ — exercised via `JmapProvider` and `FileProvider` (protocols aren't directly testable, only structurally) |
 | `JmapProvider` (the Adapter) | ✅ | ✅ — tests 81–83 |
 | `load_provider()` (the dynamic loader) | ✅ | ✅ — tests 84–89 |
+| `FileProvider` (a second, fully real Adapter) | ✅ | ✅ — tests 122–138 (17 tests), 100% line coverage |
 
-**4 of 4 items done, all tested, 100% coverage on `spork.core.providers`.**
-The one thing worth calling out: `JmapProvider`'s tests only prove
+**5 of 5 items done, all tested, 100% coverage on `spork.core.providers`.**
+Two things worth calling out. First: `JmapProvider`'s tests only prove
 *composition* is correct (it assembles `JmapClient` + `JmapPushTrigger`
 into a working `Source` shape) — they can't prove real fetch/push
 behavior, because there isn't any yet (M1). That's expected, not a gap:
 the adapter and loader machinery is independently correct regardless
-of whether the backend underneath is implemented.
+of whether the backend underneath is implemented. Second: `FileProvider`
+exists precisely to close the resulting hole — until a live JMAP
+session exists, `JmapProvider` can never prove `Provider`'s read/write
+split *actually works end to end*, only that it's wired up correctly.
+`FileProvider` is a second, unrelated, fully working `Provider` with no
+`NotImplementedError` anywhere, so the abstraction itself is proven
+sound independent of JMAP ever going live. It is explicitly not a
+"recent mail" fixture mechanism for `spork rules test` (docs/DESIGN.md
+§9.3, §13) — that command still has no fixture-file mode and won't
+until M1's real JMAP fetch exists.
 
 ### M2 — Rule engine (Tier 1) + action executor
 
@@ -821,3 +834,79 @@ not a placeholder assertion.
     clock). Asserts the recorded timestamp is genuinely parseable —
     proving the default itself works, not just that a fake one can
     replace it.
+
+### tests/core/providers/file (FileProvider, M1b)
+
+122. **`test_messages.py::test_load_messages_parses_a_valid_json_file`**
+    A well-formed messages.json with two entries. Asserts
+    `NormalizedMessage`s come back in file order with the right fields,
+    including a non-default `headers`/`mailbox_ids`.
+
+123. **`test_messages.py::test_load_messages_returns_empty_list_for_empty_array`**
+    A file containing `[]`. Asserts zero messages, not an error.
+
+124. **`test_messages.py::test_load_messages_raises_for_malformed_json`**
+    Broken JSON syntax. Asserts `MessagesLoadError`, not a raw
+    `json.JSONDecodeError`.
+
+125. **`test_messages.py::test_load_messages_raises_for_non_array_json`**
+    A file whose top level is a JSON object, not an array. Asserts
+    `MessagesLoadError`.
+
+126. **`test_messages.py::test_load_messages_raises_for_missing_required_field`**
+    An entry missing `thread_id` etc. Asserts `MessagesLoadError`
+    naming the field, not a raw `KeyError`.
+
+127. **`test_messages.py::test_load_messages_raises_for_missing_file`**
+    A nonexistent path. Asserts `MessagesLoadError`, not a raw
+    `FileNotFoundError`.
+
+128. **`test_provider.py::test_build_source_returns_a_triggered_source`**
+    Asserts `FileProvider.build_source()` returns a `TriggeredSource` —
+    the same generic composition any `Source` consumer expects
+    (docs/DESIGN.md §9.2), not a bespoke shape.
+
+129. **`test_provider.py::test_source_poll_replays_every_message_then_settles_empty`**
+    Two messages in the file. Asserts the first `poll()` returns both,
+    in order, and the second `poll()` returns `[]` — the same
+    steady-state a live, caught-up source settles into.
+
+130. **`test_provider.py::test_build_action_applier_returns_something_that_can_apply`**
+    Asserts calling `.apply()` on what `build_action_applier()` returns
+    actually creates the actions log file — the write half of the
+    `Provider` contract, real, not a placeholder.
+
+131. **`test_provider.py::test_action_applier_appends_one_jsonl_entry_per_apply_call`**
+    Two `.apply()` calls. Asserts two JSON-lines entries land in order,
+    each with the right `message_id`/`action_type`/`mailbox`.
+
+132. **`test_messages_edge_cases.py::test_load_messages_raises_when_an_entry_is_not_an_object`**
+    An array containing a bare string instead of an object. Asserts
+    `MessagesLoadError` naming the index.
+
+133. **`test_messages_edge_cases.py::test_load_messages_defaults_headers_and_mailbox_ids_when_omitted`**
+    An entry with no `headers`/`mailbox_ids` keys at all. Asserts
+    `NormalizedMessage`'s own empty defaults, not a load error.
+
+134. **`test_messages_edge_cases.py::test_load_messages_ignores_unknown_fields_on_an_entry`**
+    An entry with an extra field `NormalizedMessage` doesn't have.
+    Asserts it loads anyway — deliberately unlike `rules.schema`'s
+    `extra="forbid"`, since a message fixture isn't hand-edited config.
+
+135. **`test_messages_edge_cases.py::test_load_messages_accepts_a_str_path`**
+    Calls `load_messages()` with a `str` instead of a `Path`. Asserts
+    it works the same.
+
+136. **`test_provider_edge_cases.py::test_build_source_with_an_empty_messages_file_polls_to_nothing`**
+    An empty messages.json. Asserts `poll()` returns `[]`, not an
+    error.
+
+137. **`test_provider_edge_cases.py::test_action_applier_appends_across_separate_build_calls`**
+    Two separately-obtained appliers pointed at the same log path.
+    Asserts both entries land — `build_action_applier()` doesn't own
+    exclusive state a second call would reset.
+
+138. **`test_provider_edge_cases.py::test_file_provider_accepts_str_paths`**
+    Constructs `FileProvider` with `str` paths for both arguments.
+    Asserts both `build_source()` and `build_action_applier()` still
+    work.

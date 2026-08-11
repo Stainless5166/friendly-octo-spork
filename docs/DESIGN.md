@@ -147,12 +147,15 @@ src/spork/
 │   ├── providers/
 │   │   ├── base.py         # Provider + ActionApplier protocols — the adapter targets (§9.3)
 │   │   ├── loader.py        # load_provider(): "module:Class" spec -> Provider, via importlib
-│   │   └── jmap/
-│   │       ├── provider.py   # JmapProvider: the Adapter — build_source() + build_action_applier()
-│   │       ├── client.py     # thin wrapper over jmapc: session, batching, Email/set mutation
-│   │       ├── push.py       # EventSource listener Trigger
-│   │       ├── backoff.py    # reconnect delay scheduling
-│   │       └── mailboxes.py  # mailbox role resolution & caching
+│   │   ├── jmap/
+│   │   │   ├── provider.py   # JmapProvider: the Adapter — build_source() + build_action_applier()
+│   │   │   ├── client.py     # thin wrapper over jmapc: session, batching, Email/set mutation
+│   │   │   ├── push.py       # EventSource listener Trigger
+│   │   │   ├── backoff.py    # reconnect delay scheduling
+│   │   │   └── mailboxes.py  # mailbox role resolution & caching
+│   │   └── file/
+│   │       ├── provider.py   # FileProvider: a second, fully real Adapter (no NotImplementedError)
+│   │       └── messages.py   # loads NormalizedMessages from a JSON file
 │   ├── models.py          # NormalizedMessage: transport-agnostic message shape
 │   ├── pipeline.py         # process_message(): idempotency + evaluate + act + audit (§9)
 │   ├── sources/
@@ -742,6 +745,27 @@ generic business logic that depends on it, not the reverse.
   config all raise a single `ProviderLoadError` — `spork doctor` (M5)
   catches this the same way it catches an unknown classifier name
   (§9.1).
+- **A second, fully real Adapter: `FileProvider`.** `JmapProvider` is
+  the only provider spork ships that talks to a live backend, and it's
+  still mid-M1 (`connect()`/`fetch_new_messages()`/`apply_action()` are
+  settled-shape `NotImplementedError` stubs) — which means until a
+  live Fastmail session exists, nothing has ever actually exercised
+  `Provider` as an *abstraction* end to end, only as one
+  half-implemented instance of it. `spork.core.providers.file.FileProvider`
+  closes that gap: it adapts a literal, explicitly-supplied JSON file
+  of messages to `Provider`, with no NotImplementedError anywhere.
+  `build_source()` replays the file's messages once via
+  `ImmediateTrigger` + `SequenceContentFetcher` (§9.2); `build_action_applier()`
+  appends every applied action to a JSON-lines log instead of mutating
+  anything, since there's no real mailbox underneath to mutate. It is
+  **not** a way to fake "recent mail" for `JmapProvider` or for `spork
+  rules test` (§13) — spork has no local mail store to substitute for
+  one, and `FileProvider` doesn't pretend to be JMAP or claim to be
+  live mail at all. Its purpose is narrower and more useful: proving,
+  with a real second implementation, that `Provider`'s read/write split
+  actually holds for a backend other than JMAP — plus a genuinely handy
+  building block for local dev/demo/CI work that wants a Provider
+  without any network dependency.
 
 ## 10. LLM integration (Claude API)
 
@@ -857,6 +881,9 @@ that's what it did. Until M1's live JMAP fetch exists, `spork rules
 test` loads and validates the given `rules.toml` (real, useful on its
 own — catches a malformed file before it ever reaches the daemon) and
 then fails clearly rather than pretending to dry-run anything.
+`FileProvider` (§9.3) doesn't change this: it exists to prove the
+`Provider` abstraction itself, not to give this command a fixture mode
+it deliberately doesn't have.
 
 ## 14. systemd integration
 

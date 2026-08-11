@@ -116,13 +116,25 @@ actually configured.
       spec -> constructed `Provider`, via `importlib`; every failure
       mode (malformed spec, unimportable module, missing class,
       rejected constructor args) raises one `ProviderLoadError` (M)
+- [x] `spork.core.providers.file.provider.FileProvider`: a second,
+      fully real `Provider` Adapter — a local JSON messages file for
+      `build_source()`, a JSON-lines applied-actions log for
+      `build_action_applier()`, no `NotImplementedError` anywhere (S)
+      — proves the `Provider` abstraction itself (not just the
+      loader) generalizes beyond JMAP, independent of `JmapProvider`
+      ever reaching a live session. Not a "recent mail" fixture
+      mechanism (docs/DESIGN.md §9.3/§13) — a real, honestly-named
+      backend in its own right.
 
 **Exit criteria:** `load_provider("spork.core.providers.jmap.provider:JmapProvider", host=..., api_token=...)`
 returns a working `JmapProvider`; its `build_source()` composes a real
 `Source` whose `.poll()` still raises `NotImplementedError` (propagated
 honestly from the still-stubbed `JmapClient`/`JmapPushTrigger` — M1),
 proving the adapter/loader machinery is correct independent of whether
-the backend underneath it is actually implemented yet. **Met.**
+the backend underneath it is actually implemented yet. `FileProvider`
+goes one step further: loaded the same way, its `build_source()` and
+`build_action_applier()` both actually work end to end, no live
+network involved. **Met.**
 
 ## M2 — Rule engine (Tier 1) + action executor
 
