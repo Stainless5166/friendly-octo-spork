@@ -5,11 +5,10 @@ criteria; docs/DESIGN.md §9.2).
 
 from __future__ import annotations
 
-from spork.core.sources.replay import ImmediateTrigger, SequenceContentFetcher
-from spork.core.sources.triggered import TriggeredSource
-
 from spork.core.rules.engine import evaluate
 from spork.core.rules.schema import Action, Condition, Rule
+from spork.core.sources.replay import ImmediateTrigger, SequenceContentFetcher
+from spork.core.sources.triggered import TriggeredSource
 
 
 def test_replaying_a_fixture_drives_the_rule_engine_end_to_end(make_message) -> None:

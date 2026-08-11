@@ -8,14 +8,13 @@ engine to be usable as its classifier.
 
 from __future__ import annotations
 
+from spork.core.classify.base import ClassificationResult
 from spork.core.dispatch.combine import (
     DispatchingClassifier,
     HighestConfidenceCombiner,
     PrimaryCombiner,
 )
 from spork.core.dispatch.dispatcher import Dispatcher
-
-from spork.core.classify.base import ClassificationResult
 from spork.core.models import NormalizedMessage
 from spork.core.rules.engine import evaluate
 from spork.core.rules.schema import Action, Condition, Rule

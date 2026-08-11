@@ -7,9 +7,8 @@ objects — never a real timer or JMAP/IMAP connection.
 
 from __future__ import annotations
 
-from spork.core.sources.triggered import TriggeredSource
-
 from spork.core.models import NormalizedMessage
+from spork.core.sources.triggered import TriggeredSource
 
 
 def test_triggered_source_calls_wait_before_fetch(make_message) -> None:

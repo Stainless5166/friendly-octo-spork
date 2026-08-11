@@ -7,9 +7,8 @@ only spork's own fan-out/failure-isolation behavior.
 
 from __future__ import annotations
 
-from spork.core.dispatch.dispatcher import Dispatcher
-
 from spork.core.classify.base import ClassificationResult
+from spork.core.dispatch.dispatcher import Dispatcher
 from spork.core.models import NormalizedMessage
 
 
