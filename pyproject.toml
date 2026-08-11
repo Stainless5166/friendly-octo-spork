@@ -61,3 +61,10 @@ python_version = "3.11"
 strict = true
 packages = ["spork"]
 mypy_path = "src"
+
+# secretspec ships no py.typed marker / stubs (it's a pyo3 native
+# extension wrapper) — this is the one place we trust its runtime
+# behavior without static checking, not a general opt-out.
+[[tool.mypy.overrides]]
+module = "secretspec"
+ignore_missing_imports = true
