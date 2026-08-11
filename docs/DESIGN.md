@@ -60,7 +60,8 @@ key design decisions. See `ROADMAP.md` for phasing.
 | **Source** | A Trigger + ContentFetcher pair (sometimes fused, sometimes composed) that yields `NormalizedMessage` batches. |
 | **Dispatch target** | A named `TextClassifier` backend a message can be fanned out to. |
 | **Combiner** | Reduces N dispatch targets' results to the single `ClassificationResult` a decision acts on. |
-| **Provider** | An adapter from one mail backend (JMAP, IMAP, ...) to a `Source`; loaded dynamically by spec string, never hardcoded. |
+| **Provider** | The daemon's whole relationship to one remote mail backend (JMAP, IMAP, ...): both read (`build_source`) and write (`build_action_applier`); loaded dynamically by spec string, never hardcoded. |
+| **ActionApplier** | A provider's write side — applies one rule/verdict `Action` to a message on the remote backend. |
 
 ## 5. Architecture
 
@@ -144,11 +145,11 @@ src/spork/
 │   ├── config.py        # load/validate config.toml
 │   ├── secrets.py        # secretspec integration
 │   ├── providers/
-│   │   ├── base.py         # Provider protocol — the adapter target (§9.3)
+│   │   ├── base.py         # Provider + ActionApplier protocols — the adapter targets (§9.3)
 │   │   ├── loader.py        # load_provider(): "module:Class" spec -> Provider, via importlib
 │   │   └── jmap/
-│   │       ├── provider.py   # JmapProvider: the Adapter, composes client+push into a Source
-│   │       ├── client.py     # thin wrapper over jmapc: session, batching
+│   │       ├── provider.py   # JmapProvider: the Adapter — build_source() + build_action_applier()
+│   │       ├── client.py     # thin wrapper over jmapc: session, batching, Email/set mutation
 │   │       ├── push.py       # EventSource listener Trigger
 │   │       ├── backoff.py    # reconnect delay scheduling
 │   │       └── mailboxes.py  # mailbox role resolution & caching
@@ -173,7 +174,8 @@ src/spork/
 │   │   ├── prompts.py    # system prompt + verdict schema
 │   │   └── verdict.py    # structured output model + validation
 │   ├── actions/
-│   │   ├── executor.py   # apply a Verdict via JMAP Email/set
+│   │   ├── executor.py   # ActionExecutor: applies move/tag/ignore via an injected
+│   │   │                 # ActionApplier (§9.3) — provider-agnostic, rejects escalate
 │   │   └── drafts.py     # draft creation (never EmailSubmission)
 │   ├── alerts/
 │   │   ├── base.py       # Alerter protocol
@@ -657,20 +659,37 @@ the daemon, so a second backend (IMAP was the running example back in
 §9.2) is an addition, not a rewrite.
 
 ```python
+class ActionApplier(Protocol):
+    """Applies one rule/verdict Action to a message on the remote backend."""
+
+    def apply(self, message: NormalizedMessage, action: Action) -> None: ...
+
+
 class Provider(Protocol):
     """What every mail-backend integration adapts to.
 
-    Deliberately the smallest useful contract: the daemon's ingestion
-    loop only ever needs "give me a Source" — it doesn't care whether
-    that Source is backed by JMAP push, IMAP polling, or a replay
-    fixture. Capabilities specific to one backend (mailbox role
-    resolution, an action executor's mutation calls) are the
-    provider's own concern, reached through whatever the provider
-    hands back, not through this Protocol.
+    A provider is the daemon's *entire* relationship to one remote
+    source of truth — reading from it (`build_source`) and writing to
+    it (`build_action_applier`) are two operations against the same
+    backend, not separate concerns that happen to share one. Mailbox
+    role resolution and anything else backend-specific is reached
+    through whatever a provider hands back, not through this Protocol
+    — but read and write both belong here.
     """
 
     def build_source(self) -> Source: ...
+    def build_action_applier(self) -> ActionApplier: ...
 ```
+
+`spork.core.actions.executor.ActionExecutor` (M2) is the one consumer
+of `ActionApplier` — it takes whatever a provider's
+`build_action_applier()` returns, applies `move`/`tag`/`ignore`
+actions, and rejects `escalate` outright (reaching the executor with
+one means something upstream routed a Tier-2-only action to the
+terminal step by mistake). `ActionApplier` lives in
+`spork.core.providers.base` alongside `Provider`, not in
+`spork.core.actions` — it's provider-owned I/O; `ActionExecutor` is
+generic business logic that depends on it, not the reverse.
 
 - **Package layout: `spork.core.providers.<name>`.** JMAP's
   client/push/mailbox/backoff modules move from
@@ -679,9 +698,13 @@ class Provider(Protocol):
   not a special case bolted onto the JMAP one.
 - **The Adapter: `JmapProvider`.** Wraps `JmapClient` +
   `JmapPushTrigger` (§8) into a `Source` via the existing
-  `TriggeredSource` (§9.2) — `JmapProvider` doesn't reimplement
-  fetch/push logic, it composes the pieces that already exist into the
-  shape `Provider` promises.
+  `TriggeredSource` (§9.2) for `build_source()`, and wraps
+  `JmapClient.apply_action()` (the third `NotImplementedError` stub
+  alongside `connect()`/`fetch_new_messages()`, same reason — a live
+  session is real-network work) for `build_action_applier()`.
+  `JmapProvider` doesn't reimplement fetch/push/mutate logic, it
+  composes pieces that already exist into the shape `Provider`
+  promises.
 - **Loadable at runtime: `spork.core.providers.loader`.** A provider is
   named in config as a `"module.path:ClassName"` spec (e.g.
   `"spork.core.providers.jmap.provider:JmapProvider"`) and resolved via
