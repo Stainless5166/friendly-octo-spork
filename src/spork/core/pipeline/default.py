@@ -2,12 +2,13 @@
 
 The one call a real message actually goes through — everything else
 in `spork.core.pipeline` (the generic framework, `MessageMeta`, the
-seven concrete modules) is a piece this file composes, not a piece
+eight concrete modules) is a piece this file composes, not a piece
 that composes itself.
 """
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
@@ -18,6 +19,7 @@ from spork.core.pipeline.core import Payload, Pipeline
 from spork.core.pipeline.meta import MessageMeta
 from spork.core.pipeline.modules import (
     ApplyActionFilter,
+    CorrelationIdFilter,
     IdempotencyGateSelector,
     MarkProcessedFilter,
     RecordEscalationFilter,
@@ -25,6 +27,7 @@ from spork.core.pipeline.modules import (
     TimestampFilter,
     WriteAuditEntryFilter,
 )
+from spork.core.pipeline.observer import PipelineObserver
 from spork.core.rules.engine import RuleVerdict
 from spork.core.rules.schema import Action, Rule
 from spork.core.state.db import StateDB
@@ -35,11 +38,18 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _new_correlation_id() -> str:
+    """Default id generator: a random hex correlation id (§12.2)."""
+    return uuid.uuid4().hex
+
+
 def build_default_pipeline(
     *,
     executor: ActionExecutor,
     state_db: StateDB,
+    ops: PipelineObserver,
     now: Callable[[], str] = _utc_now_iso,
+    new_correlation_id: Callable[[], str] = _new_correlation_id,
 ) -> Pipeline[MessageMeta]:
     """Compose the modules that reproduce M2's process_message() behavior.
 
@@ -59,13 +69,13 @@ def build_default_pipeline(
     )
     escalate: Pipeline[MessageMeta] = Pipeline(
         [
-            RecordEscalationFilter(),
+            RecordEscalationFilter(ops),
             WriteAuditEntryFilter(state_db),
             MarkProcessedFilter(state_db),
         ]
     )
     process = Pipeline(
-        [TimestampFilter(now)],
+        [TimestampFilter(now), CorrelationIdFilter(new_correlation_id)],
         selector=RuleEvaluationSelector(),
         routes={"terminal": terminal, "escalate": escalate},
     )
@@ -82,8 +92,10 @@ def process_message(
     default_unmatched_action: Action,
     executor: ActionExecutor,
     state_db: StateDB,
+    ops: PipelineObserver,
     classifier: TextClassifier | None = None,
     now: Callable[[], str] = _utc_now_iso,
+    new_correlation_id: Callable[[], str] = _new_correlation_id,
 ) -> RuleVerdict | None:
     """Run one message through the full Tier 1 pipeline.
 
@@ -101,7 +113,13 @@ def process_message(
     daemon doesn't re-evaluate the same message forever while Tier 2
     (M3) remains unbuilt.
     """
-    pipeline = build_default_pipeline(executor=executor, state_db=state_db, now=now)
+    pipeline = build_default_pipeline(
+        executor=executor,
+        state_db=state_db,
+        ops=ops,
+        now=now,
+        new_correlation_id=new_correlation_id,
+    )
     payload: Payload[MessageMeta] = Payload(
         text="",
         meta=MessageMeta(
