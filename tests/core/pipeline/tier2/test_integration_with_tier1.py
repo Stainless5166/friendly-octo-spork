@@ -18,9 +18,11 @@ import sqlite3
 from pathlib import Path
 
 from spork.core.actions.executor import ActionExecutor
+from spork.core.alerts.base import AlertUrgency
 from spork.core.llm.clients.recorded import RecordedLLMClient
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline import process_message
+from spork.core.pipeline.observer import PipelineObserver
 from spork.core.pipeline.tier2 import process_tier2_message
 from spork.core.rules.schema import Action
 from spork.core.state.db import StateDB
@@ -36,6 +38,13 @@ class _RecordingApplier:
 
 class _RecordingDraftCreator:
     def create_draft(self, in_reply_to: NormalizedMessage, body: str) -> None:
+        pass
+
+
+class _FakeAlerter:
+    def notify(
+        self, title: str, body: str, *, url: str | None = None, urgency: AlertUrgency = "normal"
+    ) -> None:
         pass
 
 
@@ -81,6 +90,7 @@ def test_tier2_run_overwrites_tier1s_escalation_row(tmp_path: Path, make_message
             default_unmatched_action=Action(type="escalate"),
             executor=ActionExecutor(_RecordingApplier()),
             state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
             now=lambda: "2026-08-12T09:00:00Z",
         )
         assert tier1_verdict is not None
@@ -104,6 +114,7 @@ def test_tier2_run_overwrites_tier1s_escalation_row(tmp_path: Path, make_message
             daily_call_budget=200,
             alert_threshold=0.55,
             autoact_threshold=0.85,
+            ops=PipelineObserver(_FakeAlerter()),
             now=lambda: "2026-08-12T09:05:00Z",
         )
 

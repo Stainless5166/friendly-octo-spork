@@ -16,8 +16,10 @@ from pathlib import Path
 import pytest
 
 from spork.core.actions.executor import ActionExecutor
+from spork.core.alerts.base import AlertUrgency
 from spork.core.llm.clients.recorded import RecordedLLMClient
 from spork.core.models import NormalizedMessage
+from spork.core.pipeline.observer import PipelineObserver
 from spork.core.pipeline.tier2 import process_tier2_message
 from spork.core.rules.schema import Action
 from spork.core.state.db import StateDB
@@ -29,6 +31,16 @@ class _RecordingApplier:
 
     def apply(self, message: NormalizedMessage, action: Action) -> None:
         self.calls.append((message, action))
+
+
+class _FakeAlerter:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def notify(
+        self, title: str, body: str, *, url: str | None = None, urgency: AlertUrgency = "normal"
+    ) -> None:
+        self.calls.append({"title": title, "body": body, "url": url, "urgency": urgency})
 
 
 class _RecordingDraftCreator:
@@ -75,6 +87,7 @@ def _default_kwargs(**overrides: object) -> dict[str, object]:
         "daily_call_budget": 200,
         "alert_threshold": 0.55,
         "autoact_threshold": 0.85,
+        "ops": PipelineObserver(_FakeAlerter()),
         "now": lambda: "2026-08-12T10:00:00Z",
     }
     defaults.update(overrides)
@@ -132,6 +145,29 @@ def test_process_tier2_message_does_not_act_on_a_low_confidence_verdict(
 
     assert verdict is not None
     assert applier.calls == []
+
+
+def test_process_tier2_message_alerts_for_a_low_confidence_verdict(
+    tmp_path: Path, make_message
+) -> None:
+    """End to end: alert_only always alerts through the injected
+    PipelineObserver (docs/DESIGN.md §12.2)."""
+    responses_path = tmp_path / "responses.json"
+    _write_responses(responses_path, **{"Test subject": _high_confidence_response(confidence=0.2)})
+    message = make_message(message_id="msg-1", subject="Test subject")
+    alerter = _FakeAlerter()
+
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        process_tier2_message(
+            message,
+            llm_client=RecordedLLMClient(responses_path),
+            executor=ActionExecutor(_RecordingApplier()),
+            draft_creator=_RecordingDraftCreator(),
+            state_db=db,
+            **_default_kwargs(ops=PipelineObserver(alerter)),
+        )
+
+    assert len(alerter.calls) == 1
 
 
 def test_process_tier2_message_creates_a_draft_when_the_verdict_wants_one(
