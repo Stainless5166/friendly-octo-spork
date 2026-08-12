@@ -26,6 +26,10 @@ either fully implemented or a settled-shape stub with a passing test —
 none are unspecified.** Updated once more for M3's first item:
 `spork.core.llm.clean.clean_body()` — pure, dependency-free body
 cleaning (HTML strip, quote-chain collapse, truncation). **M3 is 1/7.**
+Updated once more: `spork.core.pipeline` rebuilt on a generic Filter/
+Selector/Pipeline framework (docs/DESIGN.md §9.4), `process_message()`
+unchanged in signature/behavior, plus a `benchmarks/` directory for
+per-module performance measurement outside the correctness suite.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -202,6 +206,18 @@ recent mail — is a settled-shape `NotImplementedError`, caught and
 reported as a clean CLI error (test 140) rather than left to produce a
 raw traceback.
 
+**Internal refactor (not a new checklist item — M2 stays 7/7):**
+`spork.core.pipeline` was rebuilt on the Filter/Selector framework
+(docs/DESIGN.md §9.4) — `process_message()`'s signature and behavior
+are unchanged (proven by tests 114-121 passing verbatim, relocated but
+not rewritten), now composed from a generic `Payload`/`Filter`/
+`Selector`/`Pipeline` framework plus seven concrete modules, each
+independently tested (161-185) and independently benchmarkable
+(`benchmarks/core/pipeline/`, outside `testpaths`). Motivated by M3:
+the escalate branch is a `Pipeline[MessageMeta]` value like any other
+route, so a future Tier 2 escalation stage is a change to what that
+route points at, not a rewrite.
+
 ### M3 — LLM escalation (Tier 2) — 1/7
 
 | Checklist item | Implemented | Tested |
@@ -227,7 +243,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (160 tests, all passing — 0 xfail)
+## Full test inventory (185 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -829,40 +845,48 @@ not a placeholder assertion.
     A stub applier that always raises. Asserts the exception
     propagates out of `execute()` rather than being swallowed.
 
-### tests/core (pipeline, M2)
+### tests/core/pipeline (process_message, M2)
 
-114. **`test_pipeline.py::test_process_message_skips_already_processed_messages`**
+Relocated from `tests/core/test_pipeline.py`/`test_pipeline_edge_cases.py`
+(pure structural move, no content changes — entries 114-121 below are
+unchanged from their original M2 form) now that `process_message()`
+lives in `spork.core.pipeline.default`, one file among several in the
+`spork.core.pipeline` package built from composable Filter/Selector
+modules (§9.4). See "tests/core/pipeline (Filter/Selector pipeline
+framework, §9.4)" further down for the modules themselves.
+
+114. **`test_default.py::test_process_message_skips_already_processed_messages`**
     A message already `mark_processed()`-ed. Asserts `process_message()`
     returns `None` and never touches the applier.
 
-115. **`test_pipeline.py::test_process_message_applies_matched_rule_action_and_marks_processed`**
+115. **`test_default.py::test_process_message_applies_matched_rule_action_and_marks_processed`**
     A message matching a `move` rule. Asserts the applier was called,
     `has_processed()` becomes `True`, and the returned verdict matches.
 
-116. **`test_pipeline.py::test_process_message_writes_an_audit_entry_for_applied_actions`**
+116. **`test_default.py::test_process_message_writes_an_audit_entry_for_applied_actions`**
     After processing, asserts exactly one audit entry exists with the
     injected clock's timestamp.
 
-117. **`test_pipeline.py::test_process_message_handles_escalate_without_calling_executor`**
+117. **`test_default.py::test_process_message_handles_escalate_without_calling_executor`**
     A verdict resolving to `escalate`. Asserts the applier was never
     called, but the message is still marked processed (the interim
     pending-Tier-2 policy, docs/DESIGN.md §9).
 
-118. **`test_pipeline.py::test_process_message_returns_the_verdict`**
+118. **`test_default.py::test_process_message_returns_the_verdict`**
     Asserts the returned `RuleVerdict` matches what was actually acted
     on.
 
-119. **`test_pipeline_edge_cases.py::test_process_message_propagates_executor_failure_and_does_not_mark_processed`**
+119. **`test_default_edge_cases.py::test_process_message_propagates_executor_failure_and_does_not_mark_processed`**
     A failing applier. Asserts the exception propagates AND that
     neither `has_processed()` nor the audit log reflect the message —
     the retry-on-next-cycle guarantee the ordering exists for.
 
-120. **`test_pipeline_edge_cases.py::test_mark_processed_uses_the_injected_clock`**
+120. **`test_default_edge_cases.py::test_mark_processed_uses_the_injected_clock`**
     Checks `processed_messages.processed_at` directly (via a fresh
     connection) after processing with a fixed clock. Asserts it
     matches — not just the audit entry's timestamp, per 116.
 
-121. **`test_pipeline_edge_cases.py::test_default_clock_produces_a_real_parseable_timestamp`**
+121. **`test_default_edge_cases.py::test_default_clock_produces_a_real_parseable_timestamp`**
     Calls `process_message()` without `now=` at all (the real default
     clock). Asserts the recorded timestamp is genuinely parseable —
     proving the default itself works, not just that a fake one can
@@ -1043,3 +1067,112 @@ not a placeholder assertion.
     A single unbroken "word" longer than `max_chars`. Asserts
     truncation still completes cleanly rather than crashing on the
     word-boundary split.
+
+### tests/core/pipeline (Filter/Selector pipeline framework, §9.4)
+
+`spork.core.pipeline.core` (generic Payload/Filter/Selector/Pipeline)
+tested with a plain `int` metadata type to prove genuine generality;
+`spork.core.pipeline.meta`/`modules` (the concrete message pipeline)
+tested against a bare `Payload[MessageMeta]` per module, no `Pipeline`
+or `process_message()` call needed.
+
+161. **`test_core.py::test_pipeline_runs_filters_in_order`**
+    Three filters each appending a letter. Asserts the result reflects
+    all three, in order.
+
+162. **`test_core.py::test_empty_pipeline_is_the_identity`**
+    `Pipeline()` with no filters, no selector. Asserts the payload
+    passes through unchanged.
+
+163. **`test_core.py::test_pipeline_with_a_selector_routes_to_the_chosen_branch`**
+    A selector fixed to branch `"a"`, two routes. Asserts only `"a"`'s
+    filters ran — `"b"`'s never executed.
+
+164. **`test_core.py::test_pipeline_branches_compose_recursively`**
+    A route's `Pipeline` itself ends in a selector. Asserts the nested
+    branch's filter ran — branching composes by nesting, with no
+    special-casing in `Pipeline`.
+
+165. **`test_core.py::test_unknown_branch_name_raises_a_clear_error`**
+    A selector returning a branch name absent from `routes`. Asserts
+    `UnknownBranchError`, not a raw `KeyError`.
+
+166. **`test_core.py::test_filters_can_update_meta_not_just_text`**
+    Three filters each incrementing an int meta. Asserts the final
+    meta reflects all three — filters aren't limited to transforming
+    text.
+
+167. **`test_core_edge_cases.py::test_payload_is_frozen`**
+    Asserts `Payload` can't be mutated in place
+    (`dataclasses.FrozenInstanceError`).
+
+168. **`test_core_edge_cases.py::test_pipeline_with_only_a_selector_and_no_filters_routes_immediately`**
+    A selector-only `Pipeline` (empty filters). Asserts it routes
+    correctly with no filters to run first.
+
+169. **`test_core_edge_cases.py::test_branch_pipeline_receives_the_selectors_own_payload_edits`**
+    A selector that both edits the payload and routes. Asserts the
+    branch pipeline sees the selector's edit, not the pre-select
+    payload.
+
+170. **`test_core_edge_cases.py::test_pipeline_is_reusable_across_independent_runs`**
+    The same `Pipeline` instance run twice with different inputs.
+    Asserts two independent, correct results — no leaked state.
+
+171. **`test_core_edge_cases.py::test_unknown_branch_error_names_the_known_routes`**
+    Asserts the `UnknownBranchError` message names the routes that
+    *were* available, not just that the lookup failed.
+
+172. **`test_modules.py::test_idempotency_gate_selector_routes_skip_for_an_already_processed_message`**
+    A message already `mark_processed()`-ed. Asserts the selector
+    routes `"skip"`.
+
+173. **`test_modules.py::test_idempotency_gate_selector_routes_continue_for_a_new_message`**
+    A never-seen message. Asserts the selector routes `"continue"`.
+
+174. **`test_modules.py::test_timestamp_filter_sets_ts_from_the_injected_clock`**
+    Asserts `meta.ts` is set from whatever clock callable was given.
+
+175. **`test_modules.py::test_rule_evaluation_selector_routes_terminal_for_a_matched_rule`**
+    A message matching a terminal rule. Asserts the branch is
+    `"terminal"` and `meta.verdict` carries the matched rule's id.
+
+176. **`test_modules.py::test_rule_evaluation_selector_routes_escalate_when_nothing_matches`**
+    No matching rule, default policy escalate. Asserts the branch is
+    `"escalate"`.
+
+177. **`test_modules.py::test_apply_action_filter_calls_the_executor_and_sets_audit_fields`**
+    A terminal verdict. Asserts the executor was called and
+    `meta.audit_event`/`audit_detail_json` are set for the next
+    module.
+
+178. **`test_modules.py::test_record_escalation_filter_sets_the_escalation_audit_event`**
+    The escalate branch's counterpart to 177 — no executor call,
+    just `meta.audit_event = "escalated_pending_tier2"`.
+
+179. **`test_modules.py::test_write_audit_entry_filter_writes_what_meta_describes`**
+    Asserts the audit entry written matches whatever
+    `meta.audit_event`/`audit_detail_json` say — generic across both
+    branches.
+
+180. **`test_modules.py::test_mark_processed_filter_writes_the_processed_row`**
+    Asserts `has_processed()` becomes `True` after the filter runs.
+
+181. **`test_modules_edge_cases.py::test_apply_action_filter_raises_when_verdict_is_missing`**
+    `ApplyActionFilter` run standalone with no prior
+    `RuleEvaluationSelector`. Asserts `MissingMetaError`, not a raw
+    `AttributeError`/`None` access.
+
+182. **`test_modules_edge_cases.py::test_write_audit_entry_filter_raises_when_ts_is_missing`**
+    Same pattern for `WriteAuditEntryFilter` missing `meta.ts`.
+
+183. **`test_modules_edge_cases.py::test_write_audit_entry_filter_raises_when_audit_event_is_missing`**
+    Same pattern for `WriteAuditEntryFilter` missing `meta.audit_event`.
+
+184. **`test_modules_edge_cases.py::test_mark_processed_filter_raises_when_verdict_is_missing`**
+    Same pattern for `MarkProcessedFilter` missing `meta.verdict`.
+
+185. **`test_modules_edge_cases.py::test_mark_processed_filter_raises_when_ts_is_missing`**
+    Same pattern for `MarkProcessedFilter` missing `meta.ts`, with
+    `meta.verdict` present — proves each field is checked
+    independently, not just "is anything missing."

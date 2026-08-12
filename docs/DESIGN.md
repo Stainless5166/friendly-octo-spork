@@ -126,7 +126,13 @@ flowchart TD
         config["config.py<br/>load/validate config.toml"]:::planned
         secrets_mod["secrets.py<br/>secretspec integration"]
         models_mod["models.py<br/>NormalizedMessage"]
-        pipeline_mod["pipeline.py<br/>process_message()"]
+
+        subgraph pipeline["pipeline/"]
+            pipeline_core["core.py<br/>Payload/Filter/Selector/Pipeline"]
+            pipeline_meta["meta.py<br/>MessageMeta"]
+            pipeline_modules["modules.py<br/>7 concrete Filters/Selectors"]
+            pipeline_default["default.py<br/>build_default_pipeline() +<br/>process_message()"]
+        end
 
         subgraph providers["providers/"]
             providers_base["base.py<br/>Provider + ActionApplier"]
@@ -657,24 +663,132 @@ classDiagram
 
 #### `spork.core.pipeline`
 
+Two diagrams: the generic framework (`core.py`), then the concrete
+message pipeline built on top of it (`meta.py`/`modules.py`/`default.py`)
+— see §9.4 for the full explanation.
+
 ```mermaid
 classDiagram
-    class StateDB
+    class Payload~M~ {
+        <<dataclass, frozen>>
+        +text: str
+        +meta: M
+    }
+    class Filter~M~ {
+        <<Protocol>>
+        +apply(payload: Payload~M~) Payload~M~
+    }
+    class Selector~M~ {
+        <<Protocol>>
+        +select(payload: Payload~M~) tuple
+    }
+    class UnknownBranchError { <<Exception>> }
+    class Pipeline~M~ {
+        -filters: list
+        -selector: Optional~Selector~
+        -routes: dict
+        +run(payload: Payload~M~) Payload~M~
+    }
+
+    Pipeline --> Filter : runs each in order
+    Pipeline --> Selector : follows its chosen branch
+    Pipeline --> Pipeline : a route value is itself a Pipeline
+    Pipeline ..> UnknownBranchError : raises
+```
+
+`core.py` knows nothing about messages, rules, or the state DB —
+`Payload`/`Filter`/`Selector`/`Pipeline` are generic over a metadata
+type `M`, provably reusable for a differently-shaped pipeline, not
+just this one.
+
+```mermaid
+classDiagram
+    class Filter { <<Protocol>> }
+    class Selector { <<Protocol>> }
     class ActionExecutor
+    class StateDB
     class evaluate { <<function>> }
+
+    class MessageMeta {
+        <<dataclass, frozen>>
+        +message: NormalizedMessage
+        +rules: Sequence~Rule~
+        +default_unmatched_action: Action
+        +classifier: Optional~TextClassifier~
+        +verdict: Optional~RuleVerdict~
+        +ts: Optional~str~
+        +audit_event: Optional~str~
+        +audit_detail_json: Optional~str~
+    }
+    class MissingMetaError { <<Exception>> }
+
+    class IdempotencyGateSelector {
+        -state_db: StateDB
+        +select(payload) tuple
+    }
+    class TimestampFilter {
+        -now: function
+        +apply(payload) Payload
+    }
+    class RuleEvaluationSelector {
+        +select(payload) tuple
+    }
+    class ApplyActionFilter {
+        -executor: ActionExecutor
+        +apply(payload) Payload
+    }
+    class RecordEscalationFilter {
+        +apply(payload) Payload
+    }
+    class WriteAuditEntryFilter {
+        -state_db: StateDB
+        +apply(payload) Payload
+    }
+    class MarkProcessedFilter {
+        -state_db: StateDB
+        +apply(payload) Payload
+    }
+
+    Selector <|.. IdempotencyGateSelector : structurally satisfies
+    Filter <|.. TimestampFilter : structurally satisfies
+    Selector <|.. RuleEvaluationSelector : structurally satisfies
+    Filter <|.. ApplyActionFilter : structurally satisfies
+    Filter <|.. RecordEscalationFilter : structurally satisfies
+    Filter <|.. WriteAuditEntryFilter : structurally satisfies
+    Filter <|.. MarkProcessedFilter : structurally satisfies
+
+    ApplyActionFilter ..> MissingMetaError : raises
+    WriteAuditEntryFilter ..> MissingMetaError : raises
+    MarkProcessedFilter ..> MissingMetaError : raises
+
+    RuleEvaluationSelector ..> evaluate : Tier 1 evaluation
+    ApplyActionFilter --> ActionExecutor : delegates non-escalate actions to
+    IdempotencyGateSelector --> StateDB
+    WriteAuditEntryFilter --> StateDB
+    MarkProcessedFilter --> StateDB
+
+    class build_default_pipeline {
+        <<function>>
+        +build_default_pipeline(executor, state_db, now) Pipeline
+    }
     class process_message {
         <<function>>
         +process_message(message, rules, default_unmatched_action, executor, state_db, classifier, now) Optional~RuleVerdict~
     }
-
-    process_message ..> StateDB : has_processed / mark_processed / write_audit_entry
-    process_message ..> evaluate : Tier 1 evaluation
-    process_message ..> ActionExecutor : executes non-escalate verdicts
+    build_default_pipeline ..> IdempotencyGateSelector : composes
+    build_default_pipeline ..> TimestampFilter : composes
+    build_default_pipeline ..> RuleEvaluationSelector : composes
+    build_default_pipeline ..> ApplyActionFilter : composes
+    build_default_pipeline ..> RecordEscalationFilter : composes
+    build_default_pipeline ..> WriteAuditEntryFilter : composes
+    build_default_pipeline ..> MarkProcessedFilter : composes
+    process_message ..> build_default_pipeline : builds, then runs
 ```
 
 The orchestrator §9 describes in prose — ties idempotency, evaluation,
 action execution, and audit logging into the one call a real message
-goes through. `StateDB`/`ActionExecutor`/`evaluate` are fully defined
+goes through, now composed from these seven modules instead of one
+function body. `ActionExecutor`/`StateDB`/`evaluate` are fully defined
 in their own diagrams above.
 
 #### `spork.core.secrets`
