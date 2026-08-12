@@ -182,6 +182,7 @@ flowchart TD
             llm_base["base.py<br/>LLMClient +<br/>VerdictRequest/Verdict"]
             llm_validate["validate.py<br/>validate_verdict()"]
             llm_confidence["confidence.py<br/>confidence_band()"]
+            llm_budget["budget.py<br/>has_budget_remaining()"]
             llm_loader["loader.py<br/>load_llm_client()"]
             subgraph llm_clients["clients/"]
                 llm_anthropic["anthropic.py<br/>AnthropicLLMClient"]
@@ -695,6 +696,22 @@ classDiagram
     confidence_band ..> ValueError : raises (alert_threshold > autoact_threshold)
 ```
 
+#### `spork.core.llm.budget`
+
+```mermaid
+classDiagram
+    class LLMUsage { <<dataclass, frozen>> }
+    class has_budget_remaining {
+        <<function>>
+        +has_budget_remaining(usage: LLMUsage, daily_call_budget: int) bool
+    }
+
+    has_budget_remaining ..> LLMUsage : reads
+```
+
+`LLMUsage` is fully defined in `spork.core.state`'s own diagram below
+— `StateDB.get_llm_usage()` produces it, this module only consumes it.
+
 #### `spork.core.llm.loader`
 
 ```mermaid
@@ -757,6 +774,13 @@ classDiagram
         +event: str
         +detail_json: Optional~str~
     }
+    class LLMUsage {
+        <<dataclass, frozen>>
+        +date: str
+        +calls: int
+        +tokens_in: int
+        +tokens_out: int
+    }
     class StateDB {
         -conn: Connection
         +get_cursor(account_id: str) Optional~str~
@@ -765,10 +789,13 @@ classDiagram
         +mark_processed(jmap_id: str, ...) None
         +write_audit_entry(...) None
         +get_audit_entries(jmap_id: Optional~str~) list
+        +record_llm_call(date: str, tokens_in: int, tokens_out: int) None
+        +get_llm_usage(date: str) LLMUsage
         +close() None
     }
 
     StateDB ..> AuditEntry : returns from get_audit_entries()
+    StateDB ..> LLMUsage : returns from get_llm_usage()
 ```
 
 #### `spork.core.pipeline`
@@ -1090,21 +1117,26 @@ default = "keyring://"
 
 ### 7.4 State store (SQLite)
 
-Single file, WAL mode, no external DB dependency. Tables (indicative,
-not final):
+Single file, WAL mode, no external DB dependency. Built tables (final —
+`StateDB` has real, tested methods for each):
 
 - `processed_messages(jmap_id, thread_id, received_at, tier_reached, verdict_json, action_taken, processed_at)`
   — the dedupe/idempotency key. A message is only ever acted on once
   unless a manual `spork reclassify` forces it.
 - `audit_log(id, ts, jmap_id, event, detail_json)` — human-readable
   trail for `spork logs`.
-- `rule_stats(rule_id, matches, last_matched_at)` — powers
-  `spork rules stats` so unused/over-firing rules are visible.
 - `push_cursor(account_id, state)` — the last JMAP `state` string seen,
   so a restart resumes from where it left off instead of re-scanning the
   whole mailbox.
-- `llm_usage(date, calls, tokens_in, tokens_out)` — feeds the daily
-  budget check in §7.2.
+- `llm_usage(date, calls, tokens_in, tokens_out)` — `date` is the
+  primary key (one row per day, upserted via `record_llm_call()`);
+  feeds the daily budget check (§10.4) and makes actual spend visible
+  via `spork status` (§7.2, M5).
+
+Still indicative, not final — not built yet:
+
+- `rule_stats(rule_id, matches, last_matched_at)` — powers
+  `spork rules stats` so unused/over-firing rules are visible.
 
 ### 7.5 Rules (`rules.toml`)
 
@@ -1849,6 +1881,49 @@ guards the one invariant config could get backwards —
 where the "always alert" line is set higher than the "never alert"
 line) — by raising `ValueError` eagerly rather than silently producing
 whichever band the broken comparison happens to fall into.
+
+### 10.4 `daily_call_budget` enforcement + `llm_usage` tracking
+
+Two pieces, both real today (no live API call needed to build or test
+either): `StateDB` (§7.4) gains an `llm_usage` table plus the methods
+to read/write it, and `spork.core.llm.budget` gains the pure
+enforcement check.
+
+```python
+@dataclass(frozen=True, slots=True)
+class LLMUsage:
+    date: str
+    calls: int
+    tokens_in: int
+    tokens_out: int
+
+
+class StateDB:
+    def record_llm_call(self, date: str, *, tokens_in: int, tokens_out: int) -> None: ...
+    def get_llm_usage(self, date: str) -> LLMUsage: ...
+
+
+def has_budget_remaining(usage: LLMUsage, *, daily_call_budget: int) -> bool: ...
+```
+
+`get_llm_usage()` never returns `None` — a date with no recorded calls
+is `LLMUsage(date, calls=0, tokens_in=0, tokens_out=0)`, so a caller
+never special-cases "never called today" separately from "called zero
+times today." `record_llm_call()` upserts (accumulates onto an
+existing day's row, doesn't overwrite it) — the same
+`INSERT ... ON CONFLICT DO UPDATE` pattern `set_cursor()`/
+`mark_processed()` already use.
+
+`has_budget_remaining()` is deliberately decoupled from `StateDB` —
+`usage.calls < daily_call_budget`, nothing else — the same way
+`confidence_band()` is decoupled from `Verdict`. A future
+`BudgetGateSelector` (the escalate branch's actual gate, once the
+Tier 2 pipeline is wired end to end) calls `get_llm_usage()` then this
+function: the same two-step shape `IdempotencyGateSelector` already
+uses for `has_processed()` (docs/DESIGN.md §9.4). Once budget is
+exhausted, §10's policy applies: everything that would've escalated
+instead goes straight to Needs-Review + alert, never a silently
+dropped message.
 
 ## 11. Safety & human-in-the-loop
 
