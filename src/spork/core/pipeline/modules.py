@@ -1,6 +1,6 @@
 """The concrete Filters/Selectors that reproduce M2's process_message() (§9.4).
 
-Seven small modules, each independently constructible and testable
+Eight small modules, each independently constructible and testable
 against a bare `Payload[MessageMeta]` — see docs/DESIGN.md §9.4 for
 why. `spork.core.pipeline.default.build_default_pipeline()` wires them
 together.
@@ -14,6 +14,7 @@ from collections.abc import Callable
 from spork.core.actions.executor import ActionExecutor
 from spork.core.pipeline.core import Payload
 from spork.core.pipeline.meta import MessageMeta, MissingMetaError
+from spork.core.pipeline.observer import PipelineObserver
 from spork.core.rules.engine import evaluate
 from spork.core.state.db import StateDB
 
@@ -112,12 +113,36 @@ class RecordEscalationFilter:
     No action to apply — escalation means Tier 2 hasn't produced a
     terminal action yet (docs/DESIGN.md §9's interim policy) — just
     records that the message was escalated for the next filter to log.
+    Also fires an immediate alert when the matched rule's action opted
+    in (`Action.alert_immediately`, §12.2) — a VIP-sender rule, e.g. —
+    rather than the generic "wait for Tier 2" treatment every other
+    escalation gets.
     """
 
+    def __init__(self, ops: PipelineObserver) -> None:
+        self._ops = ops
+
     def apply(self, payload: Payload[MessageMeta]) -> Payload[MessageMeta]:
+        meta = payload.meta
+        if meta.verdict is None:
+            raise MissingMetaError(
+                "RecordEscalationFilter requires meta.verdict — run RuleEvaluationSelector first"
+            )
+        if meta.verdict.action.alert_immediately:
+            if meta.correlation_id is None:
+                raise MissingMetaError(
+                    "RecordEscalationFilter requires meta.correlation_id to alert — "
+                    "run CorrelationIdFilter first"
+                )
+            reason = meta.verdict.action.reason or meta.verdict.matched_rule_id or "escalated"
+            self._ops.alert(
+                meta.correlation_id,
+                f"Escalated: {reason}",
+                f"{meta.message.from_address}: {meta.message.subject}",
+            )
         return dataclasses.replace(
             payload,
-            meta=dataclasses.replace(payload.meta, audit_event="escalated_pending_tier2"),
+            meta=dataclasses.replace(meta, audit_event="escalated_pending_tier2"),
         )
 
 

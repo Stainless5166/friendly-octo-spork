@@ -1,6 +1,6 @@
 """The concrete Filters/Selectors/Augment that make up the Tier 2 pipeline (§10.7).
 
-Thirteen small modules, each independently constructible and testable
+Fourteen small modules, each independently constructible and testable
 against a bare `Payload[Tier2Meta]` — same rationale as
 `spork.core.pipeline.modules`. `spork.core.pipeline.tier2.default.build_tier2_pipeline()`
 wires them together.
@@ -12,6 +12,7 @@ import dataclasses
 from collections.abc import Callable, Sequence
 
 from spork.core.actions.executor import ActionExecutor
+from spork.core.alerts.base import AlertUrgency
 from spork.core.llm.base import LLMClient, VerdictRequest
 from spork.core.llm.budget import has_budget_remaining
 from spork.core.llm.clean import clean_body
@@ -19,9 +20,21 @@ from spork.core.llm.confidence import confidence_band
 from spork.core.llm.validate import validate_verdict
 from spork.core.pipeline.core import Payload
 from spork.core.pipeline.meta import MissingMetaError
+from spork.core.pipeline.observer import PipelineObserver
 from spork.core.pipeline.tier2.meta import Tier2Meta
 from spork.core.providers.base import DraftCreator
 from spork.core.state.db import StateDB
+
+# Verdict.urgency ("low"/"medium"/"high", Claude's judgment about the
+# message) and AlertUrgency ("low"/"normal"/"critical", this alert's
+# desktop-notification urgency, §12.1) are deliberately different
+# Literals — this is the explicit translation, never an assumed 1:1
+# (docs/DESIGN.md §12.2).
+_ALERT_URGENCY_BY_VERDICT_URGENCY: dict[str, AlertUrgency] = {
+    "low": "low",
+    "medium": "normal",
+    "high": "critical",
+}
 
 
 class TimestampFilter:
@@ -188,10 +201,18 @@ class ConfidenceBandSelector:
 class ApplyVerdictActionFilter:
     """Applies verdict.suggested_action via the injected ActionExecutor
     (the same one Tier 1 terminal actions use) — the "autoact" and
-    "autoact_alert" branches' shared filter (§10.7)."""
+    "autoact_alert" branches' shared filter (§10.7).
 
-    def __init__(self, executor: ActionExecutor) -> None:
+    Alerts when `meta.band == "autoact_alert"` — that's the entire
+    difference between the two bands this filter serves — **or** when
+    `verdict.urgency == "high"`, the orthogonal trigger dimension from
+    §12's intro: a high-urgency verdict alerts even inside a plain
+    "autoact" band, since both route to this same filter (§10.7).
+    """
+
+    def __init__(self, executor: ActionExecutor, ops: PipelineObserver) -> None:
         self._executor = executor
+        self._ops = ops
 
     def apply(self, payload: Payload[Tier2Meta]) -> Payload[Tier2Meta]:
         meta = payload.meta
@@ -204,6 +225,19 @@ class ApplyVerdictActionFilter:
             f'{{"action_type": "{meta.verdict.suggested_action.type}", '
             f'"category": "{meta.verdict.category}", "band": "{meta.band}"}}'
         )
+        if meta.band == "autoact_alert" or meta.verdict.urgency == "high":
+            if meta.correlation_id is None:
+                raise MissingMetaError(
+                    "ApplyVerdictActionFilter requires meta.correlation_id to alert — "
+                    "run CorrelationIdFilter first"
+                )
+            urgency = _ALERT_URGENCY_BY_VERDICT_URGENCY.get(meta.verdict.urgency, "normal")
+            self._ops.alert(
+                meta.correlation_id,
+                f"Action taken: {meta.verdict.category}",
+                f"{meta.message.from_address}: {meta.message.subject}",
+                urgency=urgency,
+            )
         return dataclasses.replace(
             payload,
             meta=dataclasses.replace(
@@ -214,7 +248,11 @@ class ApplyVerdictActionFilter:
 
 class RecordAlertOnlyFilter:
     """The "alert_only" branch's counterpart to ApplyVerdictActionFilter
-    — no action applied, just records why (§10.7)."""
+    — no action applied, just records why (§10.7). Always alerts: this
+    band's entire purpose is "a human must decide" (§12.2)."""
+
+    def __init__(self, ops: PipelineObserver) -> None:
+        self._ops = ops
 
     def apply(self, payload: Payload[Tier2Meta]) -> Payload[Tier2Meta]:
         meta = payload.meta
@@ -222,6 +260,18 @@ class RecordAlertOnlyFilter:
             raise MissingMetaError(
                 "RecordAlertOnlyFilter requires meta.verdict — run CallLLMAugment first"
             )
+        if meta.correlation_id is None:
+            raise MissingMetaError(
+                "RecordAlertOnlyFilter requires meta.correlation_id to alert — "
+                "run CorrelationIdFilter first"
+            )
+        urgency = _ALERT_URGENCY_BY_VERDICT_URGENCY.get(meta.verdict.urgency, "normal")
+        self._ops.alert(
+            meta.correlation_id,
+            f"Needs review: {meta.verdict.category}",
+            f"{meta.message.from_address}: {meta.message.subject}",
+            urgency=urgency,
+        )
         detail_json = f'{{"category": "{meta.verdict.category}", "band": "{meta.band}"}}'
         return dataclasses.replace(
             payload,
@@ -235,12 +285,29 @@ class RecordBudgetExhaustedFilter:
     """The "budget_exhausted" branch's counterpart — Tier 2 was skipped
     entirely, matching §10's cost-control policy: escalated mail that
     can't get a Tier 2 call goes straight to Needs-Review + alert
-    rather than being silently dropped."""
+    rather than being silently dropped. Always alerts, at critical
+    urgency — a daily budget being exhausted is itself worth knowing
+    about promptly, not just the individual message (§12.2)."""
+
+    def __init__(self, ops: PipelineObserver) -> None:
+        self._ops = ops
 
     def apply(self, payload: Payload[Tier2Meta]) -> Payload[Tier2Meta]:
+        meta = payload.meta
+        if meta.correlation_id is None:
+            raise MissingMetaError(
+                "RecordBudgetExhaustedFilter requires meta.correlation_id to alert — "
+                "run CorrelationIdFilter first"
+            )
+        self._ops.alert(
+            meta.correlation_id,
+            "Tier 2 skipped: daily budget exhausted",
+            f"{meta.message.from_address}: {meta.message.subject}",
+            urgency="critical",
+        )
         return dataclasses.replace(
             payload,
-            meta=dataclasses.replace(payload.meta, audit_event="tier2_budget_exhausted"),
+            meta=dataclasses.replace(meta, audit_event="tier2_budget_exhausted"),
         )
 
 
