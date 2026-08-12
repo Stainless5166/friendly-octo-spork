@@ -274,9 +274,15 @@ genuine, working delivery channel (structured, greppable log output),
 not a stub; a `notify-send`/D-Bus backend is a deliberate near-term
 follow-up behind the same `Alerter` protocol, not built this round.
 
-- [ ] `Alerter` protocol (mirrors the `Provider`/`LLMClient` adapter
+- [x] `Alerter` protocol (mirrors the `Provider`/`LLMClient` adapter
       pattern, §9.3/§10.1/§12.1 — one Protocol, backends loaded the
-      same `"module:ClassName"` way) + `LoggingAlerter` (M)
+      same `"module:ClassName"` way) + `LoggingAlerter` (M) —
+      `AlertUrgency`'s low/normal/critical vocabulary checked against
+      the real Desktop Notifications Specification and `notify-send(1)`
+      before being settled; `LoggingAlerter` is a genuinely real
+      backend (logs each alert via `logging.getLogger(__name__)`,
+      never configures handlers itself), not a stub for the future
+      desktop-notification backend.
 - [ ] Alert triggers wired to confidence bands + VIP rules + daemon health (M)
 - [ ] Graceful degrade when no DBus session bus is available (e.g. no
       active desktop session — sporkd keeps running, alerts just don't

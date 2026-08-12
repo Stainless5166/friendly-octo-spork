@@ -62,7 +62,15 @@ Filter/Selector/Augment/Pipeline framework — proven end to end against
 `RecordedLLMClient` with zero live API calls. Still M3, still 7/7 (not
 a new checklist item); what's still open is deciding *which* escalated
 message needs a Tier 2 run, deliberately left to a future daemon loop
-that needs a live JMAP session anyway.
+that needs a live JMAP session anyway. Updated once more for M4's
+first item: `spork.core.alerts.base`/`log`/`loader` — an `Alerter`
+Protocol adapter (mirrors `Provider`/`LLMClient`), `LoggingAlerter` as
+a genuinely real v1 backend (not a stub for the desktop-notification
+backend the roadmap originally described — see M4's table below for
+why), and `load_alerter()` for config-driven backend selection.
+`AlertUrgency`'s vocabulary was checked against the actual Desktop
+Notifications Specification and `notify-send(1)` before being settled.
+**M4 is 1/3.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -316,13 +324,39 @@ duplicate that idempotency check; the scheduling decision needs a live
 JMAP session to know what's actually pending (M5, same blocker M1's
 daemon loop has), and isn't invented here.
 
-### M4–M7
+### M4 — Alerting — 1/3
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `Alerter` protocol + `LoggingAlerter` | ✅ | ✅ — tests 303–317 (15 tests), 100% line coverage |
+| Alert triggers wired to confidence bands + VIP rules + daemon health | ❌ | — |
+| Graceful degrade when no DBus session bus is available | — | moot for now — see below |
+
+`spork.core.alerts.base`/`log`/`loader` mirror
+`spork.core.providers.base`/`loader` and `spork.core.llm.base`/`loader`
+exactly: an `Alerter` Protocol, a `LoggingAlerter` v1 backend, and
+`load_alerter()` for config-driven backend selection.
+`AlertUrgency`'s three levels (`low`/`normal`/`critical`) were checked
+against the actual [Desktop Notifications
+Specification](https://specifications.freedesktop.org/notification/1.2/urgency-levels.html)
+and `notify-send(1)`'s `-u` flag before being settled, not guessed —
+so a future real desktop backend needs no translation layer.
+`LoggingAlerter` is a genuine, working delivery channel (not a stub):
+each alert is logged via `logging.getLogger(__name__)`, urgency mapped
+to a log level, never configuring handlers itself (Python logging best
+practice — that's the application's job, M7). The "graceful degrade
+when no DBus session bus is available" checklist item doesn't apply to
+`LoggingAlerter` (no DBus dependency to degrade from) — it's really
+about the future desktop-notification backend, and gets its own
+checkbox once that backend exists.
+
+### M5–M7
 
 No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (302 tests, all passing — 0 xfail)
+## Full test inventory (317 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -1763,3 +1797,65 @@ both were correct, neither had been verified until now.
     A loaded `AnthropicLLMClient`'s `get_verdict()` still raises
     `NotImplementedError` — the loader doesn't change a class's own
     behavior.
+
+### tests/core/alerts (the Alerter adapter, §12.1)
+
+`spork.core.alerts.log.LoggingAlerter` tested with pytest's built-in
+`caplog` fixture; `spork.core.alerts.loader.load_alerter()` tested the
+same way `providers.loader`/`llm.loader` are — a fixture stand-in
+class, self-referenced via `__name__`.
+
+303. **`test_log.py::test_notify_logs_the_title_and_body`**
+    Asserts both land in the captured log text.
+
+304. **`test_log.py::test_notify_defaults_to_normal_urgency_at_warning_level`**
+    Omitting `urgency=`. Asserts the record's level is `WARNING`.
+
+305. **`test_log.py::test_notify_logs_low_urgency_at_info_level`**
+    Asserts `INFO`.
+
+306. **`test_log.py::test_notify_logs_critical_urgency_at_error_level`**
+    Asserts `ERROR`.
+
+307. **`test_log.py::test_notify_appends_the_url_to_the_body_when_given`**
+    Asserts the URL appears in the logged text — appended, not
+    dropped (desktop notifications have no first-class link target).
+
+308. **`test_log_edge_cases.py::test_notify_falls_back_to_warning_for_an_unrecognized_urgency`**
+    A caller ignoring `AlertUrgency`'s `Literal` contract (reachable
+    only past mypy). Asserts `WARNING`, not a raw `KeyError` that
+    would lose the alert.
+
+309. **`test_log_edge_cases.py::test_notify_with_an_empty_title_and_body_still_logs`**
+    Degenerate but valid input. Asserts a record is still produced.
+
+310. **`test_log_edge_cases.py::test_each_notify_call_produces_its_own_log_record`**
+    Two `notify()` calls. Asserts two independent records, in order —
+    not deduplicated or batched.
+
+311. **`test_log_edge_cases.py::test_the_logger_name_follows_the_module_for_future_per_package_filtering`**
+    Asserts the logger name is `"spork.core.alerts.log"` — enables a
+    future per-package log-level config (M7).
+
+312. **`test_loader.py::test_load_alerter_imports_and_instantiates_by_spec`**
+    A well-formed `"module:ClassName"` spec. Asserts it resolves to an
+    instance of that class.
+
+313. **`test_loader.py::test_load_alerter_passes_through_constructor_kwargs`**
+    Asserts extra kwargs reach the alerter's constructor unmodified.
+
+314. **`test_loader.py::test_load_alerter_raises_for_malformed_spec`**
+    A spec with no `:` separator. Asserts `AlerterLoadError` before
+    any import is attempted.
+
+315. **`test_loader_edge_cases.py::test_load_alerter_raises_for_unimportable_module`**
+    A spec naming a nonexistent module. Asserts `AlerterLoadError`,
+    not a raw `ImportError`.
+
+316. **`test_loader_edge_cases.py::test_load_alerter_raises_for_missing_class_attribute`**
+    A spec naming a real module but an undefined class. Asserts
+    `AlerterLoadError`, not a raw `AttributeError`.
+
+317. **`test_loader_edge_cases.py::test_load_alerter_raises_when_construction_fails`**
+    An alerter whose constructor rejects the given kwargs. Asserts
+    `AlerterLoadError`, not a raw `TypeError`.
