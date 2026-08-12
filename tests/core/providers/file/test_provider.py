@@ -106,3 +106,54 @@ def test_action_applier_appends_one_jsonl_entry_per_apply_call(
     assert entries[0]["action_type"] == "move"
     assert entries[0]["mailbox"] == "Reading"
     assert entries[1]["action_type"] == "tag"
+
+
+def test_build_draft_creator_returns_something_that_can_create_a_draft(
+    tmp_path: Path, make_message
+) -> None:
+    """build_draft_creator() returns an object satisfying DraftCreator
+    (has a working .create_draft() method) — the third leg of the
+    Provider contract per docs/DESIGN.md §10.6."""
+    provider = FileProvider(tmp_path / "messages.json", tmp_path / "actions.jsonl")
+    draft_creator = provider.build_draft_creator()
+
+    draft_creator.create_draft(make_message(message_id="msg-1"), "Friday 2pm works for me.")
+
+    assert (tmp_path / "drafts.jsonl").exists()
+
+
+def test_draft_creator_appends_one_jsonl_entry_per_create_draft_call(
+    tmp_path: Path, make_message
+) -> None:
+    """Two create_draft() calls append two JSON-lines entries, in
+    order, each recording the message it's a reply to and the draft
+    body — an inspectable record, same treatment as
+    test_action_applier_appends_one_jsonl_entry_per_apply_call."""
+    drafts_path = tmp_path / "drafts.jsonl"
+    provider = FileProvider(
+        tmp_path / "messages.json", tmp_path / "actions.jsonl", drafts_log_path=drafts_path
+    )
+    draft_creator = provider.build_draft_creator()
+
+    draft_creator.create_draft(make_message(message_id="msg-1"), "Reply one.")
+    draft_creator.create_draft(make_message(message_id="msg-2"), "Reply two.")
+
+    lines = drafts_path.read_text().splitlines()
+    entries = [json.loads(line) for line in lines]
+    assert [e["in_reply_to_message_id"] for e in entries] == ["msg-1", "msg-2"]
+    assert entries[0]["body"] == "Reply one."
+    assert entries[1]["body"] == "Reply two."
+
+
+def test_drafts_log_defaults_next_to_the_actions_log(tmp_path: Path, make_message) -> None:
+    """Not passing drafts_log_path= explicitly still produces a real,
+    inspectable log — a drafts.jsonl next to actions_log_path — so
+    existing two-arg FileProvider(...) call sites keep working
+    unchanged."""
+    provider = FileProvider(tmp_path / "messages.json", tmp_path / "actions.jsonl")
+    draft_creator = provider.build_draft_creator()
+
+    draft_creator.create_draft(make_message(), "A reply.")
+
+    assert (tmp_path / "drafts.jsonl").exists()
+    assert not (tmp_path / "actions.jsonl").exists()  # nothing applied, only drafted
