@@ -553,6 +553,7 @@ classDiagram
         <<pydantic BaseModel, extra=forbid>>
         +always: bool
         +from_domain_in: Optional~list~
+        +from_in: Optional~list~
         +local_classifier_category_in: Optional~list~
     }
     class Action {

@@ -329,7 +329,7 @@ daemon loop has), and isn't invented here.
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `Alerter` protocol + `LoggingAlerter` | ✅ | ✅ — tests 303–317 (15 tests), 100% line coverage |
-| Alert triggers wired to confidence bands + VIP rules + daemon health | ❌ | — |
+| Alert triggers wired to confidence bands + VIP rules + daemon health | ❌ (prerequisite closed: `from_in` condition kind, tests 318–322) | — |
 | Graceful degrade when no DBus session bus is available | — | moot for now — see below |
 
 `spork.core.alerts.base`/`log`/`loader` mirror
@@ -356,7 +356,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (317 tests, all passing — 0 xfail)
+## Full test inventory (322 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -1859,3 +1859,42 @@ class, self-referenced via `__name__`.
 317. **`test_loader_edge_cases.py::test_load_alerter_raises_when_construction_fails`**
     An alerter whose constructor rejects the given kwargs. Asserts
     `AlerterLoadError`, not a raw `TypeError`.
+
+### tests/core/rules (from_in condition kind — VIP-sender gap, §7.5)
+
+Closes a real gap found while reviewing M4's alert-trigger hook points:
+docs/DESIGN.md §7.5's own `vip-senders` example rule has used
+`from_in = [...]` since it was first written, but `Condition` never
+grew the field — `extra="forbid"` meant that example would be rejected
+by `load_rules()` today. `from_in` is an exact-sender-address match,
+deliberately distinct from `from_domain_in` (same-mailbox vs.
+same-domain). Numbered here rather than inlined into 27–35/90–97 per
+this file's own rule: numbers are stable once assigned, so later
+additions to an already-numbered section go at the end of the
+inventory, not renumbered into it.
+
+318. **`test_engine.py::test_from_in_condition_matches_exact_sender_address`**
+    A `from_in=["boss@example.com", "spouse@example.com"]` rule against
+    a matching and a non-matching sender. Confirms exact-address
+    matching, and that a message is correctly turned away too.
+
+319. **`test_engine.py::test_from_in_condition_does_not_match_on_domain_alone`**
+    A sender sharing a VIP's domain but not their exact address.
+    Asserts no match — guards the from_in/from_domain_in distinction.
+
+320. **`test_loader.py::test_load_rules_parses_from_in_condition`**
+    A real `rules.toml` using `from_in`. Asserts it round-trips through
+    `load_rules()` into `Condition.from_in` — the schema actually
+    accepts the shape docs/DESIGN.md's example has shown all along.
+
+321. **`test_engine_edge_cases.py::test_from_in_and_from_domain_in_together_use_and_semantics`**
+    A `Condition` setting both `from_in` and `from_domain_in`, against
+    a message matching one but not the other. Asserts no match — AND
+    across fields, not OR, same as every other multi-field `Condition`.
+    Passed against the existing implementation with no code change.
+
+322. **`test_engine_edge_cases.py::test_from_in_with_empty_list_never_matches`**
+    `from_in=[]` ahead of an `always=True` fallback. Asserts the
+    fallback wins — a set-but-empty list is a real constraint ("match
+    nothing"), not equivalent to the field being unset. Passed against
+    the existing implementation with no code change.

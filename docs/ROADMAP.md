@@ -284,6 +284,11 @@ follow-up behind the same `Alerter` protocol, not built this round.
       never configures handlers itself), not a stub for the future
       desktop-notification backend.
 - [ ] Alert triggers wired to confidence bands + VIP rules + daemon health (M)
+      — prerequisite closed: `Condition.from_in` (exact-sender-address
+      match, distinct from `from_domain_in`), the condition kind
+      §7.5's `vip-senders` example rule has assumed all along but the
+      schema never actually had (`extra="forbid"` would've rejected
+      it) — see docs/TEST_COVERAGE.md tests 318–322.
 - [ ] Graceful degrade when no DBus session bus is available (e.g. no
       active desktop session — sporkd keeps running, alerts just don't
       display, logged instead) (S) — moot for now: `LoggingAlerter`
