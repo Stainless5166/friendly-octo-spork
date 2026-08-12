@@ -61,6 +61,10 @@ class Action(BaseModel):
     type: Literal["move", "tag", "escalate", "ignore"]
     mailbox: str | None = None
     reason: str | None = None
+    # Opts an escalation into an immediate alert (docs/DESIGN.md §12.2)
+    # rather than waiting for Tier 2's verdict — a flag any escalation
+    # rule can set, not hardcoded to VIP-sender identity specifically.
+    alert_immediately: bool = False
 
 
 class Rule(BaseModel):
