@@ -65,61 +65,33 @@ key design decisions. See `ROADMAP.md` for phasing.
 
 ## 5. Architecture
 
-```
-                         Fastmail (JMAP over HTTPS)
-                                    │
-                     EventSource push (state changes)
-                                    │
-                                    ▼
-                    ┌───────────────────────────────┐
-                    │            sporkd              │
-                    │        (daemon process)        │
-                    │                                 │
-                    │  ┌─────────────────────────┐    │
-                    │  │  JMAP session manager    │    │
-                    │  │  (jmapc client + push)   │    │
-                    │  └────────────┬─────────────┘    │
-                    │               ▼                  │
-                    │  ┌─────────────────────────┐    │
-                    │  │  Fetch (Email/query+get) │    │
-                    │  └────────────┬─────────────┘    │
-                    │               ▼                  │
-                    │  ┌─────────────────────────┐    │
-                    │  │  Tier 1: rule engine     │    │
-                    │  │  (heuristics, no LLM)    │    │
-                    │  └──────┬──────────┬────────┘    │
-                    │         │          │              │
-                    │   confident   ambiguous/          │
-                    │   verdict     "escalate" rule      │
-                    │         │          │              │
-                    │         │          ▼              │
-                    │         │   ┌─────────────────┐   │
-                    │         │   │ Tier 2: Claude   │   │
-                    │         │   │ API classify     │   │
-                    │         │   └────────┬─────────┘   │
-                    │         │            │              │
-                    │         ▼            ▼              │
-                    │  ┌─────────────────────────────┐   │
-                    │  │  Action executor             │   │
-                    │  │  (JMAP Email/set, drafts)     │   │
-                    │  └──────────────┬──────────────┘   │
-                    │                 │                    │
-                    │                 ▼                    │
-                    │  ┌─────────────────────────────┐   │
-                    │  │  Alerting (desktop/push)      │   │
-                    │  └─────────────────────────────┘   │
-                    │                                 │
-                    │  ┌─────────────────────────────┐   │
-                    │  │  State store (SQLite)         │   │
-                    │  │  cursor, audit log, rule stats │   │
-                    │  └─────────────────────────────┘   │
-                    │                                 │
-                    │  Local control socket (Unix domain) │
-                    └───────────────┬─────────────────┘
-                                    │
-                                    ▼
-                              spork (CLI)
-                    status / rules / config / logs / pause
+```mermaid
+flowchart TD
+    fastmail[Fastmail<br/>JMAP over HTTPS]
+    fastmail -->|EventSource push<br/>state changes| session
+
+    subgraph sporkd["sporkd (daemon process)"]
+        direction TB
+        session["JMAP session manager<br/>(jmapc client + push)"]
+        fetch["Fetch (Email/query + Email/get)"]
+        tier1{"Tier 1: rule engine<br/>(heuristics, no LLM)"}
+        tier2["Tier 2: Claude API classify"]
+        exec_["Action executor<br/>(JMAP Email/set, drafts)"]
+        alert["Alerting (desktop/push)"]
+        state[("State store (SQLite)<br/>cursor, audit log, rule stats")]
+        socket[["Local control socket<br/>(Unix domain)"]]
+
+        session --> fetch --> tier1
+        tier1 -->|confident verdict| exec_
+        tier1 -->|"ambiguous / escalate rule"| tier2
+        tier2 --> exec_
+        exec_ --> alert
+        fetch -.->|cursor| state
+        exec_ -.->|audit| state
+        tier1 -.->|audit| state
+    end
+
+    socket === cli["spork (CLI)<br/>status / rules / config / logs / pause"]
 ```
 
 Two OS processes, one shared library:
@@ -139,63 +111,105 @@ Two OS processes, one shared library:
 
 ### 6.1 Core library (`spork.core`)
 
-```
-src/spork/
-├── core/
-│   ├── config.py        # load/validate config.toml
-│   ├── secrets.py        # secretspec integration
-│   ├── providers/
-│   │   ├── base.py         # Provider + ActionApplier protocols — the adapter targets (§9.3)
-│   │   ├── loader.py        # load_provider(): "module:Class" spec -> Provider, via importlib
-│   │   ├── jmap/
-│   │   │   ├── provider.py   # JmapProvider: the Adapter — build_source() + build_action_applier()
-│   │   │   ├── client.py     # thin wrapper over jmapc: session, batching, Email/set mutation
-│   │   │   ├── push.py       # EventSource listener Trigger
-│   │   │   ├── backoff.py    # reconnect delay scheduling
-│   │   │   └── mailboxes.py  # mailbox role resolution & caching
-│   │   └── file/
-│   │       ├── provider.py   # FileProvider: a second, fully real Adapter (no NotImplementedError)
-│   │       └── messages.py   # loads NormalizedMessages from a JSON file
-│   ├── models.py          # NormalizedMessage: transport-agnostic message shape
-│   ├── pipeline.py         # process_message(): idempotency + evaluate + act + audit (§9)
-│   ├── sources/
-│   │   ├── base.py         # Trigger, ContentFetcher, Source protocols
-│   │   ├── triggered.py     # TriggeredSource: composes any Trigger + ContentFetcher
-│   │   └── replay.py        # ImmediateTrigger + SequenceContentFetcher (tests/demos)
-│   ├── rules/
-│   │   ├── schema.py     # rule dataclasses / pydantic models
-│   │   ├── engine.py     # Tier 1 evaluation
-│   │   └── loader.py     # rules.toml (or .d/ directory) parsing
-│   ├── classify/
-│   │   ├── base.py        # TextClassifier protocol + ClassificationResult
-│   │   ├── registry.py     # name -> TextClassifier factory lookup
-│   │   └── keyword.py      # default zero-dependency heuristic backend
-│   ├── dispatch/
-│   │   ├── dispatcher.py    # fan a message out to N named TextClassifier targets
-│   │   └── combine.py       # Combiner protocol + DispatchingClassifier
-│   ├── llm/
-│   │   ├── client.py     # Claude API wrapper (Messages API)
-│   │   ├── prompts.py    # system prompt + verdict schema
-│   │   └── verdict.py    # structured output model + validation
-│   ├── actions/
-│   │   ├── executor.py   # ActionExecutor: applies move/tag/ignore via an injected
-│   │   │                 # ActionApplier (§9.3) — provider-agnostic, rejects escalate
-│   │   └── drafts.py     # draft creation (never EmailSubmission)
-│   ├── alerts/
-│   │   ├── base.py       # Alerter protocol
-│   │   ├── desktop.py    # freedesktop notifications (notify-send/DBus)
-│   │   └── push.py       # optional webhook/ntfy/pushover backend
-│   ├── state/
-│   │   ├── db.py         # SQLite connection, migrations
-│   │   └── models.py     # ProcessedMessage, AuditEntry, RuleStat
-│   └── ipc/
-│       ├── protocol.py   # request/response schema over the socket
-│       └── server.py     # daemon-side socket server
-├── daemon/
-│   └── main.py           # sporkd entrypoint: wires core, runs event loop
-└── cli/
-    ├── main.py           # spork entrypoint (Typer — see §6.3)
-    └── commands/         # status.py, rules.py, config.py, logs.py, ...
+Solid boxes are built and tested today; dashed boxes are planned
+layout for a milestone that hasn't landed yet (M3's `llm/`, M4's
+`alerts/`, M5's `ipc/` + most of `cli/commands/`, and `config.py`,
+still needed by anything that reads `config.toml`). This is layout
+orientation only — see §6.4 for what each built module's classes
+actually look like.
+
+```mermaid
+flowchart TD
+    src["src/spork/"] --> core & daemon_pkg & cli_pkg
+
+    subgraph core["core/ (shared library)"]
+        config["config.py<br/>load/validate config.toml"]:::planned
+        secrets_mod["secrets.py<br/>secretspec integration"]
+        models_mod["models.py<br/>NormalizedMessage"]
+        pipeline_mod["pipeline.py<br/>process_message()"]
+
+        subgraph providers["providers/"]
+            providers_base["base.py<br/>Provider + ActionApplier"]
+            providers_loader["loader.py<br/>load_provider()"]
+            subgraph jmap["jmap/"]
+                jmap_provider["provider.py<br/>JmapProvider"]
+                jmap_client["client.py<br/>JmapClient"]
+                jmap_push["push.py<br/>JmapPushTrigger"]
+                jmap_backoff["backoff.py<br/>next_delay()"]
+                jmap_mailboxes["mailboxes.py<br/>MailboxResolver"]
+            end
+            subgraph file_["file/"]
+                file_provider["provider.py<br/>FileProvider"]
+                file_messages["messages.py<br/>load_messages()"]
+            end
+        end
+
+        subgraph sources["sources/"]
+            sources_base["base.py<br/>Trigger/ContentFetcher/Source"]
+            sources_triggered["triggered.py<br/>TriggeredSource"]
+            sources_replay["replay.py<br/>ImmediateTrigger +<br/>SequenceContentFetcher"]
+            sources_timer["timer.py<br/>IntervalTimer"]
+            sources_fallback["fallback.py<br/>FallbackSource"]
+        end
+
+        subgraph rules["rules/"]
+            rules_schema["schema.py<br/>Condition/Action/Rule"]
+            rules_engine["engine.py<br/>Tier 1 evaluate()"]
+            rules_loader["loader.py<br/>rules.toml parsing"]
+        end
+
+        subgraph classify["classify/"]
+            classify_base["base.py<br/>TextClassifier +<br/>ClassificationResult"]
+            classify_registry["registry.py<br/>name -> factory lookup"]
+            classify_keyword["keyword.py<br/>default heuristic backend"]:::planned
+        end
+
+        subgraph dispatch["dispatch/"]
+            dispatch_dispatcher["dispatcher.py<br/>Dispatcher"]
+            dispatch_combine["combine.py<br/>Combiner +<br/>DispatchingClassifier"]
+        end
+
+        subgraph llm["llm/ (M3)"]
+            llm_client["client.py"]:::planned
+            llm_prompts["prompts.py"]:::planned
+            llm_verdict["verdict.py"]:::planned
+        end
+
+        subgraph actions["actions/"]
+            actions_executor["executor.py<br/>ActionExecutor"]
+            actions_drafts["drafts.py (M3)"]:::planned
+        end
+
+        subgraph alerts["alerts/ (M4)"]
+            alerts_base["base.py"]:::planned
+            alerts_desktop["desktop.py"]:::planned
+            alerts_push["push.py"]:::planned
+        end
+
+        subgraph state["state/"]
+            state_db["db.py<br/>StateDB + AuditEntry"]
+        end
+
+        subgraph ipc["ipc/ (M5)"]
+            ipc_protocol["protocol.py"]:::planned
+            ipc_server["server.py"]:::planned
+        end
+    end
+
+    subgraph daemon_pkg["daemon/"]
+        daemon_main["main.py<br/>sporkd entrypoint (stub loop)"]
+    end
+
+    subgraph cli_pkg["cli/"]
+        cli_main["main.py<br/>spork entrypoint"]
+        subgraph cli_commands["commands/"]
+            cli_rules["rules.py<br/>spork rules test"]
+            cli_doctor["doctor.py<br/>spork doctor (stub)"]
+            cli_status["status.py / config.py / logs.py (M5)"]:::planned
+        end
+    end
+
+    classDef planned stroke-dasharray: 4 3,opacity:0.65
 ```
 
 ### 6.2 Daemon (`sporkd`)
@@ -249,23 +263,516 @@ free. `spork` is a Typer command **group** (`typer.Typer()` with
 `sporkd` is a single-command app (`typer.run(main)`) since the daemon
 never has subcommands, just flags.
 
+### 6.4 Module UML diagrams
+
+One `classDiagram` per built module, in §6.1's component-tree order.
+Protocols are stereotyped `<<Protocol>>`; a Protocol implementation is
+drawn with a realization arrow labeled "structurally satisfies," never
+plain inheritance, per this project's Protocol-based DI convention —
+nothing here actually subclasses anything it implements. A free
+function is drawn as a box stereotyped `<<function>>` so its
+dependencies/raises are visible in the same diagram as the classes it
+works with; it isn't a claim that the function is a class. A type
+referenced from another module (e.g. `Source` inside
+`providers.base`'s own diagram) is drawn as an empty box with just its
+stereotype — the full definition lives in that other type's own
+diagram, not duplicated here. Modules with no classes yet (`config.py`,
+`llm/`, `alerts/`, `ipc/`, most of `cli/commands/`) don't get a diagram
+until they have something to diagram, same as the component tree in
+§6.1.
+
+#### `spork.core.models`
+
+```mermaid
+classDiagram
+    class NormalizedMessage {
+        <<dataclass, frozen>>
+        +message_id: str
+        +thread_id: str
+        +from_address: str
+        +from_domain: str
+        +subject: str
+        +body_text: str
+        +headers: dict
+        +mailbox_ids: tuple
+    }
+```
+
+The one type nearly every other module below depends on — consumers
+aren't re-drawn on every diagram that just takes a `NormalizedMessage`
+parameter, only where it's genuinely part of the module's own shape.
+
+#### `spork.core.providers.base`
+
+```mermaid
+classDiagram
+    class ActionApplier {
+        <<Protocol>>
+        +apply(message: NormalizedMessage, action: Action) None
+    }
+    class Provider {
+        <<Protocol>>
+        +build_source() Source
+        +build_action_applier() ActionApplier
+    }
+    class Source { <<Protocol>> }
+
+    Provider ..> Source : builds
+    Provider ..> ActionApplier : builds
+```
+
+`Source` is fully defined in `spork.core.sources`' own diagram below;
+`Action` is fully defined in `spork.core.rules`'.
+
+#### `spork.core.providers.loader`
+
+```mermaid
+classDiagram
+    class ProviderLoadError {
+        <<Exception>>
+    }
+    class load_provider {
+        <<function>>
+        +load_provider(spec: str, kwargs: dict) Provider
+    }
+    class Provider { <<Protocol>> }
+
+    load_provider ..> Provider : constructs
+    load_provider ..> ProviderLoadError : raises
+```
+
+#### `spork.core.providers.jmap`
+
+```mermaid
+classDiagram
+    class Trigger { <<Protocol>> }
+    class ContentFetcher { <<Protocol>> }
+    class Source { <<Protocol>> }
+    class ActionApplier { <<Protocol>> }
+    class Provider { <<Protocol>> }
+
+    class JmapClient {
+        -host: str
+        -api_token: str
+        +connect() None
+        +fetch_new_messages(since_cursor: Optional~str~) Sequence
+        +apply_action(message: NormalizedMessage, action: Action) None
+    }
+    class JmapPushTrigger {
+        -client: JmapClient
+        +wait() None
+    }
+    class MailboxInfo {
+        <<dataclass, frozen>>
+        +id: str
+        +name: str
+        +role: Optional~str~
+    }
+    class UnknownMailboxRoleError { <<Exception>> }
+    class AmbiguousMailboxRoleError { <<Exception>> }
+    class MailboxResolver {
+        -fetch: function
+        -by_role: Optional~dict~
+        +resolve(role: str) str
+        +refresh() None
+    }
+    class next_delay {
+        <<function>>
+        +next_delay(schedule: Sequence, attempt: int) float
+    }
+    class JmapProvider {
+        -client: JmapClient
+        -cursor: Optional~str~
+        +build_source() Source
+        +build_action_applier() ActionApplier
+    }
+    class _JmapContentFetcher {
+        -client: JmapClient
+        -cursor: Optional~str~
+        +fetch() Sequence
+    }
+    class _JmapActionApplier {
+        -client: JmapClient
+        +apply(message: NormalizedMessage, action: Action) None
+    }
+
+    Trigger <|.. JmapPushTrigger : structurally satisfies
+    ContentFetcher <|.. _JmapContentFetcher : structurally satisfies
+    ActionApplier <|.. _JmapActionApplier : structurally satisfies
+    Provider <|.. JmapProvider : structurally satisfies
+
+    JmapPushTrigger --> JmapClient : wraps
+    MailboxResolver ..> MailboxInfo : resolves from
+    MailboxResolver ..> UnknownMailboxRoleError : raises
+    MailboxResolver ..> AmbiguousMailboxRoleError : raises
+    JmapProvider *-- JmapClient : constructs
+    JmapProvider ..> JmapPushTrigger : builds
+    JmapProvider ..> _JmapContentFetcher : builds
+    JmapProvider ..> _JmapActionApplier : builds
+    _JmapContentFetcher --> JmapClient : delegates to
+    _JmapActionApplier --> JmapClient : delegates to
+```
+
+`backoff.next_delay()` is a pure function of `(schedule, attempt)`
+with no dependency on the other classes here — drawn standalone
+rather than wired into the rest, matching the code (`JmapPushTrigger`
+doesn't call it yet; the daemon's future reconnect loop will).
+
+#### `spork.core.providers.file`
+
+```mermaid
+classDiagram
+    class Provider { <<Protocol>> }
+    class ActionApplier { <<Protocol>> }
+    class MessagesLoadError { <<Exception>> }
+    class load_messages {
+        <<function>>
+        +load_messages(path) list
+    }
+    class _FileActionApplier {
+        -log_path: Path
+        +apply(message: NormalizedMessage, action: Action) None
+    }
+    class FileProvider {
+        -messages_path: Path
+        -actions_log_path: Path
+        +build_source() Source
+        +build_action_applier() ActionApplier
+    }
+
+    Provider <|.. FileProvider : structurally satisfies
+    ActionApplier <|.. _FileActionApplier : structurally satisfies
+    load_messages ..> MessagesLoadError : raises
+    FileProvider ..> load_messages : uses
+    FileProvider ..> _FileActionApplier : builds
+```
+
+#### `spork.core.sources`
+
+```mermaid
+classDiagram
+    class Trigger {
+        <<Protocol>>
+        +wait() None
+    }
+    class ContentFetcher {
+        <<Protocol>>
+        +fetch() Sequence
+    }
+    class Source {
+        <<Protocol>>
+        +poll() Sequence
+    }
+    class TriggeredSource {
+        -trigger: Trigger
+        -fetcher: ContentFetcher
+        +poll() Sequence
+    }
+    class ImmediateTrigger {
+        +wait() None
+    }
+    class SequenceContentFetcher {
+        -remaining: list
+        -batch_size: int
+        +fetch() Sequence
+    }
+    class IntervalTimer {
+        -interval_seconds: float
+        -sleep: function
+        +wait() None
+    }
+    class FallbackSource {
+        -primary: Source
+        -secondary: Source
+        -catch: tuple
+        +poll() Sequence
+    }
+
+    Source <|.. TriggeredSource : structurally satisfies
+    Source <|.. FallbackSource : structurally satisfies
+    Trigger <|.. ImmediateTrigger : structurally satisfies
+    Trigger <|.. IntervalTimer : structurally satisfies
+    ContentFetcher <|.. SequenceContentFetcher : structurally satisfies
+    TriggeredSource *-- Trigger
+    TriggeredSource *-- ContentFetcher
+    FallbackSource o-- Source : primary
+    FallbackSource o-- Source : secondary
+```
+
+#### `spork.core.rules`
+
+```mermaid
+classDiagram
+    class TextClassifier { <<Protocol>> }
+    class Condition {
+        <<pydantic BaseModel, extra=forbid>>
+        +always: bool
+        +from_domain_in: Optional~list~
+        +local_classifier_category_in: Optional~list~
+    }
+    class Action {
+        <<pydantic BaseModel, extra=forbid>>
+        +type: str
+        +mailbox: Optional~str~
+        +reason: Optional~str~
+    }
+    class Rule {
+        <<pydantic BaseModel, extra=forbid>>
+        +id: str
+        +description: str
+        +when: Condition
+        +action: Action
+        +enabled: bool
+    }
+    class RuleVerdict {
+        <<dataclass, frozen>>
+        +action: Action
+        +matched_rule_id: Optional~str~
+    }
+    class evaluate {
+        <<function>>
+        +evaluate(message, rules, default_unmatched_action, classifier) RuleVerdict
+    }
+    class RulesLoadError { <<Exception>> }
+    class load_rules {
+        <<function>>
+        +load_rules(path) list
+    }
+
+    Rule *-- Condition
+    Rule *-- Action
+    RuleVerdict *-- Action
+    evaluate ..> Rule : evaluates in order, first enabled match
+    evaluate ..> RuleVerdict : produces
+    evaluate ..> TextClassifier : classify(), lazily, at most once
+    load_rules ..> Rule : produces
+    load_rules ..> RulesLoadError : raises
+```
+
+#### `spork.core.classify`
+
+```mermaid
+classDiagram
+    class ClassificationResult {
+        <<dataclass, frozen>>
+        +category: str
+        +scores: dict
+    }
+    class TextClassifier {
+        <<Protocol>>
+        +classify(message: NormalizedMessage) ClassificationResult
+    }
+    class UnknownClassifierError { <<Exception>> }
+    class register {
+        <<function>>
+        +register(name: str, factory: function) None
+    }
+    class get {
+        <<function>>
+        +get(name: str) TextClassifier
+    }
+
+    TextClassifier ..> ClassificationResult : returns
+    get ..> TextClassifier : constructs from registered factory
+    get ..> UnknownClassifierError : raises
+```
+
+#### `spork.core.dispatch`
+
+```mermaid
+classDiagram
+    class TextClassifier { <<Protocol>> }
+    class Dispatcher {
+        -targets: dict
+        +dispatch(message: NormalizedMessage) dict
+    }
+    class Combiner {
+        <<Protocol>>
+        +combine(results: dict) ClassificationResult
+    }
+    class CombineError { <<Exception>> }
+    class PrimaryCombiner {
+        -primary_name: str
+        +combine(results: dict) ClassificationResult
+    }
+    class HighestConfidenceCombiner {
+        +combine(results: dict) ClassificationResult
+    }
+    class DispatchingClassifier {
+        -dispatcher: Dispatcher
+        -combiner: Combiner
+        +classify(message: NormalizedMessage) ClassificationResult
+    }
+
+    Combiner <|.. PrimaryCombiner : structurally satisfies
+    Combiner <|.. HighestConfidenceCombiner : structurally satisfies
+    TextClassifier <|.. DispatchingClassifier : structurally satisfies
+    DispatchingClassifier *-- Dispatcher
+    DispatchingClassifier *-- Combiner
+    Dispatcher ..> TextClassifier : fans out to N named targets
+    PrimaryCombiner ..> CombineError : raises
+    HighestConfidenceCombiner ..> CombineError : raises
+```
+
+#### `spork.core.actions`
+
+```mermaid
+classDiagram
+    class ActionApplier { <<Protocol>> }
+    class ActionExecutionError { <<Exception>> }
+    class ActionExecutor {
+        -applier: ActionApplier
+        +execute(message: NormalizedMessage, action: Action) None
+    }
+
+    ActionExecutor --> ActionApplier : delegates non-escalate actions to
+    ActionExecutor ..> ActionExecutionError : raises
+```
+
+#### `spork.core.state`
+
+```mermaid
+classDiagram
+    class AuditEntry {
+        <<dataclass, frozen>>
+        +id: int
+        +ts: str
+        +jmap_id: str
+        +event: str
+        +detail_json: Optional~str~
+    }
+    class StateDB {
+        -conn: Connection
+        +get_cursor(account_id: str) Optional~str~
+        +set_cursor(account_id: str, state: str) None
+        +has_processed(jmap_id: str) bool
+        +mark_processed(jmap_id: str, ...) None
+        +write_audit_entry(...) None
+        +get_audit_entries(jmap_id: Optional~str~) list
+        +close() None
+    }
+
+    StateDB ..> AuditEntry : returns from get_audit_entries()
+```
+
+#### `spork.core.pipeline`
+
+```mermaid
+classDiagram
+    class StateDB
+    class ActionExecutor
+    class evaluate { <<function>> }
+    class process_message {
+        <<function>>
+        +process_message(message, rules, default_unmatched_action, executor, state_db, classifier, now) Optional~RuleVerdict~
+    }
+
+    process_message ..> StateDB : has_processed / mark_processed / write_audit_entry
+    process_message ..> evaluate : Tier 1 evaluation
+    process_message ..> ActionExecutor : executes non-escalate verdicts
+```
+
+The orchestrator §9 describes in prose — ties idempotency, evaluation,
+action execution, and audit logging into the one call a real message
+goes through. `StateDB`/`ActionExecutor`/`evaluate` are fully defined
+in their own diagrams above.
+
+#### `spork.core.secrets`
+
+```mermaid
+classDiagram
+    class SecretsError { <<Exception>> }
+    class Secrets {
+        <<dataclass, frozen>>
+        -values: dict
+        +get(name: str) str
+    }
+    class resolve_secrets {
+        <<function>>
+        +resolve_secrets(path, reason, provider, profile) Secrets
+    }
+
+    resolve_secrets ..> Secrets : produces
+    resolve_secrets ..> SecretsError : raises
+    Secrets ..> SecretsError : raises, on an unresolved get()
+```
+
+#### `spork.cli`
+
+```mermaid
+classDiagram
+    class RulesLoadError { <<Exception>> }
+    class load_rules { <<function>> }
+
+    class app {
+        <<Typer App>>
+        spork
+    }
+    class rules_app {
+        <<Typer App>>
+        rules
+    }
+    class test {
+        <<Typer command>>
+        +test(rules_file: Path) None
+    }
+    class doctor {
+        <<Typer command>>
+        +doctor() None
+    }
+
+    app --> rules_app : add_typer("rules")
+    app --> doctor : command("doctor")
+    rules_app --> test : command("test")
+    test ..> load_rules : loads/validates rules.toml
+    test ..> RulesLoadError : catches, clean CLI error
+    doctor ..> NotImplementedError : catches JMAP-connectivity stub, clean CLI error
+```
+
+#### `spork.daemon`
+
+```mermaid
+classDiagram
+    class main {
+        <<Typer command>>
+        +main(version: bool) None
+    }
+    class run {
+        <<function>>
+        +run() None
+    }
+
+    run --> main : typer.run(main)
+```
+
+Still just the `--version`/`--help` handling plus a settled-shape
+`NotImplementedError` for the real event loop (docs/ROADMAP.md M1) —
+this diagram will grow substantially once the daemon actually wires
+`spork.core`'s pieces together.
+
 ## 7. Data & configuration
 
 ### 7.1 Project layout (UV-managed)
 
-```
-friendly-octo-spork/
-├── pyproject.toml        # UV project; [project.scripts] sporkd + spork
-├── uv.lock
-├── secretspec.toml        # declared secrets (see §7.3)
-├── src/spork/...          # see §6.1
-├── systemd/
-│   └── sporkd.service     # user unit, installed to ~/.config/systemd/user/
-├── tests/
-├── docs/
-│   ├── DESIGN.md
-│   └── ROADMAP.md
-└── README.md
+Dashed boxes are planned, not built yet (`systemd/` lands with M6).
+
+```mermaid
+flowchart TD
+    root["friendly-octo-spork/"] --> pyproject["pyproject.toml<br/>[project.scripts] sporkd + spork"]
+    root --> uvlock["uv.lock"]
+    root --> secretspec["secretspec.toml<br/>declared secrets, §7.3"]
+    root --> claudemd["CLAUDE.md<br/>agent guidance"]
+    root --> src["src/spork/...<br/>see §6.1"]
+    root --> systemd["systemd/<br/>sporkd.service (M6)"]:::planned
+    root --> tests["tests/<br/>mirrors src/spork/ 1:1"]
+    root --> docs["docs/"]
+    root --> readme["README.md"]
+
+    docs --> design["DESIGN.md"]
+    docs --> roadmap["ROADMAP.md"]
+    docs --> coverage["TEST_COVERAGE.md"]
+
+    classDef planned stroke-dasharray: 4 3,opacity:0.65
 ```
 
 `uv sync` sets up the dev environment; `uv run sporkd` / `uv run spork`
@@ -463,33 +970,15 @@ else is a terminal Tier 1 action and never invokes the LLM.
 
 ## 9. Triage pipeline
 
-```
-new message
-    │
-    ▼
-Tier 1 rule engine (rules.toml, first match wins)
-    │
-    ├─ terminal action (move/tag/ignore) ──────────────► apply, log, done
-    │
-    └─ "escalate" (explicit rule, or default-unmatched policy)
-              │
-              ▼
-       Tier 2: Claude classification
-       (see §10 for schema)
-              │
-     ┌────────┴─────────┐
-     │                    │
-confidence ≥            confidence <
-autoact threshold        alert threshold
-     │                    │
-     ▼                    ▼
- apply verdict's      file to Needs-Review
- action, log          + alert (Tier 3),
- (no alert unless      no auto-action
- verdict.urgent)
-     │
-     └── confidence between thresholds: apply action AND alert
-          (acted on, but flagged for the human to sanity-check)
+```mermaid
+flowchart TD
+    newmsg(["new message"]) --> tier1{"Tier 1 rule engine<br/>(rules.toml, first match wins)"}
+    tier1 -->|"terminal action<br/>(move / tag / ignore)"| done["apply, log, done"]
+    tier1 -->|"escalate<br/>(explicit rule, or default-unmatched policy)"| tier2["Tier 2: Claude classification<br/>(see §10 for schema)"]
+    tier2 --> conf{confidence}
+    conf -->|"≥ autoact threshold"| act1["apply verdict's action, log<br/>(no alert unless verdict.urgent)"]
+    conf -->|"< alert threshold"| act2["file to Needs-Review + alert (Tier 3)<br/>no auto-action"]
+    conf -->|"between thresholds"| act3["apply action AND alert<br/>(acted on, but flagged for the human<br/>to sanity-check)"]
 ```
 
 Rule *conditions* in the diagram above are plain deterministic matching
