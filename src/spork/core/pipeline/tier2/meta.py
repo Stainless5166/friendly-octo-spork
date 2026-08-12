@@ -34,6 +34,7 @@ class Tier2Meta:
     thread_user_has_replied: bool
     available_mailboxes: Sequence[str]
     ts: str | None = None
+    correlation_id: str | None = None
     request: VerdictRequest | None = None
     verdict: Verdict | None = None
     band: ConfidenceBand | None = None

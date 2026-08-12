@@ -45,6 +45,24 @@ class TimestampFilter:
         return dataclasses.replace(payload, meta=dataclasses.replace(payload.meta, ts=self._now()))
 
 
+class CorrelationIdFilter:
+    """Calls the injected id generator exactly once; every later module
+    (and PipelineObserver.trace()/alert()) reads meta.correlation_id.
+
+    Mirrors TimestampFilter's now: Callable DI exactly, one call per
+    pipeline run (docs/DESIGN.md §12.2) — a fresh id per run, not per
+    message's full cross-tier lifetime (see §12.2's stated limitation).
+    """
+
+    def __init__(self, new_id: Callable[[], str]) -> None:
+        self._new_id = new_id
+
+    def apply(self, payload: Payload[MessageMeta]) -> Payload[MessageMeta]:
+        return dataclasses.replace(
+            payload, meta=dataclasses.replace(payload.meta, correlation_id=self._new_id())
+        )
+
+
 class RuleEvaluationSelector:
     """Runs the Tier 1 rule engine; routes "terminal" or "escalate"."""
 
