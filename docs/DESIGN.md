@@ -186,6 +186,7 @@ flowchart TD
             llm_loader["loader.py<br/>load_llm_client()"]
             subgraph llm_clients["clients/"]
                 llm_anthropic["anthropic.py<br/>AnthropicLLMClient"]
+                llm_recorded["recorded.py<br/>RecordedLLMClient"]
             end
         end
 
@@ -746,6 +747,32 @@ classDiagram
 `get_verdict()` requires a live Anthropic API call — same
 settled-shape-stub reasoning as `JmapClient` (§9.3): constructor args
 and the method signature are real, the call itself isn't yet.
+
+#### `spork.core.llm.clients.recorded`
+
+```mermaid
+classDiagram
+    class LLMClient { <<Protocol>> }
+    class RecordedResponsesLoadError { <<Exception>> }
+    class UnrecordedResponseError { <<Exception>> }
+    class load_recorded_responses {
+        <<function>>
+        +load_recorded_responses(path) dict
+    }
+    class RecordedLLMClient {
+        -responses: dict
+        +get_verdict(request: VerdictRequest) Verdict
+    }
+
+    LLMClient <|.. RecordedLLMClient : structurally satisfies
+    RecordedLLMClient *-- load_recorded_responses : loads via, at construction
+    load_recorded_responses ..> RecordedResponsesLoadError : raises
+    RecordedLLMClient ..> UnrecordedResponseError : raises
+```
+
+The `LLMClient` equivalent of `FileProvider` (§9.3) — a second, fully
+real adapter with no `NotImplementedError` anywhere, for CI/offline use
+(§10.5), never a stand-in for a live verdict in production.
 
 #### `spork.core.actions`
 
@@ -1924,6 +1951,52 @@ uses for `has_processed()` (docs/DESIGN.md §9.4). Once budget is
 exhausted, §10's policy applies: everything that would've escalated
 instead goes straight to Needs-Review + alert, never a silently
 dropped message.
+
+### 10.5 Recorded-response fixtures for CI
+
+`AnthropicLLMClient` can't be exercised in CI — no live API key, and
+even with one, a real call is slow, costs money, and isn't
+deterministic. `spork.core.llm.clients.recorded.RecordedLLMClient` is
+the `LLMClient` equivalent of `FileProvider` (§9.3): a second, *fully
+real* adapter with no `NotImplementedError` anywhere, that replays
+pre-recorded `Verdict`s instead of calling a live API.
+
+```python
+class RecordedResponsesLoadError(ValueError):
+    """Raised when a recorded-responses JSON file can't be parsed into Verdicts."""
+
+
+class UnrecordedResponseError(KeyError):
+    """Raised when a request has no matching recorded response."""
+
+
+def load_recorded_responses(path: str | Path) -> dict[str, Verdict]: ...
+
+
+class RecordedLLMClient:
+    def __init__(self, responses_path: str | Path) -> None: ...
+    def get_verdict(self, request: VerdictRequest) -> Verdict: ...
+```
+
+- **Fixture shape:** a JSON object keyed by `request.subject` —
+  `{"Re: Thursday call": {"category": "needs_reply", ...}}` — loaded
+  once at construction (fail fast on a malformed fixture file, not on
+  the first `get_verdict()` call). Keyed by subject rather than a hash
+  of the full request for one reason: a human reading the fixture file
+  can immediately tell which recorded email each entry is for. A
+  request whose subject has no matching entry raises
+  `UnrecordedResponseError` naming the subjects that *were* recorded —
+  same "name what's available" shape as `UnknownBranchError` (§9.4).
+- **Not a way to fake a live verdict for production use** — same
+  caveat `FileProvider`'s docstring states for messages: this is
+  explicitly a recording/replay backend for CI and offline dry-runs,
+  documented as exactly that, never a stand-in for `AnthropicLLMClient`
+  in a real deployment.
+- **Loadable the same way `AnthropicLLMClient` is** —
+  `spork.core.llm.loader.load_llm_client()` works on any `LLMClient`
+  spec, so
+  `"spork.core.llm.clients.recorded:RecordedLLMClient"` with a
+  `responses_path=` kwarg is a config change, not special-cased code.
 
 ## 11. Safety & human-in-the-loop
 
