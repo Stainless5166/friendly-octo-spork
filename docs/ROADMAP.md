@@ -187,7 +187,12 @@ real and tested; only the live fetch inside `spork rules test` remains.
 **Goal:** unmatched/escalated mail gets a real Claude verdict and it
 drives an action.
 
-- [ ] Body cleaning: HTML strip, quote-chain collapse, truncation (M)
+- [x] Body cleaning: HTML strip, quote-chain collapse, truncation (M) —
+      `spork.core.llm.clean.clean_body()`, pure string transformation,
+      no dependency on `NormalizedMessage`/JMAP/the Claude API — HTML
+      via a hand-rolled `HTMLParser` subclass (no new dependency),
+      quote chains cut at the earliest of several marker patterns,
+      word-boundary truncation with an explicit marker.
 - [ ] Claude client wrapper + structured verdict schema (§10) (M)
 - [ ] Verdict validation against configured mailbox/category set (S)
 - [ ] Confidence-band logic: autoact / autoact+alert / alert-only (§9) (M)

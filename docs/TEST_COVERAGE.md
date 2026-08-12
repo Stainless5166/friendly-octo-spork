@@ -23,7 +23,9 @@ to traceback. **M2 is now 7/7.** Updated once more for `spork doctor`
 (M1's last unstubbed item): real CLI wiring, connectivity check a
 settled-shape `NotImplementedError`. **Every item in M0–M2 is now
 either fully implemented or a settled-shape stub with a passing test —
-none are unspecified.**
+none are unspecified.** Updated once more for M3's first item:
+`spork.core.llm.clean.clean_body()` — pure, dependency-free body
+cleaning (HTML strip, quote-chain collapse, truncation). **M3 is 1/7.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -200,13 +202,32 @@ recent mail — is a settled-shape `NotImplementedError`, caught and
 reported as a clean CLI error (test 140) rather than left to produce a
 raw traceback.
 
-### M3–M7
+### M3 — LLM escalation (Tier 2) — 1/7
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| Body cleaning (HTML strip, quote-chain collapse, truncation) | ✅ | ✅ — tests 150–160 (11 tests), 100% line coverage |
+| Claude client wrapper + verdict schema | ❌ | — |
+| Verdict validation against configured mailbox/category set | ❌ | — |
+| Confidence-band logic | ❌ | — |
+| `daily_call_budget` + `llm_usage` tracking | ❌ | — |
+| Draft creation path | ❌ | — |
+| Recorded-response fixtures for CI | ❌ | — |
+
+`spork.core.llm.clean.clean_body()` is pure string transformation with
+no dependency on `NormalizedMessage`, JMAP, or the Claude API — HTML
+stripped via a hand-rolled `HTMLParser` subclass (no new dependency),
+quoted-reply chains collapsed at the earliest of several marker
+patterns, truncated on a word boundary with an explicit marker, and
+excess blank lines normalized.
+
+### M4–M7
 
 No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (121 tests, all passing — 0 xfail)
+## Full test inventory (160 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -974,3 +995,51 @@ not a placeholder assertion.
     `spork --help`. Asserts `"doctor"` is listed — confirms
     `app.command("doctor")(doctor)` wiring, not just that the module
     imports.
+
+### tests/core/llm (body cleaning, M3)
+
+150. **`test_clean.py::test_clean_body_strips_html_tags`**
+    A body with nested `<p>`/`<b>` tags. Asserts no `<` survives and
+    the text content is preserved.
+
+151. **`test_clean.py::test_clean_body_collapses_a_quote_chain_introduced_by_wrote_line`**
+    A body with new content followed by an "On ... wrote:" header and
+    quoted lines. Asserts the new content survives and everything from
+    the header onward is dropped.
+
+152. **`test_clean.py::test_clean_body_collapses_a_quote_chain_introduced_by_gt_prefixed_lines`**
+    A body going straight into `>`-prefixed lines with no "wrote:"
+    header. Asserts the quoted portion is still dropped.
+
+153. **`test_clean.py::test_clean_body_truncates_long_bodies`**
+    A body far longer than `max_chars`. Asserts the result length is
+    bounded and a truncation marker is present.
+
+154. **`test_clean.py::test_clean_body_leaves_a_short_plain_body_unchanged_in_substance`**
+    A short, already-plain, unquoted body. Asserts it passes through
+    intact — cleaning doesn't mangle the common case.
+
+155. **`test_clean.py::test_clean_body_normalizes_excess_blank_lines`**
+    An HTML-sourced body producing runs of blank lines after tag
+    stripping. Asserts they collapse rather than bloating the prompt.
+
+156. **`test_clean_edge_cases.py::test_clean_body_handles_an_empty_string`**
+    Empty input. Asserts empty output, not an error.
+
+157. **`test_clean_edge_cases.py::test_clean_body_decodes_html_entities`**
+    A body containing `&amp;`/`&mdash;`. Asserts entities decode to
+    real characters, not the literal escape sequence.
+
+158. **`test_clean_edge_cases.py::test_clean_body_uses_the_earliest_quote_marker_when_several_are_present`**
+    A body with both a "wrote:" header and a later "-----Original
+    Message-----" line. Asserts the cut happens at the earliest
+    marker, so no quoted content leaks through either path.
+
+159. **`test_clean_edge_cases.py::test_clean_body_does_not_add_a_truncation_marker_at_exactly_max_chars`**
+    A body exactly `max_chars` long. Asserts it's returned unchanged
+    with no spurious truncation marker — the limit is inclusive.
+
+160. **`test_clean_edge_cases.py::test_clean_body_truncates_a_single_long_word_with_no_space_to_break_on`**
+    A single unbroken "word" longer than `max_chars`. Asserts
+    truncation still completes cleanly rather than crashing on the
+    word-boundary split.
