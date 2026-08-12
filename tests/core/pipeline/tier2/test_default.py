@@ -114,9 +114,7 @@ def test_process_tier2_message_does_not_act_on_a_low_confidence_verdict(
     """A low-confidence verdict is alert_only — no action applied, but
     still marked processed and the verdict still returned."""
     responses_path = tmp_path / "responses.json"
-    _write_responses(
-        responses_path, **{"Test subject": _high_confidence_response(confidence=0.2)}
-    )
+    _write_responses(responses_path, **{"Test subject": _high_confidence_response(confidence=0.2)})
     applier = _RecordingApplier()
     message = make_message(message_id="msg-1", subject="Test subject")
 
