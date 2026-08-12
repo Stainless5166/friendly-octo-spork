@@ -6,6 +6,7 @@ schema/query logic under test, not sqlite3's own correctness.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from spork.core.state.db import StateDB
@@ -47,6 +48,33 @@ def test_mark_processed_then_has_processed_is_true(tmp_path: Path) -> None:
     with StateDB(tmp_path / "state.sqlite3") as db:
         db.mark_processed("msg-1", thread_id="thread-1", processed_at="2026-08-11T00:00:00Z")
 
+        assert db.has_processed("msg-1") is True
+
+
+def test_state_db_usable_from_a_different_thread_than_it_was_created_on(
+    tmp_path: Path,
+) -> None:
+    """Created on this test's thread, used from another thread —
+    sequentially, never concurrently, the exact pattern the asyncio
+    daemon loop relies on (docs/DESIGN.md §6.2.1): each
+    process_message() call runs inside asyncio.to_thread(), which may
+    hand out a different worker thread than the one StateDB was
+    constructed on. Without check_same_thread=False this raises
+    sqlite3.ProgrammingError."""
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        errors: list[BaseException] = []
+
+        def _use_from_another_thread() -> None:
+            try:
+                db.mark_processed("msg-1", thread_id="thread-1", processed_at="t0")
+            except BaseException as exc:  # noqa: BLE001 - reported from the main thread below
+                errors.append(exc)
+
+        thread = threading.Thread(target=_use_from_another_thread)
+        thread.start()
+        thread.join()
+
+        assert errors == []
         assert db.has_processed("msg-1") is True
 
 
