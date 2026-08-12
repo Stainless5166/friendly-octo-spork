@@ -319,20 +319,57 @@ needs M5's daemon loop.
 
 ## M5 — CLI + daemon control surface
 
-**Goal:** the full `spork` command surface from §12 works against a
+**Goal:** the full `spork` command surface from §13 works against a
 running `sporkd` over the control socket.
 
-- [ ] IPC protocol + Unix socket server in `sporkd` (M)
+Two prerequisites landed as this milestone's own first items, not
+silently assumed: `spork.core.config` didn't exist at all before this
+milestone (flagged in `DESIGN.md` §6.1's component-tree caption, but
+untracked as work anywhere), and `sporkd`'s event loop was never
+actually assembled — `daemon/main.py` is still M0's `--version`-only
+stub, and M1's own exit criteria say so explicitly ("sporkd runs, logs
+each new inbox message's subject... **Not yet met**"). Neither is
+genuinely blocked on a live JMAP account: both are buildable and
+testable today against `FileProvider` + `RecordedLLMClient` +
+`LoggingAlerter`, the same "settle the real shape, let only the actual
+network leaf calls stay `NotImplementedError`" pattern M1a/M1b/M3 used
+— not new scope invented for M5, just work that had nowhere else on
+the roadmap to live until M5 needed something to control.
+
+- [ ] `spork.core.config`: `SporkConfig`/`TieringConfig`/`BackendSpec`
+      pydantic schema + `load_config()` (M) — three-tier precedence
+      (system enforced `/etc/spork/enforced.toml` > user
+      `$XDG_CONFIG_HOME/spork/config.toml` > system default via
+      `$XDG_CONFIG_DIRS`), settled and documented in §7.2/§6.4 against
+      the real XDG Base Directory Specification (v0.8) and comparable
+      tools (`git`'s system/global scopes, Chromium/Firefox managed
+      policy), not invented. `ConfigLoadError` wraps every failure
+      mode, same convention as `RulesLoadError`/`ProviderLoadError`.
+- [ ] Daemon event loop assembly: `daemon/main.py` composes
+      `load_config()` → `Provider.build_source()` → Tier 1
+      `process_message()` → Tier 2 escalation → `PipelineObserver`/
+      `Alerter` → `StateDB`, as a real asyncio loop (§6.2's 10 steps)
+      (M) — proven end-to-end against `FileProvider`; the
+      JMAP-specific path stays the settled-shape `NotImplementedError`
+      it already is (M1) until a live account exists to test against.
+- [ ] IPC protocol + Unix socket server in `sporkd` (M) — newline-
+      delimited JSON over the socket (§15's filesystem-permission
+      model already rules out needing an auth scheme; no new
+      dependency, human-inspectable with `nc`/`socat` while debugging)
 - [ ] `spork status` (queue depth, push state, today's LLM spend) (M)
 - [ ] `spork pause`/`resume` (S)
 - [ ] `spork rules list/edit/enable/disable` with live reload (M)
-- [ ] `spork config show/edit` with validation on save (S)
+- [ ] `spork config show/edit` with validation on save (S) — `edit`
+      only ever opens the *user* tier (§7.2); `show` flags any value
+      the enforced tier is overriding
 - [ ] `spork logs` (tail, filter by message ID / time range) (S)
 - [ ] `spork reclassify <id>` (S)
 
-**Exit criteria:** every command in §12 works end-to-end against a live
+**Exit criteria:** every command in §13 works end-to-end against a live
 daemon; editing `rules.toml` via `spork rules edit` takes effect without
-a daemon restart.
+a daemon restart; a value in `/etc/spork/enforced.toml` can't be
+overridden by a user's own `config.toml`, verified by a test that
+tries.
 
 ## M6 — systemd packaging + install flow
 

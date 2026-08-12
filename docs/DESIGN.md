@@ -116,16 +116,21 @@ layout for a milestone that hasn't landed yet (M3's `llm/prompts.py`
 — the not-yet-built step that assembles a `VerdictRequest` from a
 message —, a future real desktop-notification `Alerter` backend
 alongside M4's `alerts/log.py`, M5's `ipc/` + most of `cli/commands/`,
-and `config.py`, still needed by anything that reads `config.toml`).
-This is layout orientation only — see §6.4 for what each built
-module's classes actually look like.
+and `config/`, still needed by anything that reads `config.toml` —
+§7.2 settles its shape, M5 builds it). This is layout orientation
+only — see §6.4 for what each built module's classes actually look
+like.
 
 ```mermaid
 flowchart TD
     src["src/spork/"] --> core & daemon_pkg & cli_pkg
 
     subgraph core["core/ (shared library)"]
-        config["config.py<br/>load/validate config.toml"]:::planned
+        subgraph config_pkg["config/ (M5)"]
+            config_schema["schema.py<br/>SporkConfig/TieringConfig/<br/>BackendSpec"]:::planned
+            config_paths["paths.py<br/>XDG tier-path resolution"]:::planned
+            config_loader["loader.py<br/>load_config()"]:::planned
+        end
         secrets_mod["secrets.py<br/>secretspec integration"]
         models_mod["models.py<br/>NormalizedMessage"]
 
@@ -297,10 +302,81 @@ works with; it isn't a claim that the function is a class. A type
 referenced from another module (e.g. `Source` inside
 `providers.base`'s own diagram) is drawn as an empty box with just its
 stereotype — the full definition lives in that other type's own
-diagram, not duplicated here. Modules with no classes yet (`config.py`,
-`llm/`, `alerts/`, `ipc/`, most of `cli/commands/`) don't get a diagram
-until they have something to diagram, same as the component tree in
-§6.1.
+diagram, not duplicated here. Modules with no classes yet
+(`llm/prompts.py`, `ipc/`, most of `cli/commands/`) don't get a
+diagram until they have something to diagram, same as the component
+tree in §6.1. (This list used to also say `alerts/` and `config.py` —
+stale by the time M4 gave `alerts/` real diagrams; `config/` follows
+the same "settle the shape at design time" precedent below, before any
+of it is actually built.)
+
+#### `spork.core.config`
+
+```mermaid
+classDiagram
+    class BackendSpec {
+        <<pydantic BaseModel, extra=forbid>>
+        +spec: str
+        +kwargs: dict
+    }
+    class TieringConfig {
+        <<pydantic BaseModel, extra=forbid>>
+        +default_unmatched_action: str
+        +alert_threshold: float
+        +autoact_threshold: float
+        +daily_call_budget: int
+        +max_body_chars: int
+        +local_classifier: Optional~str~
+        +allowed_categories: list~str~
+    }
+    class SporkConfig {
+        <<pydantic BaseModel, extra=forbid>>
+        +provider: BackendSpec
+        +llm: BackendSpec
+        +alerts: BackendSpec
+        +rules_path: Path
+        +db_path: Path
+        +socket_path: Path
+        +tiering: TieringConfig
+    }
+    class ConfigLoadError { <<Exception>> }
+
+    SporkConfig *-- BackendSpec : provider, llm, alerts
+    SporkConfig *-- TieringConfig
+
+    class resolve_user_config_path { <<function>> }
+    class resolve_system_default_config_paths { <<function>> }
+    class resolve_enforced_config_path { <<function>> }
+    class resolve_socket_path { <<function>> }
+
+    class load_config {
+        <<function>>
+        +load_config(user_config_override) SporkConfig
+    }
+    load_config ..> resolve_user_config_path : locates user tier
+    load_config ..> resolve_system_default_config_paths : locates system-default tier
+    load_config ..> resolve_enforced_config_path : locates enforced tier
+    load_config ..> resolve_socket_path : default for tiering.socket_path
+    load_config ..> SporkConfig : produces
+    load_config ..> ConfigLoadError : raises
+```
+
+`paths.py` (`resolve_user_config_path`/`resolve_system_default_config_paths`/
+`resolve_enforced_config_path`/`resolve_socket_path`) is deliberately
+free functions, not methods on `SporkConfig` — pure path-resolution
+logic against environment variables, testable in total isolation from
+TOML parsing or pydantic validation (§7.2 settles exactly what each
+one does). `load_config()` is the only thing that calls all four:
+locates each of the three tier files that actually exist, deep-merges
+their raw dicts in ascending precedence (system-default, then user,
+then enforced — each later merge's keys win), and validates the fully
+merged dict against `SporkConfig` once. `ConfigLoadError` wraps every
+failure mode (malformed TOML in any tier, a merged dict that fails
+`SporkConfig` validation, an unreadable file) — one catchable type per
+module boundary, the same convention as `RulesLoadError`/
+`ProviderLoadError`/`AlerterLoadError`. Not built yet (M5) — this
+diagram, like `spork.core.alerts`' before it existed, settles the
+shape before any of it is implemented.
 
 #### `spork.core.models`
 
@@ -1345,42 +1421,113 @@ the systemd unit and an installed `uv tool install` invoke.
 
 ### 7.2 App config (`config.toml`)
 
-Lives at `$XDG_CONFIG_HOME/spork/config.toml` (default
-`~/.config/spork/config.toml`). Not secret — safe to keep in a dotfiles
-repo.
+Three tiers, following real UNIX/XDG convention rather than an
+invented scheme — settled by checking the [XDG Base Directory
+Specification v0.8](https://specifications.freedesktop.org/basedir/latest/)
+and comparable tools (`git`'s system/global scopes, Chromium/Firefox
+managed policy) before designing this, not guessed:
+
+| Tier | Path | Precedence | Who edits it |
+|---|---|---|---|
+| **System enforced** | `/etc/spork/enforced.toml` — fixed, hardcoded | Highest — always wins | A sysadmin, directly; never via `spork config edit` |
+| **User** | `$XDG_CONFIG_HOME/spork/config.toml` (default `~/.config/spork/config.toml`) | Middle | `spork config edit` |
+| **System default** | first match across `$XDG_CONFIG_DIRS` (colon-separated, preference-ordered, default `/etc/xdg`) + `/spork/config.toml` | Lowest — fills gaps only | A packager/admin, or absent entirely |
+
+`XDG_CONFIG_HOME`/`XDG_CONFIG_DIRS` give the *default* and *user*
+tiers for free — the spec itself says `XDG_CONFIG_HOME` (single-
+valued) outranks every entry in `XDG_CONFIG_DIRS` (an ordered list,
+first entry most important), which is exactly "user overrides
+system-default." Neither variable has any concept of "enforced" —
+that's deliberate on the spec's part, so the **enforced** tier
+intentionally sits outside the XDG search entirely: a fixed `/etc`
+path a user can't relocate by setting an environment variable (the
+same reason `git`'s *system* scope is the compile-time-fixed
+`/etc/gitconfig` rather than something `XDG_CONFIG_DIRS`-influenced,
+and the same reason Chromium's managed policy lives at a fixed
+`/etc/opt/chrome/policies/managed/`). Spork doesn't enforce filesystem
+permissions on `/etc/spork/enforced.toml` itself — same trust
+assumption as `/etc/gitconfig`: an admin controls it because normal
+users can't write to `/etc` on a correctly-configured system, not
+because Spork checks anything (§15).
+
+**Merge semantics:** each present tier is parsed as a raw dict, then
+deep-merged table-by-table in ascending precedence (system-default,
+then user, then enforced — each later merge's keys overwrite the
+earlier merge's at the same key, not a whole-file replace), and the
+fully-merged dict is validated against `SporkConfig` exactly once. A
+user's `config.toml` only needs to override the keys it actually
+cares about (`[tiering] alert_threshold = 0.6`, say) without restating
+`[provider]`. There's no clamping/range-enforcement logic — an
+enforced value simply overwrites whatever a lower tier set. That's a
+deliberate scope call: the enforced tier here is about consistency
+across a shared/managed machine, not a privilege boundary within one
+user's own account (the user running `sporkd` already controls their
+own mailbox and secrets, so there's no real attacker being defended
+against by anything fancier). `spork config show` (§13) surfaces the
+fully-merged effective config with a note wherever the enforced tier
+silently overrode a user-tier value, so a confused user isn't left
+guessing why their own edit didn't take effect.
 
 ```toml
-[jmap]
+# ~/.config/spork/config.toml (user tier) — every key below can also
+# appear in the system-default or enforced tiers; this example shows
+# the full schema, not what a typical minimal user file would contain.
+
+[provider]
+spec = "spork.core.providers.jmap.provider:JmapProvider"   # "module:ClassName" — same loader
+                                                              # convention as llm/alerts below (§9.3)
+[provider.kwargs]
 host = "api.fastmail.com"
 account_email = "will@example.com"   # used to resolve the JMAP account ID
-
-[polling]
-push_enabled = true
 fallback_poll_interval_seconds = 300
 reconnect_backoff_seconds = [2, 5, 15, 60, 300]
 
+[llm]
+spec = "spork.core.llm.clients.anthropic:AnthropicLLMClient"   # §10.1
+[llm.kwargs]
+model = "claude-sonnet-5"
+max_tokens = 1024
+
+[alerts]
+spec = "spork.core.alerts.log:LoggingAlerter"   # v1's only real backend — §12.1
+[alerts.kwargs]
+
 [tiering]
-default_unmatched_action = "escalate"   # "escalate" | "notify" | "ignore"
-tier2_confidence_alert_threshold = 0.55  # below this, always alert (Tier 3)
-tier2_confidence_autoact_threshold = 0.85 # above this, act without alert
+default_unmatched_action = "escalate"     # "escalate" | "ignore"
+alert_threshold = 0.55                    # below this, alert_only (Tier 3) — §10.3
+autoact_threshold = 0.85                  # above this, autoact — §10.3
+daily_call_budget = 200                   # hard stop; §10.4
+max_body_chars = 4000                     # §10.5's clean_body() truncation limit
 local_classifier = "keyword_heuristic"    # name registered in classify/registry.py — swap
                                            # to experiment with a different local text-processing
                                            # backend; see §9.1
-
-[llm]
-model = "claude-sonnet-5"
-max_tokens = 1024
-daily_call_budget = 200          # hard stop; degrade to Tier 3-only past this
-
-[alerts]
-backend = "desktop"              # "desktop" | "webhook" | "none"
-webhook_url_secret = "ALERT_WEBHOOK_URL"   # name of a secretspec entry
+allowed_categories = ["needs_reply", "fyi", "newsletter", "spam"]   # §10.2
 
 [state]
-db_path = "~/.local/share/spork/state.sqlite3"
+db_path = "~/.local/share/spork/state.sqlite3"   # $XDG_DATA_HOME — persistent app data
 
 [rules]
 path = "~/.config/spork/rules.toml"
+
+[ipc]
+# socket_path is optional — resolve_socket_path() (§6.4) defaults to
+# $XDG_RUNTIME_DIR/spork/sporkd.sock (0700, tmpfs-backed, gone on
+# reboot/logout — exactly right for a control socket per the XDG
+# spec's own lifetime rules for $XDG_RUNTIME_DIR) and falls back to
+# /tmp/spork-$UID/sporkd.sock with a printed warning if
+# $XDG_RUNTIME_DIR isn't set (a real possibility outside a systemd
+# session — the spec itself declines to mandate a default and pushes
+# fallback behavior onto the application).
+socket_path = "~/.local/state/spork/sporkd.sock"   # only if overriding the default
+```
+
+```toml
+# /etc/spork/enforced.toml (system enforced tier) — a sysadmin-managed
+# machine might ship only this, e.g. to guarantee a spend cap no user
+# config can raise:
+
+[tiering]
+daily_call_budget = 200
 ```
 
 ### 7.3 Secrets (`secretspec.toml`)
@@ -2734,8 +2881,13 @@ spork rules edit              # open rules.toml in $EDITOR, validate on save,
                                # push a reload to sporkd if it's running
 spork rules enable/disable <id>
 
-spork config show             # effective config (secrets redacted)
-spork config edit             # open config.toml in $EDITOR, validate on save
+spork config show             # effective (merged) config, secrets redacted;
+                               # flags any value the enforced tier overrode
+spork config edit             # open the *user* tier's config.toml in $EDITOR,
+                               # validate on save, push a reload if sporkd is
+                               # running — never touches the system-default or
+                               # enforced tiers (§7.2); those are edited
+                               # directly with real filesystem permissions
 
 spork logs [--tail] [--since] [--message-id]
 spork reclassify <message-id> # force a message back through the pipeline
@@ -2802,6 +2954,12 @@ WantedBy=default.target
 - Local control socket is a Unix domain socket with filesystem
   permissions (0600, owned by the invoking user) — not a TCP port, so
   no network exposure and no auth scheme needed for v1.
+- `/etc/spork/enforced.toml` (§7.2's system-enforced config tier) is
+  trusted on the strength of normal `/etc` filesystem permissions, the
+  same assumption `/etc/gitconfig` and Chromium's managed-policy
+  directory make — Spork does not itself verify the file's ownership
+  or mode. A machine where unprivileged users can write to `/etc` has
+  a problem this config tier was never meant to solve.
 - LLM prompts include email content by design (that's the point) — the
   design assumes the user is comfortable with their mail body going to
   the configured LLM provider. This is called out explicitly in the
