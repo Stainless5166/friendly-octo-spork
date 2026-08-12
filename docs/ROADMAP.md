@@ -265,12 +265,19 @@ it is.
 ## M4 — Alerting
 
 **Goal:** the human actually finds out about Tier 3 / urgent mail without
-polling the CLI.
+polling the CLI. **v1 scope: Linux desktop notifications only** — a
+webhook/ntfy/Pushover backend is real and useful but explicitly deferred
+(see Stretch / post-v1 below), not because it's hard, just because
+desktop-only covers the daily-driver use case this project targets.
 
-- [ ] `Alerter` protocol + desktop backend (DBus/`notify-send`) (M)
-- [ ] Webhook backend (ntfy/Pushover-style), URL from secretspec (S)
+- [ ] `Alerter` protocol (mirrors the `Provider`/`LLMClient` adapter
+      pattern, §9.3/§10.1 — one Protocol, backends loaded the same
+      `"module:ClassName"` way) + a Linux desktop backend (DBus, via
+      `notify-send` or a DBus library) (M)
 - [ ] Alert triggers wired to confidence bands + VIP rules + daemon health (M)
-- [ ] Graceful degrade when no DBus session bus is available (S)
+- [ ] Graceful degrade when no DBus session bus is available (e.g. no
+      active desktop session — sporkd keeps running, alerts just don't
+      display, logged instead) (S)
 
 **Exit criteria:** a VIP-sender test email and a low-confidence test
 email both produce a visible desktop notification; killing network
@@ -296,26 +303,55 @@ a daemon restart.
 ## M6 — systemd packaging + install flow
 
 **Goal:** a new user can go from clone to "running at every login" in a
-few documented commands.
+few documented commands — via the manual systemd install flow, or via
+an Arch Linux package.
 
 - [ ] `systemd/sporkd.service` unit file (§14) (S)
 - [ ] `Type=notify` / `sd_notify` on ready (S)
 - [ ] Install helper (`spork install-service` or a documented script) (S)
 - [ ] README quickstart: secretspec setup → config → rules → enable unit (M)
 - [ ] `spork doctor` checks unit install/enabled/active state (S)
+- [ ] Arch Linux packaging: a `PKGBUILD` (AUR-style) that builds `spork`/
+      `sporkd` and installs the systemd unit, so `makepkg -si` (and later
+      an AUR submission) is a supported install path alongside the manual
+      quickstart — not a second, divergent install story, the same
+      package layout and unit file the quickstart uses (M)
 
 **Exit criteria:** on a clean machine, following only the README quickstart
 gets `sporkd` running under systemd at login, with `spork status` reporting
-healthy.
+healthy. On Arch Linux, `makepkg -si` from the `PKGBUILD` produces the
+same result.
 
 ## M7 — Hardening & v1 release
 
 **Goal:** confident enough to run unattended against a real daily-driver
-mailbox.
+mailbox, with enough observability to actually explain what it did and
+why after the fact — not just correctness, but the ability to debug and
+audit correctness once it's running unattended.
 
 - [ ] Confidence threshold tuning pass against real triage volume (M)
 - [ ] Rate-limit / 429 handling verified against Fastmail's real limits (S)
 - [ ] Crash-loop / restart behavior verified (`Restart=on-failure`) (S)
+- [ ] Structured application logging: Python `logging` wired through
+      `sporkd`/`spork` (level configurable via `config.toml`/CLI flag,
+      journal-friendly output since M6 runs it under systemd) — separate
+      from `audit_log` (§7.4), which is a per-message decision record,
+      not an operational log stream (M)
+- [ ] Per-message tracing through the pipeline: a correlation ID attached
+      to a message at ingestion, threaded through every Tier 1/Tier 2
+      Filter/Selector/Augment stage (§9.4/§10.7) and included in that
+      message's log lines, so one message's full journey — which
+      modules ran, in what order, how long each took — is reconstructable
+      from logs alone. Lightweight and stdlib-based (the correlation ID
+      + structured logging above); no distributed-tracing dependency
+      (OpenTelemetry etc.) — this is a single-process daemon, not a
+      distributed system, and a heavier dependency isn't justified (M)
+- [ ] Audit trail completeness: extend `audit_log` beyond per-message
+      triage outcomes to cover control-plane changes too — `spork rules
+      enable/disable`, `spork config edit`, `spork pause`/`resume`,
+      `spork reclassify` (M5) — so there's a full "what changed this
+      daemon's behavior, and when" trail, not just "what happened to
+      this message" (M)
 - [ ] Security review pass against §15 (control socket perms, no
       secrets on disk, no send capability) (M)
 - [ ] Full test suite green in CI; coverage of rule engine + action
@@ -325,10 +361,16 @@ mailbox.
 **Exit criteria:** the daemon runs against the maintainer's real inbox for
 a full week with no manual intervention beyond normal `spork` CLI use, and
 no verdict-schema or action-executor bug reaches an unattended irreversible
-action.
+action. A week's worth of triage decisions and every control-plane change
+can be fully reconstructed from logs + the audit trail alone, without
+needing to re-derive anything from memory.
 
 ## Stretch / post-v1 (not scoped, not blocking)
 
+- Webhook `Alerter` backend (ntfy/Pushover-style, URL from secretspec) —
+  deferred out of M4, which targets Linux desktop notifications only for
+  v1. The `Alerter` protocol M4 builds makes this an additional backend
+  loaded like any other, not a redesign, whenever it's actually wanted.
 - Sieve JMAP client (RFC 9661) so Tier 0 rules can be managed from `spork`
   itself instead of Fastmail's web UI (noted as an open risk in
   `DESIGN.md` §17).
