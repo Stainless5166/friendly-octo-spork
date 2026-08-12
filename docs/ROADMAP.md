@@ -284,11 +284,22 @@ follow-up behind the same `Alerter` protocol, not built this round.
       never configures handlers itself), not a stub for the future
       desktop-notification backend.
 - [ ] Alert triggers wired to confidence bands + VIP rules + daemon health (M)
-      — prerequisite closed: `Condition.from_in` (exact-sender-address
-      match, distinct from `from_domain_in`), the condition kind
-      §7.5's `vip-senders` example rule has assumed all along but the
-      schema never actually had (`extra="forbid"` would've rejected
-      it) — see docs/TEST_COVERAGE.md tests 318–322.
+      — the pipeline-visible half is done: `spork.core.pipeline.observer.PipelineObserver`
+      (§12.2, bundles correlation-ID tracing with `Alerter` delegation —
+      the "combine logging and alerting" decision) is injected into
+      both `build_*_pipeline()`s; `RecordEscalationFilter` alerts on
+      `Action.alert_immediately` (the flag a VIP-sender rule sets, now
+      that `Condition.from_in` closes the schema gap §7.5's
+      `vip-senders` example assumed all along —
+      `extra="forbid"` would've rejected it before); `RecordAlertOnlyFilter`
+      and `RecordBudgetExhaustedFilter` always alert;
+      `ApplyVerdictActionFilter` alerts on `autoact_alert` or
+      `verdict.urgency == "high"` regardless of band. **Daemon health
+      is NOT done and can't be yet** — JMAP push disconnected /
+      crash-looping are `sporkd` lifecycle events, not a
+      `Payload`/`Pipeline.run()` for any message, so there's nothing
+      for a pipeline module to attach to; needs the M5 daemon loop
+      first. See docs/TEST_COVERAGE.md tests 318–346.
 - [ ] Graceful degrade when no DBus session bus is available (e.g. no
       active desktop session — sporkd keeps running, alerts just don't
       display, logged instead) (S) — moot for now: `LoggingAlerter`
@@ -299,6 +310,12 @@ follow-up behind the same `Alerter` protocol, not built this round.
 **Exit criteria:** a VIP-sender test email and a low-confidence test
 email both produce a visible desktop notification; killing network
 connectivity for 10+ minutes produces a "push disconnected" alert.
+The first half is proven at the pipeline level today (`process_message()`/
+`process_tier2_message()` called directly, `LoggingAlerter` standing in
+for the still-future desktop popup); nothing produces a *visible
+desktop* notification yet (that's the deferred `notify-send` backend),
+and neither half runs against a live, running `sporkd` yet — that
+needs M5's daemon loop.
 
 ## M5 — CLI + daemon control surface
 
