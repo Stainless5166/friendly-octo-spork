@@ -42,6 +42,32 @@ def test_load_rules_parses_valid_rules_toml(tmp_path: Path) -> None:
     assert rules[1].when.always is True
 
 
+def test_load_rules_parses_alert_immediately_on_an_action(tmp_path: Path) -> None:
+    """An action can opt into an immediate alert at escalation time
+    (docs/DESIGN.md §12.2) — defaults to False when the rule doesn't
+    set it, same as the vip-senders example rule vs. a plain
+    default-escalate catch-all."""
+    path = tmp_path / "rules.toml"
+    path.write_text(
+        """
+        [[rule]]
+        id = "vip-senders"
+        when = { from_in = ["boss@example.com"] }
+        action = { type = "escalate", reason = "vip_sender", alert_immediately = true }
+
+        [[rule]]
+        id = "default-escalate"
+        when = { always = true }
+        action = { type = "escalate" }
+        """
+    )
+
+    rules = load_rules(path)
+
+    assert rules[0].action.alert_immediately is True
+    assert rules[1].action.alert_immediately is False
+
+
 def test_load_rules_parses_from_in_condition(tmp_path: Path) -> None:
     """A rules.toml using from_in (the VIP-sender condition kind) parses
     cleanly — docs/DESIGN.md §7.5's `vip-senders` example rule has used
