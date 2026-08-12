@@ -322,7 +322,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (298 tests, all passing — 0 xfail)
+## Full test inventory (302 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -1733,3 +1733,33 @@ in this suite.
 298. **`test_default_edge_cases.py::test_default_clock_produces_a_real_parseable_timestamp`**
     Omitting `now=`. Asserts a genuine, parseable timestamp — mirrors
     Tier 1's equivalent test.
+
+### Closing checks (verifying claims made, not new features)
+
+Before declaring M3 done, checked whether two things repeatedly
+claimed in `docs/DESIGN.md` were ever actually exercised by a test —
+both were correct, neither had been verified until now.
+
+299. **`pipeline/tier2/test_integration_with_tier1.py::test_tier2_run_overwrites_tier1s_escalation_row`**
+    Escalates a message via `process_message()`, then runs
+    `process_tier2_message()` on the *same* message against the same
+    `StateDB`. Asserts the `processed_messages` row's `tier_reached`
+    flips `"tier1"` → `"tier2"` with the real action and
+    `verdict_json`, `has_processed()` never lapses to `False` in
+    between, and both tiers' audit entries survive — the specific
+    scenario §10.7 cites as the reason Tier 2 doesn't need its own
+    idempotency gate, never exercised end to end before this test.
+
+300. **`llm/test_loader_integration.py::test_load_llm_client_resolves_anthropic_llm_client_by_its_documented_spec`**
+    `load_llm_client()` with the exact spec string §10.1 documents for
+    `config.toml`. Asserts a real `AnthropicLLMClient` is returned.
+
+301. **`llm/test_loader_integration.py::test_load_llm_client_resolves_recorded_llm_client_by_its_documented_spec`**
+    Same, for §10.5's `RecordedLLMClient` spec. Asserts the loaded
+    client genuinely works (`get_verdict()` returns the recorded
+    response), not just that it constructs.
+
+302. **`llm/test_loader_integration.py::test_load_llm_client_propagates_anthropic_client_get_verdict_not_implemented`**
+    A loaded `AnthropicLLMClient`'s `get_verdict()` still raises
+    `NotImplementedError` — the loader doesn't change a class's own
+    behavior.
