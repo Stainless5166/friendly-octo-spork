@@ -97,6 +97,50 @@ def test_from_domain_in_condition_matches_sender_domain(make_message: Any) -> No
     assert unmatched.matched_rule_id is None
 
 
+def test_from_in_condition_matches_exact_sender_address(make_message: Any) -> None:
+    """from_in matches the message's exact sender address, not its domain.
+
+    Distinct from from_domain_in — this is the VIP-sender condition kind
+    docs/DESIGN.md §7.5's own example rule (`vip-senders`) has always
+    assumed exists.
+    """
+    matching = make_message(from_address="boss@example.com")
+    non_matching = make_message(from_address="someone-else@example.com")
+    rules = [
+        Rule(
+            id="vip-senders",
+            when=Condition(from_in=["boss@example.com", "spouse@example.com"]),
+            action=Action(type="tag", mailbox="VIP"),
+        )
+    ]
+
+    matched = evaluate(matching, rules, default_unmatched_action=Action(type="escalate"))
+    unmatched = evaluate(non_matching, rules, default_unmatched_action=Action(type="escalate"))
+
+    assert matched.matched_rule_id == "vip-senders"
+    assert unmatched.matched_rule_id is None
+
+
+def test_from_in_condition_does_not_match_on_domain_alone(make_message: Any) -> None:
+    """A sender sharing a VIP's domain but not their exact address doesn't match.
+
+    Guards the from_in/from_domain_in distinction: from_in is a
+    same-mailbox check, not a same-domain one.
+    """
+    message = make_message(from_address="someone-else@example.com")
+    rules = [
+        Rule(
+            id="vip-senders",
+            when=Condition(from_in=["boss@example.com"]),
+            action=Action(type="tag", mailbox="VIP"),
+        )
+    ]
+
+    verdict = evaluate(message, rules, default_unmatched_action=Action(type="escalate"))
+
+    assert verdict.matched_rule_id is None
+
+
 def test_local_classifier_category_condition_consults_configured_classifier(
     make_message: Any,
 ) -> None:
