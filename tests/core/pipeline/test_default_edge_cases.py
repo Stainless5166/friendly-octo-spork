@@ -12,8 +12,10 @@ from pathlib import Path
 import pytest
 
 from spork.core.actions.executor import ActionExecutor
+from spork.core.alerts.base import AlertUrgency
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline import process_message
+from spork.core.pipeline.observer import PipelineObserver
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
 
@@ -21,6 +23,13 @@ from spork.core.state.db import StateDB
 class _FailingApplier:
     def apply(self, message: NormalizedMessage, action: Action) -> None:
         raise RuntimeError("simulated backend failure")
+
+
+class _FakeAlerter:
+    def notify(
+        self, title: str, body: str, *, url: str | None = None, urgency: AlertUrgency = "normal"
+    ) -> None:
+        pass
 
 
 def test_process_message_propagates_executor_failure_and_does_not_mark_processed(
@@ -41,6 +50,7 @@ def test_process_message_propagates_executor_failure_and_does_not_mark_processed
                 default_unmatched_action=Action(type="escalate"),
                 executor=ActionExecutor(_FailingApplier()),
                 state_db=db,
+                ops=PipelineObserver(_FakeAlerter()),
                 now=lambda: "t1",
             )
 
@@ -66,6 +76,7 @@ def test_mark_processed_uses_the_injected_clock(tmp_path: Path, make_message) ->
             default_unmatched_action=Action(type="escalate"),
             executor=ActionExecutor(_NoopApplier()),
             state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
             now=lambda: "fixed-timestamp",
         )
 
@@ -96,6 +107,7 @@ def test_default_clock_produces_a_real_parseable_timestamp(tmp_path: Path, make_
             default_unmatched_action=Action(type="escalate"),
             executor=ActionExecutor(_NoopApplier()),
             state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
         )
 
         entries = db.get_audit_entries(jmap_id="msg-1")

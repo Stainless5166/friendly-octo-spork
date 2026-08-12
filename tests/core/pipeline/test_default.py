@@ -11,8 +11,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from spork.core.actions.executor import ActionExecutor
+from spork.core.alerts.base import AlertUrgency
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline import process_message
+from spork.core.pipeline.observer import PipelineObserver
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
 
@@ -23,6 +25,16 @@ class _RecordingApplier:
 
     def apply(self, message: NormalizedMessage, action: Action) -> None:
         self.calls.append((message, action))
+
+
+class _FakeAlerter:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def notify(
+        self, title: str, body: str, *, url: str | None = None, urgency: AlertUrgency = "normal"
+    ) -> None:
+        self.calls.append({"title": title, "body": body, "url": url, "urgency": urgency})
 
 
 def test_process_message_skips_already_processed_messages(tmp_path: Path, make_message) -> None:
@@ -39,6 +51,7 @@ def test_process_message_skips_already_processed_messages(tmp_path: Path, make_m
             default_unmatched_action=Action(type="escalate"),
             executor=ActionExecutor(applier),
             state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
             now=lambda: "t1",
         )
 
@@ -68,6 +81,7 @@ def test_process_message_applies_matched_rule_action_and_marks_processed(
             default_unmatched_action=Action(type="escalate"),
             executor=ActionExecutor(applier),
             state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
             now=lambda: "t1",
         )
 
@@ -93,6 +107,7 @@ def test_process_message_writes_an_audit_entry_for_applied_actions(
             default_unmatched_action=Action(type="escalate"),
             executor=ActionExecutor(applier),
             state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
             now=lambda: "t1",
         )
 
@@ -118,6 +133,7 @@ def test_process_message_handles_escalate_without_calling_executor(
             default_unmatched_action=Action(type="escalate"),
             executor=ActionExecutor(applier),
             state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
             now=lambda: "t1",
         )
 
@@ -126,6 +142,38 @@ def test_process_message_handles_escalate_without_calling_executor(
     assert verdict is not None
     assert verdict.action.type == "escalate"
     assert applier.calls == []
+
+
+def test_process_message_alerts_immediately_for_a_vip_sender_rule(
+    tmp_path: Path, make_message
+) -> None:
+    """End to end: a VIP-sender rule (alert_immediately=True) escalates
+    and fires a real alert through the injected PipelineObserver,
+    without needing Tier 2 to run at all (docs/DESIGN.md §12.2)."""
+    applier = _RecordingApplier()
+    alerter = _FakeAlerter()
+    message = make_message(message_id="msg-1", from_address="boss@example.com")
+    rules = [
+        Rule(
+            id="vip-senders",
+            when=Condition(from_in=["boss@example.com"]),
+            action=Action(type="escalate", reason="vip_sender", alert_immediately=True),
+        )
+    ]
+
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        process_message(
+            message,
+            rules,
+            default_unmatched_action=Action(type="escalate"),
+            executor=ActionExecutor(applier),
+            state_db=db,
+            ops=PipelineObserver(alerter),
+            now=lambda: "t1",
+        )
+
+    assert len(alerter.calls) == 1
+    assert "vip_sender" in str(alerter.calls[0]["title"])
 
 
 def test_process_message_returns_the_verdict(tmp_path: Path, make_message) -> None:
@@ -143,6 +191,7 @@ def test_process_message_returns_the_verdict(tmp_path: Path, make_message) -> No
             default_unmatched_action=Action(type="escalate"),
             executor=ActionExecutor(applier),
             state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
             now=lambda: "t1",
         )
 
