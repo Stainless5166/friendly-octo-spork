@@ -24,8 +24,18 @@ from spork.core.pipeline.modules import (
     TimestampFilter,
     WriteAuditEntryFilter,
 )
+from spork.core.pipeline.observer import PipelineObserver
+from spork.core.rules.engine import RuleVerdict
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
+
+
+class _FakeAlerter:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def notify(self, title, body, *, url=None, urgency="normal") -> None:  # type: ignore[no-untyped-def]
+        self.calls.append({"title": title, "body": body, "url": url, "urgency": urgency})
 
 
 class _RecordingApplier:
@@ -123,9 +133,45 @@ def test_record_escalation_filter_sets_the_escalation_audit_event(make_message) 
     action applied, just the audit event recorded."""
     branch_payload = RuleEvaluationSelector().select(_payload(make_message, rules=[]))[1]
 
-    result = RecordEscalationFilter().apply(branch_payload)
+    result = RecordEscalationFilter(PipelineObserver(_FakeAlerter())).apply(branch_payload)
 
     assert result.meta.audit_event == "escalated_pending_tier2"
+
+
+def test_record_escalation_filter_does_not_alert_for_a_plain_escalation(make_message) -> None:
+    """The common case — an unmatched message escalating via
+    default_unmatched_action — doesn't alert_immediately, so no alert
+    fires at escalation time (docs/DESIGN.md §12.2's vip-senders vs.
+    default-escalate distinction)."""
+    alerter = _FakeAlerter()
+    branch_payload = RuleEvaluationSelector().select(_payload(make_message, rules=[]))[1]
+
+    RecordEscalationFilter(PipelineObserver(alerter)).apply(branch_payload)
+
+    assert alerter.calls == []
+
+
+def test_record_escalation_filter_alerts_when_action_opts_in(make_message) -> None:
+    """A rule whose action sets alert_immediately=True (a VIP-sender
+    rule, e.g.) fires an alert right at escalation time, not just an
+    audit event."""
+    alerter = _FakeAlerter()
+    rules = [
+        Rule(
+            id="vip-senders",
+            when=Condition(from_in=["boss@example.com"]),
+            action=Action(type="escalate", reason="vip_sender", alert_immediately=True),
+        )
+    ]
+    message = make_message(message_id="msg-1", from_address="boss@example.com")
+    branch_payload = RuleEvaluationSelector().select(
+        _payload(make_message, message=message, rules=rules, correlation_id="corr-1")
+    )[1]
+
+    RecordEscalationFilter(PipelineObserver(alerter)).apply(branch_payload)
+
+    assert len(alerter.calls) == 1
+    assert "vip_sender" in str(alerter.calls[0]["title"])
 
 
 def test_write_audit_entry_filter_writes_what_meta_describes(tmp_path: Path, make_message) -> None:

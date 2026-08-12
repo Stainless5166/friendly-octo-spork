@@ -15,6 +15,7 @@ from spork.core.llm.base import Verdict, VerdictRequest
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline.core import Payload
 from spork.core.pipeline.tier2.meta import Tier2Meta
+from spork.core.pipeline.observer import PipelineObserver
 from spork.core.pipeline.tier2.modules import (
     ApplyVerdictActionFilter,
     BudgetGateSelector,
@@ -33,6 +34,14 @@ from spork.core.pipeline.tier2.modules import (
 )
 from spork.core.rules.schema import Action
 from spork.core.state.db import StateDB
+
+
+class _FakeAlerter:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def notify(self, title, body, *, url=None, urgency="normal") -> None:  # type: ignore[no-untyped-def]
+        self.calls.append({"title": title, "body": body, "url": url, "urgency": urgency})
 
 
 class _RecordingApplier:
@@ -214,28 +223,104 @@ def test_apply_verdict_action_filter_calls_the_executor_and_sets_audit_fields(
     make_message,
 ) -> None:
     applier = _RecordingApplier()
-    verdict = _verdict(suggested_action={"type": "tag", "mailbox": "Needs-Reply"})
-    payload = _payload(make_message, verdict=verdict, band="autoact")
+    verdict = _verdict(suggested_action={"type": "tag", "mailbox": "Needs-Reply"}, urgency="medium")
+    payload = _payload(make_message, verdict=verdict, band="autoact", correlation_id="corr-1")
 
-    result = ApplyVerdictActionFilter(ActionExecutor(applier)).apply(payload)
+    result = ApplyVerdictActionFilter(
+        ActionExecutor(applier), PipelineObserver(_FakeAlerter())
+    ).apply(payload)
 
     assert applier.calls == [(payload.meta.message, verdict.suggested_action)]
     assert result.meta.audit_event is not None
     assert "autoact" in result.meta.audit_detail_json
 
 
-def test_record_alert_only_filter_sets_the_audit_event(make_message) -> None:
-    payload = _payload(make_message, verdict=_verdict(), band="alert_only")
+def test_apply_verdict_action_filter_does_not_alert_for_plain_autoact(make_message) -> None:
+    """A vanilla "autoact" outcome with non-high urgency: silent, per
+    the band's whole purpose (act without bothering a human)."""
+    alerter = _FakeAlerter()
+    verdict = _verdict(urgency="medium")
+    payload = _payload(make_message, verdict=verdict, band="autoact", correlation_id="corr-1")
 
-    result = RecordAlertOnlyFilter().apply(payload)
+    ApplyVerdictActionFilter(ActionExecutor(_RecordingApplier()), PipelineObserver(alerter)).apply(
+        payload
+    )
+
+    assert alerter.calls == []
+
+
+def test_apply_verdict_action_filter_alerts_for_autoact_alert_band(make_message) -> None:
+    """ "autoact_alert" alerts even though it's the same shared act
+    Pipeline as plain "autoact" (docs/DESIGN.md §10.7) — meta.band is
+    what distinguishes the two, not a different filter."""
+    alerter = _FakeAlerter()
+    verdict = _verdict(urgency="medium")
+    payload = _payload(make_message, verdict=verdict, band="autoact_alert", correlation_id="corr-1")
+
+    ApplyVerdictActionFilter(ActionExecutor(_RecordingApplier()), PipelineObserver(alerter)).apply(
+        payload
+    )
+
+    assert len(alerter.calls) == 1
+
+
+def test_apply_verdict_action_filter_alerts_for_high_urgency_even_in_plain_autoact(
+    make_message,
+) -> None:
+    """The orthogonal dimension from §12's intro: urgency=="high" alerts
+    regardless of band, including inside plain "autoact"."""
+    alerter = _FakeAlerter()
+    verdict = _verdict(urgency="high")
+    payload = _payload(make_message, verdict=verdict, band="autoact", correlation_id="corr-1")
+
+    ApplyVerdictActionFilter(ActionExecutor(_RecordingApplier()), PipelineObserver(alerter)).apply(
+        payload
+    )
+
+    assert len(alerter.calls) == 1
+    assert alerter.calls[0]["urgency"] == "critical"
+
+
+def test_record_alert_only_filter_sets_the_audit_event(make_message) -> None:
+    payload = _payload(make_message, verdict=_verdict(), band="alert_only", correlation_id="corr-1")
+
+    result = RecordAlertOnlyFilter(PipelineObserver(_FakeAlerter())).apply(payload)
 
     assert result.meta.audit_event is not None
+
+
+def test_record_alert_only_filter_always_alerts(make_message) -> None:
+    """The alert_only band's entire purpose is "a human must decide" —
+    it alerts unconditionally, unlike the other three trigger points."""
+    alerter = _FakeAlerter()
+    payload = _payload(
+        make_message, verdict=_verdict(urgency="low"), band="alert_only", correlation_id="corr-1"
+    )
+
+    RecordAlertOnlyFilter(PipelineObserver(alerter)).apply(payload)
+
+    assert len(alerter.calls) == 1
+    assert alerter.calls[0]["urgency"] == "low"
 
 
 def test_record_budget_exhausted_filter_sets_the_audit_event(make_message) -> None:
-    result = RecordBudgetExhaustedFilter().apply(_payload(make_message))
+    payload = _payload(make_message, correlation_id="corr-1")
+
+    result = RecordBudgetExhaustedFilter(PipelineObserver(_FakeAlerter())).apply(payload)
 
     assert result.meta.audit_event is not None
+
+
+def test_record_budget_exhausted_filter_always_alerts_at_critical_urgency(make_message) -> None:
+    """§10's documented policy: budget-exhausted mail goes straight to
+    Needs-Review + alert, never silently dropped."""
+    alerter = _FakeAlerter()
+    payload = _payload(make_message, correlation_id="corr-1")
+
+    RecordBudgetExhaustedFilter(PipelineObserver(alerter)).apply(payload)
+
+    assert len(alerter.calls) == 1
+    assert alerter.calls[0]["urgency"] == "critical"
 
 
 def test_create_draft_if_wanted_filter_creates_a_draft_when_one_is_present(make_message) -> None:
