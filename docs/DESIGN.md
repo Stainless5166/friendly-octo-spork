@@ -394,27 +394,46 @@ to messaging clearly rather than silently doing nothing.
 
 **`DaemonState`** (`spork.daemon.state`) is the small piece of
 mutable state `IpcServer` handlers and `_run_message_loop()` share —
-today just `paused: bool`. Pause semantics, stated honestly rather
-than glossed over: `Source.poll()` fuses "wait" and "fetch" into one
-call (§9.2), so there's no way yet to "stay connected but not fetch"
-the way §13's `spork pause` comment ("push stays connected") implies
-for a real push backend — while paused, `_run_message_loop()` skips
-`poll()` entirely and just sleeps, re-checking `paused` each idle
-cycle. A backend that reports "new since last successful check" will
-catch up its backlog correctly on resume; one that doesn't (a stream
-that must stay attached to avoid missing events) would need
-`Trigger`/`Source` split further before pause could mean what the
-CLI comment currently implies. Not solved here — stated as a real,
-current limitation of the abstraction, not silently assumed away.
+today `paused: bool` and `started_at: str` (set once, never mutated
+after construction). Deliberately **not** a place to cache anything
+derived from `StateDB`: both fields are only ever read/written from
+coroutine code (the message loop's own control flow, an `IpcServer`
+handler) — never from inside a `to_thread()`-wrapped call — so
+asyncio's single-thread-at-a-time coroutine scheduling makes them safe
+with no lock, by construction, not by convention. `StateDB` access
+stays exactly where §6.2.1 already put it: sequential, inside
+`to_thread(process_message, ...)` calls only. An `IpcServer` handler
+reading `StateDB` directly (an earlier draft of this design did, for
+`spork status`'s LLM-spend field) would run on the event-loop thread
+*concurrently* with an in-flight `to_thread(process_message, ...)` on
+a worker thread — exactly the concurrent access §6.2.1's
+`check_same_thread=False` note says is unsafe. Caught before writing
+any code, not after: `spork status` doesn't report LLM spend this
+round (see below) rather than accepting that risk.
+
+Pause semantics, stated honestly rather than glossed over:
+`Source.poll()` fuses "wait" and "fetch" into one call (§9.2), so
+there's no way yet to "stay connected but not fetch" the way §13's
+`spork pause` comment ("push stays connected") implies for a real push
+backend — while paused, `_run_message_loop()` skips `poll()` entirely
+and just sleeps, re-checking `paused` each idle cycle. A backend that
+reports "new since last successful check" will catch up its backlog
+correctly on resume; one that doesn't (a stream that must stay
+attached to avoid missing events) would need `Trigger`/`Source` split
+further before pause could mean what the CLI comment currently
+implies. Not solved here — stated as a real, current limitation of the
+abstraction, not silently assumed away.
 
 **`spork status`'s fields are honest about what's actually tracked**:
-`paused` (from `DaemonState`) and today's LLM call count vs.
-`daily_call_budget` (from `StateDB.get_llm_usage()`, already real
-since M3). "Push connection state" and "queue depth" from §13's
-original comment aren't reported — nothing in this architecture
-tracks either yet (there's no explicit internal queue; `Source.poll()`
-processes synchronously), so they'd be fabricated fields with no
-backing data. Revisit once something real exists to report.
+`paused` and `started_at`, both from `DaemonState`. "Push connection
+state" and "queue depth" from §13's original comment still aren't
+reported (nothing tracks either yet); **LLM spend vs. `daily_call_budget`
+is deferred too**, not because the data doesn't exist (`StateDB.get_llm_usage()`
+is real since M3) but because reporting it safely needs either Tier 2
+actually wired into this daemon loop (still Tier-1-only, §6.2.1 — so
+today's usage is always zero anyway) or a synchronization mechanism
+around `StateDB` this round doesn't add. Revisit both together once
+Tier 2 lands in the loop.
 
 **`spork logs`** doesn't touch the socket at all — `audit_log` is a
 `StateDB` table, readable directly whether or not `sporkd` is running,
@@ -1613,6 +1632,7 @@ classDiagram
     class DaemonState {
         <<dataclass>>
         +paused: bool
+        +started_at: str
     }
 
     class run_daemon {
