@@ -37,6 +37,17 @@ class _TaggingSelector:
         return "only", tagged
 
 
+class _BothMethodsStage:
+    """Implements both .apply() and .augment(), tagged differently so
+    a test can tell which one Pipeline actually called."""
+
+    def apply(self, payload: Payload[int]) -> Payload[int]:
+        return dataclasses.replace(payload, text=payload.text + "-apply")
+
+    def augment(self, payload: Payload[int]) -> Payload[int]:
+        return dataclasses.replace(payload, text=payload.text + "-augment")
+
+
 def test_payload_is_frozen() -> None:
     """Payload can't be mutated in place — same immutability contract
     as every other value type in spork.core."""
@@ -82,6 +93,32 @@ def test_pipeline_is_reusable_across_independent_runs() -> None:
 
     assert first.text == "one-x"
     assert second.text == "two-x"
+
+
+def test_a_stage_implementing_both_methods_dispatches_via_augment() -> None:
+    """Documented precedence for the (unlikely) case a stage satisfies
+    both Protocols: Augment wins, since Pipeline.run checks
+    isinstance(stage, Augment) before falling back to .apply()."""
+    pipeline = Pipeline([_BothMethodsStage()])
+
+    result = pipeline.run(Payload(text="start", meta=0))
+
+    assert result.text == "start-augment"
+
+
+def test_a_stage_with_neither_apply_nor_augment_fails_loudly() -> None:
+    """A genuine wiring mistake — e.g. passing something that's
+    neither a Filter nor an Augment into the stages list — fails with
+    a clear AttributeError naming the missing method, not a silent
+    no-op or a confusing error somewhere else."""
+
+    class _NotAStage:
+        pass
+
+    pipeline = Pipeline([_NotAStage()])  # type: ignore[list-item]
+
+    with pytest.raises(AttributeError, match="apply"):
+        pipeline.run(Payload(text="", meta=0))
 
 
 def test_unknown_branch_error_names_the_known_routes() -> None:
