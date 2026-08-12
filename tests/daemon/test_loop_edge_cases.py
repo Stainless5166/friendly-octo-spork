@@ -29,6 +29,7 @@ from spork.core.rules.loader import RulesLoadError
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
 from spork.daemon.loop import _run_message_loop, run_daemon
+from spork.daemon.state import DaemonState
 
 
 def _minimal_config(tmp_path: Path, *, rules_path: Path) -> SporkConfig:
@@ -122,6 +123,7 @@ def test_run_message_loop_stops_mid_batch_without_processing_the_rest(
                 state_db=state_db,
                 ops=PipelineObserver(LoggingAlerter()),
                 classifier=None,
+                daemon_state=DaemonState(),
                 stop_event=stop_event,
                 idle_delay_seconds=0.01,
             )
@@ -157,6 +159,7 @@ def test_run_message_loop_sleeps_rather_than_busy_looping_on_an_empty_source(
                     state_db=state_db,
                     ops=PipelineObserver(LoggingAlerter()),
                     classifier=None,
+                    daemon_state=DaemonState(),
                     stop_event=stop_event,
                     idle_delay_seconds=0.05,
                 ),
