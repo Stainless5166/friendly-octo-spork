@@ -16,6 +16,7 @@ from spork.core.pipeline.core import Payload
 from spork.core.pipeline.meta import MessageMeta
 from spork.core.pipeline.modules import (
     ApplyActionFilter,
+    CorrelationIdFilter,
     IdempotencyGateSelector,
     MarkProcessedFilter,
     RecordEscalationFilter,
@@ -71,6 +72,16 @@ def test_timestamp_filter_sets_ts_from_the_injected_clock(make_message) -> None:
     result = TimestampFilter(now=lambda: "fixed-ts").apply(_payload(make_message))
 
     assert result.meta.ts == "fixed-ts"
+
+
+def test_correlation_id_filter_sets_correlation_id_from_the_injected_generator(
+    make_message,
+) -> None:
+    """The filter calls the given id generator and stores its result in
+    meta.correlation_id — mirrors TimestampFilter's now: Callable DI."""
+    result = CorrelationIdFilter(new_id=lambda: "fixed-corr-id").apply(_payload(make_message))
+
+    assert result.meta.correlation_id == "fixed-corr-id"
 
 
 def test_rule_evaluation_selector_routes_terminal_for_a_matched_rule(make_message) -> None:

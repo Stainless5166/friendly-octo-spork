@@ -21,6 +21,7 @@ from spork.core.pipeline.tier2.modules import (
     BuildVerdictRequestFilter,
     CallLLMAugment,
     ConfidenceBandSelector,
+    CorrelationIdFilter,
     CreateDraftIfWantedFilter,
     MarkProcessedFilter,
     RecordAlertOnlyFilter,
@@ -93,6 +94,16 @@ def test_timestamp_filter_sets_ts_from_the_injected_clock(make_message) -> None:
     result = TimestampFilter(now=lambda: "fixed-ts").apply(_payload(make_message))
 
     assert result.meta.ts == "fixed-ts"
+
+
+def test_correlation_id_filter_sets_correlation_id_from_the_injected_generator(
+    make_message,
+) -> None:
+    """Mirrors TimestampFilter's now: Callable DI — same pattern,
+    Tier 2's own module (never shares concrete modules with Tier 1)."""
+    result = CorrelationIdFilter(new_id=lambda: "fixed-corr-id").apply(_payload(make_message))
+
+    assert result.meta.correlation_id == "fixed-corr-id"
 
 
 def test_budget_gate_selector_routes_budget_ok_when_under_the_limit(
