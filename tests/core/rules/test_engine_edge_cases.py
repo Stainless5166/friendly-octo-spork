@@ -49,6 +49,46 @@ def test_condition_with_no_fields_set_never_matches(make_message: Any) -> None:
     assert verdict.matched_rule_id == "fallback"
 
 
+def test_from_in_and_from_domain_in_together_use_and_semantics(make_message: Any) -> None:
+    """A Condition setting both from_in and from_domain_in must satisfy
+    both, not either — the general AND-across-fields rule (docstring
+    above _condition_matches) applies to this pairing same as any
+    other, and it's the one combination two sender-shaped fields make
+    plausible to reach for by accident."""
+    right_address_wrong_domain = make_message(
+        from_address="boss@example.com", from_domain="wrong.example.com"
+    )
+    rules = [
+        Rule(
+            id="vip-at-domain",
+            when=Condition(from_in=["boss@example.com"], from_domain_in=["example.com"]),
+            action=Action(type="tag", mailbox="VIP"),
+        )
+    ]
+
+    verdict = evaluate(
+        right_address_wrong_domain, rules, default_unmatched_action=Action(type="escalate")
+    )
+
+    assert verdict.matched_rule_id is None
+
+
+def test_from_in_with_empty_list_never_matches(make_message: Any) -> None:
+    """from_in=[] is set-but-empty, not unset — it must reject every
+    sender, not fall through as if the field were never checked
+    (mirrors test_condition_with_no_fields_set_never_matches's
+    "explicit but vacuous config isn't a silent catch-all" concern)."""
+    message = make_message(from_address="anyone@example.com")
+    rules = [
+        Rule(id="impossible", when=Condition(from_in=[]), action=Action(type="tag", mailbox="X")),
+        Rule(id="fallback", when=Condition(always=True), action=Action(type="ignore")),
+    ]
+
+    verdict = evaluate(message, rules, default_unmatched_action=Action(type="escalate"))
+
+    assert verdict.matched_rule_id == "fallback"
+
+
 def test_classifier_condition_without_configured_classifier_raises(make_message: Any) -> None:
     """A rule needing classifier output with none configured fails loudly.
 
