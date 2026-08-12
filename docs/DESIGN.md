@@ -115,10 +115,11 @@ Solid boxes are built and tested today; dashed boxes are planned
 layout for a milestone that hasn't landed yet (M3's `llm/prompts.py`
 — the not-yet-built step that assembles a `VerdictRequest` from a
 message —, a future real desktop-notification `Alerter` backend
-alongside M4's `alerts/log.py`, and M5's `ipc/` + most of
-`cli/commands/`). `config/` is real as of M5's first item — no longer
-a dashed box. This is layout orientation only — see §6.4 for what each
-built module's classes actually look like.
+alongside M4's `alerts/log.py`, and `cli/commands/config.py`, still
+pending `spork config show/edit`). `config/` and `ipc/` are real as of
+M5's work on them — no longer dashed boxes. This is layout orientation
+only — see §6.4 for what each built module's classes actually look
+like.
 
 ```mermaid
 flowchart TD
@@ -215,15 +216,17 @@ flowchart TD
             state_db["db.py<br/>StateDB + AuditEntry"]
         end
 
-        subgraph ipc["ipc/ (M5)"]
-            ipc_protocol["protocol.py"]:::planned
-            ipc_server["server.py"]:::planned
+        subgraph ipc["ipc/"]
+            ipc_protocol["protocol.py<br/>IpcRequest/IpcResponse"]
+            ipc_server["server.py<br/>IpcServer"]
+            ipc_client["client.py<br/>send_request()"]
         end
     end
 
     subgraph daemon_pkg["daemon/"]
         daemon_main["main.py<br/>sporkd entrypoint"]
         daemon_loop["loop.py<br/>run_daemon() (Tier 1 only, §6.2.1)"]
+        daemon_state["state.py<br/>DaemonState"]
     end
 
     subgraph cli_pkg["cli/"]
@@ -231,7 +234,10 @@ flowchart TD
         subgraph cli_commands["commands/"]
             cli_rules["rules.py<br/>spork rules test"]
             cli_doctor["doctor.py<br/>spork doctor (stub)"]
-            cli_status["status.py / config.py / logs.py (M5)"]:::planned
+            cli_status["status.py<br/>spork status"]
+            cli_pause["pause.py<br/>spork pause/resume"]
+            cli_logs["logs.py<br/>spork logs"]
+            cli_config["config.py (M5)"]:::planned
         end
     end
 
@@ -348,6 +354,76 @@ Wiring Tier 2 into the daemon loop is real, tracked follow-up work,
 not silently dropped — it's blocked on a `Provider` capability this
 one doesn't have yet, which is a different kind of gap than "needs a
 live account."
+
+#### 6.2.2 The IPC protocol
+
+Newline-delimited JSON over the Unix domain control socket — settled
+when M5 was first scoped (docs/ROADMAP.md): no new dependency
+(stdlib `json`), human-inspectable with `nc`/`socat` while debugging,
+and §15 already establishes filesystem permissions (0600, owned by
+the invoking user) as the only access control v1 needs, so nothing
+fancier is warranted. One request per connection — the CLI opens a
+socket, writes one `IpcRequest` line, reads one `IpcResponse` line,
+closes:
+
+```python
+class IpcRequest(BaseModel):
+    command: str
+    params: dict[str, Any] = {}
+
+class IpcResponse(BaseModel):
+    ok: bool
+    data: dict[str, Any] = {}
+    error: str | None = None
+```
+
+`IpcServer.serve()` runs alongside `_run_message_loop()` inside
+`run_daemon()`'s `asyncio.TaskGroup()` (§6.2.1) — `asyncio.start_unix_server()`,
+stdlib, no new dependency there either. It removes any stale socket
+file at the same path before binding (a leftover from a killed-not-
+stopped prior run would otherwise block startup) and dispatches each
+connection's one request to a handler registered by command name;
+an unhandled exception in a handler becomes `IpcResponse(ok=False,
+error=str(exc))`, never a raw traceback back to the CLI. The client
+side (`spork.core.ipc.client.send_request()`) is plain synchronous
+`socket` — the CLI is a short-lived process, not another asyncio
+loop — and a connection failure (no socket file, or one nobody's
+listening on) is the "daemon not running" case §6.3 already commits
+to messaging clearly rather than silently doing nothing.
+
+**`DaemonState`** (`spork.daemon.state`) is the small piece of
+mutable state `IpcServer` handlers and `_run_message_loop()` share —
+today just `paused: bool`. Pause semantics, stated honestly rather
+than glossed over: `Source.poll()` fuses "wait" and "fetch" into one
+call (§9.2), so there's no way yet to "stay connected but not fetch"
+the way §13's `spork pause` comment ("push stays connected") implies
+for a real push backend — while paused, `_run_message_loop()` skips
+`poll()` entirely and just sleeps, re-checking `paused` each idle
+cycle. A backend that reports "new since last successful check" will
+catch up its backlog correctly on resume; one that doesn't (a stream
+that must stay attached to avoid missing events) would need
+`Trigger`/`Source` split further before pause could mean what the
+CLI comment currently implies. Not solved here — stated as a real,
+current limitation of the abstraction, not silently assumed away.
+
+**`spork status`'s fields are honest about what's actually tracked**:
+`paused` (from `DaemonState`) and today's LLM call count vs.
+`daily_call_budget` (from `StateDB.get_llm_usage()`, already real
+since M3). "Push connection state" and "queue depth" from §13's
+original comment aren't reported — nothing in this architecture
+tracks either yet (there's no explicit internal queue; `Source.poll()`
+processes synchronously), so they'd be fabricated fields with no
+backing data. Revisit once something real exists to report.
+
+**`spork logs`** doesn't touch the socket at all — `audit_log` is a
+`StateDB` table, readable directly whether or not `sporkd` is running,
+the same reasoning that already lets rules/config file edits work
+with the daemon stopped (§6.3). `--since`/`--tail`/`--message-id`
+filtering happens client-side in the CLI command after
+`get_audit_entries()` returns everything (`jmap_id=` already filters
+storage-side for `--message-id`) — no new SQL query surface added to
+`StateDB` for a first pass, acceptable at a single mailbox's real
+scale.
 
 ### 6.3 CLI (`spork`)
 
@@ -1079,6 +1155,50 @@ multi-thread access to one `StateDB` safe in general — it turns off a
 guard rail that's unnecessary under sequential handoff specifically,
 not SQLite's own locking.
 
+#### `spork.core.ipc`
+
+```mermaid
+classDiagram
+    class IpcRequest {
+        <<pydantic BaseModel>>
+        +command: str
+        +params: dict
+    }
+    class IpcResponse {
+        <<pydantic BaseModel>>
+        +ok: bool
+        +data: dict
+        +error: Optional~str~
+    }
+    class IpcServer {
+        -socket_path: Path
+        -handlers: dict
+        +serve(stop_event) None
+    }
+    class send_request {
+        <<function>>
+        +send_request(socket_path, command, params) IpcResponse
+    }
+    class IpcConnectionError { <<Exception>> }
+
+    IpcServer ..> IpcRequest : parses one per connection
+    IpcServer ..> IpcResponse : writes one back
+    send_request ..> IpcRequest : sends
+    send_request ..> IpcResponse : returns
+    send_request ..> IpcConnectionError : raises when nothing's listening
+```
+
+One request per connection (§6.2.2) — `IpcServer` is constructed with
+a `dict[str, Callable[[dict], dict]]` of command-name -> handler
+functions (registered by whoever calls `run_daemon()`'s composition,
+same DI pattern as everything else here) and never itself knows what
+"status" or "pause" mean. `send_request()` (the CLI's side, plain
+synchronous `socket`, no asyncio) raises `IpcConnectionError` — not a
+raw `ConnectionRefusedError`/`FileNotFoundError` — for "nothing's
+listening," the single signal every CLI command that talks to the
+daemon checks for to print "daemon not running" (§6.3) instead of a
+raw traceback.
+
 #### `spork.core.pipeline`
 
 Four diagrams: the generic framework (`core.py`); `observer.py`'s
@@ -1487,6 +1607,12 @@ classDiagram
     class StateDB
     class PipelineObserver
     class process_message { <<function>> }
+    class IpcServer
+
+    class DaemonState {
+        <<dataclass>>
+        +paused: bool
+    }
 
     class run_daemon {
         <<function>>
@@ -1494,7 +1620,7 @@ classDiagram
     }
     class _run_message_loop {
         <<function>>
-        +_run_message_loop(source, rules, executor, state_db, ops, classifier, stop_event) None
+        +_run_message_loop(source, rules, executor, state_db, ops, classifier, daemon_state, stop_event) None
     }
     class _run_until_signalled {
         <<function>>
@@ -1508,8 +1634,12 @@ classDiagram
     run_daemon --> ActionExecutor : constructs
     run_daemon --> StateDB : opens
     run_daemon --> PipelineObserver : constructs
-    run_daemon ..> _run_message_loop : awaits
+    run_daemon --> DaemonState : constructs, shared with IpcServer's handlers
+    run_daemon --> IpcServer : constructs, registers status/pause/resume handlers
+    run_daemon ..> _run_message_loop : both run inside one asyncio.TaskGroup (§6.2.2)
+    run_daemon ..> IpcServer : .serve(stop_event)
     _run_message_loop --> Source : polls, via asyncio.to_thread (§6.2.1)
+    _run_message_loop --> DaemonState : skips poll()+processing while paused
     _run_message_loop ..> process_message : Tier 1 only, via asyncio.to_thread
 ```
 
@@ -1517,7 +1647,11 @@ classDiagram
 handling); `loop.py`'s `run_daemon()`/`_run_message_loop()` are the
 actual composition and are deliberately callable with no Typer/CLI
 involvement at all, so tests drive them directly with an injected
-`stop_event` rather than through a subprocess.
+`stop_event` rather than through a subprocess. `DaemonState`
+(`spork.daemon.state`) is the one piece of mutable state the message
+loop and the IPC handlers both touch — everything else stays
+constructor-injected and effectively read-only per run, the same
+DI convention as the rest of this codebase.
 
 ## 7. Data & configuration
 
@@ -2994,10 +3128,15 @@ existing stages.
 ## 13. CLI command reference (v1 surface)
 
 ```
-spork status                  # daemon up/down, push connection state,
-                               # queue depth, today's LLM spend vs budget
+spork status                  # daemon up/down, paused/running, today's
+                               # LLM spend vs budget (§6.2.2 — push
+                               # connection state/queue depth aren't
+                               # tracked anywhere yet, so not reported)
 spork pause / resume          # stop/start Tier 1+2 processing without
-                               # killing the daemon (push stays connected)
+                               # killing the daemon (§6.2.2's honest
+                               # caveat: today this also stops polling,
+                               # not just acting on what's already
+                               # fetched — see the design note)
 
 spork rules list              # show rules.toml, with per-rule match stats
 spork rules test <file>       # dry-run a candidate rules.toml against
@@ -3014,7 +3153,8 @@ spork config edit             # open the *user* tier's config.toml in $EDITOR,
                                # enforced tiers (§7.2); those are edited
                                # directly with real filesystem permissions
 
-spork logs [--tail] [--since] [--message-id]
+spork logs [--tail] [--since] [--message-id]  # reads StateDB directly,
+                                               # works even if sporkd isn't running
 spork reclassify <message-id> # force a message back through the pipeline
 
 spork doctor                  # secretspec check, JMAP auth check,
