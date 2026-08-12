@@ -25,7 +25,6 @@ from spork.core.pipeline.modules import (
     WriteAuditEntryFilter,
 )
 from spork.core.pipeline.observer import PipelineObserver
-from spork.core.rules.engine import RuleVerdict
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
 

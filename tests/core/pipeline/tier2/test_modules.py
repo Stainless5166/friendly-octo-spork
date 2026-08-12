@@ -14,8 +14,8 @@ from spork.core.actions.executor import ActionExecutor
 from spork.core.llm.base import Verdict, VerdictRequest
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline.core import Payload
-from spork.core.pipeline.tier2.meta import Tier2Meta
 from spork.core.pipeline.observer import PipelineObserver
+from spork.core.pipeline.tier2.meta import Tier2Meta
 from spork.core.pipeline.tier2.modules import (
     ApplyVerdictActionFilter,
     BudgetGateSelector,
