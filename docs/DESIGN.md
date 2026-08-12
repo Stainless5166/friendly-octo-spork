@@ -325,15 +325,21 @@ classDiagram
         <<Protocol>>
         +apply(message: NormalizedMessage, action: Action) None
     }
+    class DraftCreator {
+        <<Protocol>>
+        +create_draft(in_reply_to: NormalizedMessage, body: str) None
+    }
     class Provider {
         <<Protocol>>
         +build_source() Source
         +build_action_applier() ActionApplier
+        +build_draft_creator() DraftCreator
     }
     class Source { <<Protocol>> }
 
     Provider ..> Source : builds
     Provider ..> ActionApplier : builds
+    Provider ..> DraftCreator : builds
 ```
 
 `Source` is fully defined in `spork.core.sources`' own diagram below;
@@ -364,6 +370,7 @@ classDiagram
     class ContentFetcher { <<Protocol>> }
     class Source { <<Protocol>> }
     class ActionApplier { <<Protocol>> }
+    class DraftCreator { <<Protocol>> }
     class Provider { <<Protocol>> }
 
     class JmapClient {
@@ -372,6 +379,7 @@ classDiagram
         +connect() None
         +fetch_new_messages(since_cursor: Optional~str~) Sequence
         +apply_action(message: NormalizedMessage, action: Action) None
+        +create_draft(message: NormalizedMessage, body: str) None
     }
     class JmapPushTrigger {
         -client: JmapClient
@@ -400,6 +408,7 @@ classDiagram
         -cursor: Optional~str~
         +build_source() Source
         +build_action_applier() ActionApplier
+        +build_draft_creator() DraftCreator
     }
     class _JmapContentFetcher {
         -client: JmapClient
@@ -410,10 +419,15 @@ classDiagram
         -client: JmapClient
         +apply(message: NormalizedMessage, action: Action) None
     }
+    class _JmapDraftCreator {
+        -client: JmapClient
+        +create_draft(in_reply_to: NormalizedMessage, body: str) None
+    }
 
     Trigger <|.. JmapPushTrigger : structurally satisfies
     ContentFetcher <|.. _JmapContentFetcher : structurally satisfies
     ActionApplier <|.. _JmapActionApplier : structurally satisfies
+    DraftCreator <|.. _JmapDraftCreator : structurally satisfies
     Provider <|.. JmapProvider : structurally satisfies
 
     JmapPushTrigger --> JmapClient : wraps
@@ -424,8 +438,10 @@ classDiagram
     JmapProvider ..> JmapPushTrigger : builds
     JmapProvider ..> _JmapContentFetcher : builds
     JmapProvider ..> _JmapActionApplier : builds
+    JmapProvider ..> _JmapDraftCreator : builds
     _JmapContentFetcher --> JmapClient : delegates to
     _JmapActionApplier --> JmapClient : delegates to
+    _JmapDraftCreator --> JmapClient : delegates to
 ```
 
 `backoff.next_delay()` is a pure function of `(schedule, attempt)`
@@ -439,6 +455,7 @@ doesn't call it yet; the daemon's future reconnect loop will).
 classDiagram
     class Provider { <<Protocol>> }
     class ActionApplier { <<Protocol>> }
+    class DraftCreator { <<Protocol>> }
     class MessagesLoadError { <<Exception>> }
     class load_messages {
         <<function>>
@@ -448,18 +465,26 @@ classDiagram
         -log_path: Path
         +apply(message: NormalizedMessage, action: Action) None
     }
+    class _FileDraftCreator {
+        -log_path: Path
+        +create_draft(in_reply_to: NormalizedMessage, body: str) None
+    }
     class FileProvider {
         -messages_path: Path
         -actions_log_path: Path
+        -drafts_log_path: Path
         +build_source() Source
         +build_action_applier() ActionApplier
+        +build_draft_creator() DraftCreator
     }
 
     Provider <|.. FileProvider : structurally satisfies
     ActionApplier <|.. _FileActionApplier : structurally satisfies
+    DraftCreator <|.. _FileDraftCreator : structurally satisfies
     load_messages ..> MessagesLoadError : raises
     FileProvider ..> load_messages : uses
     FileProvider ..> _FileActionApplier : builds
+    FileProvider ..> _FileDraftCreator : builds
 ```
 
 #### `spork.core.sources`
@@ -1474,20 +1499,28 @@ class ActionApplier(Protocol):
     def apply(self, message: NormalizedMessage, action: Action) -> None: ...
 
 
+class DraftCreator(Protocol):
+    """Creates a draft reply in the account's Drafts mailbox — never sent."""
+
+    def create_draft(self, in_reply_to: NormalizedMessage, body: str) -> None: ...
+
+
 class Provider(Protocol):
     """What every mail-backend integration adapts to.
 
     A provider is the daemon's *entire* relationship to one remote
-    source of truth — reading from it (`build_source`) and writing to
-    it (`build_action_applier`) are two operations against the same
+    source of truth — reading from it (`build_source`), writing an
+    action to it (`build_action_applier`), and writing a draft to it
+    (`build_draft_creator`) are three operations against the same
     backend, not separate concerns that happen to share one. Mailbox
     role resolution and anything else backend-specific is reached
     through whatever a provider hands back, not through this Protocol
-    — but read and write both belong here.
+    — but every kind of read/write belongs here.
     """
 
     def build_source(self) -> Source: ...
     def build_action_applier(self) -> ActionApplier: ...
+    def build_draft_creator(self) -> DraftCreator: ...
 ```
 
 `spork.core.actions.executor.ActionExecutor` (M2) is the one consumer
@@ -1498,7 +1531,11 @@ one means something upstream routed a Tier-2-only action to the
 terminal step by mistake). `ActionApplier` lives in
 `spork.core.providers.base` alongside `Provider`, not in
 `spork.core.actions` — it's provider-owned I/O; `ActionExecutor` is
-generic business logic that depends on it, not the reverse.
+generic business logic that depends on it, not the reverse. `DraftCreator`
+is the M3 counterpart for `Verdict.draft_reply` (§10.1, §10.6) —
+provider-owned I/O the same way `ActionApplier` is, for the same
+reason: creating a draft is backend-specific work, not something a
+generic caller should know how to do itself.
 
 - **Package layout: `spork.core.providers.<name>`.** JMAP's
   client/push/mailbox/backoff modules move from
@@ -1508,12 +1545,12 @@ generic business logic that depends on it, not the reverse.
 - **The Adapter: `JmapProvider`.** Wraps `JmapClient` +
   `JmapPushTrigger` (§8) into a `Source` via the existing
   `TriggeredSource` (§9.2) for `build_source()`, and wraps
-  `JmapClient.apply_action()` (the third `NotImplementedError` stub
-  alongside `connect()`/`fetch_new_messages()`, same reason — a live
-  session is real-network work) for `build_action_applier()`.
-  `JmapProvider` doesn't reimplement fetch/push/mutate logic, it
-  composes pieces that already exist into the shape `Provider`
-  promises.
+  `JmapClient.apply_action()` (one of four `NotImplementedError` stubs
+  alongside `connect()`/`fetch_new_messages()`/`create_draft()`, same
+  reason — a live session is real-network work) for
+  `build_action_applier()`/`build_draft_creator()`. `JmapProvider`
+  doesn't reimplement fetch/push/mutate logic, it composes pieces that
+  already exist into the shape `Provider` promises.
 - **Loadable at runtime: `spork.core.providers.loader`.** A provider is
   named in config as a `"module.path:ClassName"` spec (e.g.
   `"spork.core.providers.jmap.provider:JmapProvider"`) and resolved via
@@ -1531,25 +1568,27 @@ generic business logic that depends on it, not the reverse.
   (§9.1).
 - **A second, fully real Adapter: `FileProvider`.** `JmapProvider` is
   the only provider spork ships that talks to a live backend, and it's
-  still mid-M1 (`connect()`/`fetch_new_messages()`/`apply_action()` are
-  settled-shape `NotImplementedError` stubs) — which means until a
-  live Fastmail session exists, nothing has ever actually exercised
-  `Provider` as an *abstraction* end to end, only as one
-  half-implemented instance of it. `spork.core.providers.file.FileProvider`
+  still mid-M1 (`connect()`/`fetch_new_messages()`/`apply_action()`/
+  `create_draft()` are settled-shape `NotImplementedError` stubs) —
+  which means until a live Fastmail session exists, nothing has ever
+  actually exercised `Provider` as an *abstraction* end to end, only as
+  one half-implemented instance of it. `spork.core.providers.file.FileProvider`
   closes that gap: it adapts a literal, explicitly-supplied JSON file
   of messages to `Provider`, with no NotImplementedError anywhere.
   `build_source()` replays the file's messages once via
   `ImmediateTrigger` + `SequenceContentFetcher` (§9.2); `build_action_applier()`
   appends every applied action to a JSON-lines log instead of mutating
-  anything, since there's no real mailbox underneath to mutate. It is
-  **not** a way to fake "recent mail" for `JmapProvider` or for `spork
-  rules test` (§13) — spork has no local mail store to substitute for
-  one, and `FileProvider` doesn't pretend to be JMAP or claim to be
-  live mail at all. Its purpose is narrower and more useful: proving,
-  with a real second implementation, that `Provider`'s read/write split
-  actually holds for a backend other than JMAP — plus a genuinely handy
-  building block for local dev/demo/CI work that wants a Provider
-  without any network dependency.
+  anything, since there's no real mailbox underneath to mutate;
+  `build_draft_creator()` (§10.6) does the same for drafts — a second
+  JSON-lines log, distinct from the actions one, since a draft isn't an
+  action. It is **not** a way to fake "recent mail" for `JmapProvider`
+  or for `spork rules test` (§13) — spork has no local mail store to
+  substitute for one, and `FileProvider` doesn't pretend to be JMAP or
+  claim to be live mail at all. Its purpose is narrower and more
+  useful: proving, with a real second implementation, that `Provider`'s
+  read/write split actually holds for a backend other than JMAP — plus
+  a genuinely handy building block for local dev/demo/CI work that
+  wants a Provider without any network dependency.
 
 ### 9.4 Modularity: Filter/Selector/Augment pipeline modules
 
@@ -1997,6 +2036,40 @@ class RecordedLLMClient:
   spec, so
   `"spork.core.llm.clients.recorded:RecordedLLMClient"` with a
   `responses_path=` kwarg is a config change, not special-cased code.
+
+### 10.6 Draft creation path
+
+A `Verdict.draft_reply` (§10.1) needs somewhere real to land: §11's
+hard invariant is "draft, never send" — no code path calls
+`Email/set` into `EmailSubmission`, only into the account's Drafts
+mailbox. `DraftCreator` (§9.3) is that write, alongside `ActionApplier`
+on the same `Provider` contract every backend already adapts to — a
+verdict's draft doesn't need a parallel abstraction, it needs one more
+method on the one that already exists.
+
+- **`JmapClient.create_draft()` is a fourth settled-shape stub**,
+  alongside `connect()`/`fetch_new_messages()`/`apply_action()`:
+  creating a real draft means a real `Email/set` call against a live
+  Fastmail session, which this environment can't exercise honestly.
+  Signature settled now (`create_draft(message, body) -> None`),
+  raises `NotImplementedError` pointing at `docs/ROADMAP.md`'s M3 in
+  the meantime. `_JmapDraftCreator` (in `spork.core.providers.jmap.provider`,
+  alongside `_JmapContentFetcher`/`_JmapActionApplier`) is a pure
+  delegation to it, same shape as the other two.
+- **`FileProvider.build_draft_creator()` is real**, same reasoning as
+  its `build_action_applier()`: `_FileDraftCreator` appends every
+  created draft to a second JSON-lines log (`drafts_log_path`,
+  distinct from `actions_log_path` — a draft isn't an action, and
+  keeping them in separate files means either can be inspected without
+  filtering the other out). Defaults to a `drafts.jsonl` next to
+  `actions_log_path` when not given explicitly, so existing
+  `FileProvider(messages_path, actions_log_path)` call sites keep
+  working unchanged.
+- **Never wired to `EmailSubmission` anywhere in this design** — the
+  hard invariant is enforced by omission: no `Provider` method, no
+  `DraftCreator` implementation, and no future pipeline module has any
+  path to it, consistent with §11's "draft, never send" and §15's "no
+  outbound send capability at all in v1."
 
 ## 11. Safety & human-in-the-loop
 
