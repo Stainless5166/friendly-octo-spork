@@ -12,8 +12,6 @@ import stat
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from spork.core.ipc.protocol import IpcRequest, IpcResponse, encode_line
 from spork.core.ipc.server import IpcServer
 
