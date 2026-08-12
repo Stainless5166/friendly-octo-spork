@@ -114,10 +114,11 @@ Two OS processes, one shared library:
 Solid boxes are built and tested today; dashed boxes are planned
 layout for a milestone that hasn't landed yet (M3's `llm/prompts.py`
 — the not-yet-built step that assembles a `VerdictRequest` from a
-message —, M4's `alerts/`, M5's `ipc/` + most of `cli/commands/`, and
-`config.py`, still needed by anything that reads `config.toml`). This
-is layout orientation only — see §6.4 for what each built module's
-classes actually look like.
+message —, a future real desktop-notification `Alerter` backend
+alongside M4's `alerts/log.py`, M5's `ipc/` + most of `cli/commands/`,
+and `config.py`, still needed by anything that reads `config.toml`).
+This is layout orientation only — see §6.4 for what each built
+module's classes actually look like.
 
 ```mermaid
 flowchart TD
@@ -197,13 +198,12 @@ flowchart TD
 
         subgraph actions["actions/"]
             actions_executor["executor.py<br/>ActionExecutor"]
-            actions_drafts["drafts.py (M3)"]:::planned
         end
 
         subgraph alerts["alerts/ (M4)"]
-            alerts_base["base.py"]:::planned
-            alerts_desktop["desktop.py"]:::planned
-            alerts_push["push.py"]:::planned
+            alerts_base["base.py<br/>Alerter + AlertUrgency"]
+            alerts_log["log.py<br/>LoggingAlerter"]
+            alerts_loader["loader.py<br/>load_alerter()"]
         end
 
         subgraph state["state/"]
@@ -817,6 +817,51 @@ classDiagram
 
     ActionExecutor --> ActionApplier : delegates non-escalate actions to
     ActionExecutor ..> ActionExecutionError : raises
+```
+
+#### `spork.core.alerts.base`
+
+```mermaid
+classDiagram
+    class AlertUrgency { <<Literal>> }
+    class Alerter {
+        <<Protocol>>
+        +notify(title: str, body: str, url: Optional~str~, urgency: AlertUrgency) None
+    }
+
+    Alerter ..> AlertUrgency : urgency parameter
+```
+
+#### `spork.core.alerts.log`
+
+```mermaid
+classDiagram
+    class Alerter { <<Protocol>> }
+    class LoggingAlerter {
+        +notify(title: str, body: str, url: Optional~str~, urgency: AlertUrgency) None
+    }
+
+    Alerter <|.. LoggingAlerter : structurally satisfies
+```
+
+The v1 backend: logs each alert via `logging.getLogger(__name__)`
+rather than showing a GUI popup — a real, inspectable delivery
+channel, not a stub. Never configures handlers itself (Python logging
+best practice — that's the application's job, `docs/ROADMAP.md` M7).
+
+#### `spork.core.alerts.loader`
+
+```mermaid
+classDiagram
+    class AlerterLoadError { <<Exception>> }
+    class load_alerter {
+        <<function>>
+        +load_alerter(spec: str, kwargs: dict) Alerter
+    }
+    class Alerter { <<Protocol>> }
+
+    load_alerter ..> Alerter : constructs
+    load_alerter ..> AlerterLoadError : raises
 ```
 
 #### `spork.core.state`
@@ -2434,22 +2479,74 @@ without one; the scheduling half isn't faked here.
 
 ## 12. Alerting
 
-- Alert backends implement a small `Alerter` protocol
-  (`notify(title, body, url=None, urgency=...)`), so backends are
-  swappable via config without touching the daemon logic.
-- **v1 backend: desktop notifications** — since `sporkd` runs as a
-  systemd **user** service at login (same session as the user's
-  desktop), it can talk to the session's notification service
-  (`org.freedesktop.Notifications` over DBus, or `notify-send` as a
-  simpler subprocess fallback).
-- **Optional backend: webhook** — POST to a configured URL (ntfy,
-  Pushover, a Slack incoming webhook, etc.) for when the user isn't at
-  the machine. URL comes from a secretspec-managed secret, not plain
-  config, since webhook URLs are bearer credentials.
-- Alerts fire for: Tier 3 (below alert threshold), `urgency: high`
-  verdicts regardless of confidence band, VIP-sender escalations, and
-  daemon-health events (JMAP push disconnected > N minutes, LLM budget
-  exhausted, daemon crash-looping).
+Alerts fire for: Tier 3 (below `alert_threshold`), `urgency: high`
+verdicts regardless of confidence band, VIP-sender escalations, and
+daemon-health events (JMAP push disconnected > N minutes, LLM budget
+exhausted, daemon crash-looping). §12.1 settles the adapter every
+backend implements; §12.2 settles what actually triggers a `notify()`
+call.
+
+**v1 scope: Linux desktop notifications only** (docs/ROADMAP.md M4) —
+a webhook backend (ntfy/Pushover/Slack-incoming-webhook-style, URL
+from a secretspec-managed secret since it's a bearer credential, not
+plain config) is real and useful but deliberately deferred to
+post-v1: `Alerter` is built as an adapter specifically so adding one
+later is a config change plus a new backend class, never a redesign
+(same reasoning as §9.3's `Provider`/§10.1's `LLMClient`).
+
+### 12.1 The `Alerter` adapter
+
+```python
+AlertUrgency = Literal["low", "normal", "critical"]
+
+
+class Alerter(Protocol):
+    """Delivers one alert through some channel — swappable via config
+    without touching whatever decided an alert was needed."""
+
+    def notify(
+        self, title: str, body: str, *, url: str | None = None, urgency: AlertUrgency = "normal"
+    ) -> None: ...
+```
+
+`AlertUrgency`'s three levels match the [Desktop Notifications
+Specification](https://specifications.freedesktop.org/notification/1.2/urgency-levels.html)'s
+own urgency vocabulary exactly — confirmed against the spec (and
+`notify-send(1)`'s identical `-u low|normal|critical` flag) before
+settling this shape, not guessed: low/normal don't need to interrupt,
+critical notifications shouldn't auto-expire. A future desktop backend
+needs no translation layer; a future non-desktop backend maps its own
+scheme onto the same three rather than inventing a fourth.
+
+- **`spork.core.alerts.log.LoggingAlerter`** — the v1 backend. Logs
+  each alert (`logging.getLogger(__name__)`, urgency mapped to a log
+  level — `low`→`INFO`, `normal`→`WARNING`, `critical`→`ERROR`) rather
+  than showing a GUI popup. This is a real, working delivery channel
+  (structured, inspectable, greppable output), not a stub standing in
+  for one — the same "genuinely real, not fake" bar `FileProvider`
+  (§9.3) and `RecordedLLMClient` (§10.5) hold, just a different valid
+  channel, not a placeholder for the channel actually promised. A real
+  desktop-notification backend (`notify-send -u {urgency} title body`,
+  wrapping `org.freedesktop.Notifications` over the session D-Bus —
+  confirmed via `notify-send(1)`, no new DBus library dependency
+  needed) is a deliberate near-term follow-up behind the same
+  `Alerter` Protocol, not built this round; per Python logging best
+  practice, `LoggingAlerter` never configures handlers itself
+  (`logging.basicConfig()` etc.) — that's the application's job
+  (`docs/ROADMAP.md` M7's structured-logging item), library code only
+  emits.
+- **`spork.core.alerts.loader.load_alerter()`/`AlerterLoadError`** —
+  identical "module.path:ClassName" mechanics to
+  `providers.loader.load_provider()`/`llm.loader.load_llm_client()`,
+  so `[alerts] backend = "spork.core.alerts.log:LoggingAlerter"` in
+  `config.toml` is how a deployment picks one, not a hardcoded import
+  — and swapping in a real desktop backend later is the same one-line
+  config change, no code change anywhere that calls `notify()`.
+
+### 12.2 Alert triggers
+
+Not yet built — see `docs/ROADMAP.md` M4's second/third checklist
+items.
 
 ## 13. CLI command reference (v1 surface)
 

@@ -269,15 +269,21 @@ polling the CLI. **v1 scope: Linux desktop notifications only** — a
 webhook/ntfy/Pushover backend is real and useful but explicitly deferred
 (see Stretch / post-v1 below), not because it's hard, just because
 desktop-only covers the daily-driver use case this project targets.
+**v1 backend is a logging `Alerter`, not a real desktop popup** — a
+genuine, working delivery channel (structured, greppable log output),
+not a stub; a `notify-send`/D-Bus backend is a deliberate near-term
+follow-up behind the same `Alerter` protocol, not built this round.
 
 - [ ] `Alerter` protocol (mirrors the `Provider`/`LLMClient` adapter
-      pattern, §9.3/§10.1 — one Protocol, backends loaded the same
-      `"module:ClassName"` way) + a Linux desktop backend (DBus, via
-      `notify-send` or a DBus library) (M)
+      pattern, §9.3/§10.1/§12.1 — one Protocol, backends loaded the
+      same `"module:ClassName"` way) + `LoggingAlerter` (M)
 - [ ] Alert triggers wired to confidence bands + VIP rules + daemon health (M)
 - [ ] Graceful degrade when no DBus session bus is available (e.g. no
       active desktop session — sporkd keeps running, alerts just don't
-      display, logged instead) (S)
+      display, logged instead) (S) — moot for now: `LoggingAlerter`
+      has no DBus dependency to degrade from; this item is really
+      "graceful degrade for the future desktop backend," revisit when
+      that backend actually exists.
 
 **Exit criteria:** a VIP-sender test email and a low-confidence test
 email both produce a visible desktop notification; killing network
