@@ -1503,13 +1503,9 @@ local_classifier = "keyword_heuristic"    # name registered in classify/registry
                                            # backend; see §9.1
 allowed_categories = ["needs_reply", "fyi", "newsletter", "spam"]   # §10.2
 
-[state]
 db_path = "~/.local/share/spork/state.sqlite3"   # $XDG_DATA_HOME — persistent app data
+rules_path = "~/.config/spork/rules.toml"
 
-[rules]
-path = "~/.config/spork/rules.toml"
-
-[ipc]
 # socket_path is optional — resolve_socket_path() (§6.4) defaults to
 # $XDG_RUNTIME_DIR/spork/sporkd.sock (0700, tmpfs-backed, gone on
 # reboot/logout — exactly right for a control socket per the XDG
@@ -1518,7 +1514,7 @@ path = "~/.config/spork/rules.toml"
 # $XDG_RUNTIME_DIR isn't set (a real possibility outside a systemd
 # session — the spec itself declines to mandate a default and pushes
 # fallback behavior onto the application).
-socket_path = "~/.local/state/spork/sporkd.sock"   # only if overriding the default
+# socket_path = "~/.local/state/spork/sporkd.sock"   # only if overriding the default
 ```
 
 ```toml
