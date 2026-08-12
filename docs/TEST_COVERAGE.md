@@ -89,7 +89,16 @@ note already on M4's table). Updated once more for M5's first item:
 `spork.core.config` (`schema.py`/`paths.py`/`loader.py`) — a three-tier
 `config.toml` (system enforced/user/system default) settled against
 the real XDG Base Directory Specification v0.8, not invented; deep
-merge is per-key, not whole-file. **M5 is 1/9.**
+merge is per-key, not whole-file. **M5 is 1/9.** Updated once more for
+M5's second prerequisite: `spork.daemon.loop.run_daemon()` — every
+blocking call (`Source.poll()`, the whole `process_message()` call)
+bridged into the asyncio loop via `asyncio.to_thread()`, since every
+I/O dependency this daemon has is synchronous (confirmed against
+`jmapc` directly). Tier 1 only; Tier 2 daemon-loop chaining is
+tracked as a new, separate roadmap item rather than faked.
+`StateDB` gained `check_same_thread=False` as a required companion
+fix. **M5 is 2/10** (a checklist item was added along with this work,
+not just checked off).
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -398,12 +407,13 @@ not one message's full cross-tier lifetime, since nothing calls
 exists) — M7 still separately owns `sporkd`'s overall structured
 logging setup and audit-trail completeness beyond triage outcomes.
 
-### M5 — CLI + daemon control surface — 1/9
+### M5 — CLI + daemon control surface — 2/10
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `spork.core.config` | ✅ | ✅ — tests 347–374 (28 numbered entries, 51 actual test cases — see note below), 100% line coverage |
-| Daemon event loop assembly | ❌ | — |
+| Daemon event loop assembly | ✅ | ✅ — tests 375–383 (9 tests), 100% line coverage on `spork.daemon.loop` |
+| Wire Tier 2 into the daemon loop | ❌ | — |
 | IPC protocol + Unix socket server | ❌ | — |
 | `spork status` | ❌ | — |
 | `spork pause`/`resume` | ❌ | — |
@@ -430,10 +440,26 @@ spread of realistic Linux path shapes (spaces, unicode, deep nesting,
 multi-entry `XDG_CONFIG_DIRS` strings) per instruction, and this
 file's own numbering convention counts one entry per test *function*,
 not per parametrize instance. The "Full test inventory" header count
-below is the true `pytest --collect-only` total (397); from here on,
-the highest numbered entry (374) and that true collected count no
-longer coincide — a real, intentional gap of 23 (the extra
-parametrize instances), not a numbering error.
+below is the true `pytest --collect-only` total; from here on, the
+highest numbered entry and that true collected count no longer
+coincide — a real, intentional gap (the extra parametrize instances),
+not a numbering error.
+
+`spork.daemon.loop.run_daemon()` (§6.2.1) is the second prerequisite
+— every I/O dependency this daemon has (`jmapc`, and by extension
+anything a live `ActionApplier` does) is synchronous, confirmed
+against the library directly rather than assumed, so the asyncio loop
+bridges every blocking call via `asyncio.to_thread()`. Proven end to
+end against `FileProvider`/`LoggingAlerter`: a matched rule's action
+really applies, both messages land in a real `StateDB`, a VIP-sender
+rule's alert fires through the real `LoggingAlerter` loaded from
+config, and the loop actually stops (bounded `asyncio.wait_for`, not a
+sleep-and-hope) once `stop_event` is set. **Tier 1 only** — chaining
+an escalated message into `process_tier2_message()` needs a `Provider`
+capability (thread-history/mailbox-listing) that doesn't exist yet,
+tracked as its own new roadmap item rather than faked with placeholder
+values. `StateDB` also gained `check_same_thread=False`, itself
+covered by a dedicated cross-thread test (test 375, `tests/core/state`).
 
 ### M6–M7
 
@@ -441,7 +467,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (397 tests, all passing — 0 xfail)
+## Full test inventory (406 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -2219,3 +2245,52 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
     Three `system_default_config_paths` candidates, only the middle one
     exists. Asserts it's the one read — later real candidates are
     ignored, matching `XDG_CONFIG_DIRS`'s first-match-wins precedence.
+
+### tests/core/state + tests/daemon (the asyncio daemon loop, §6.2.1)
+
+375. **`state/test_db.py::test_state_db_usable_from_a_different_thread_than_it_was_created_on`**
+    `StateDB` created on the test's thread, then used (via a spawned
+    `threading.Thread`, joined before asserting) from another thread.
+    Asserts no `sqlite3.ProgrammingError` — the exact sequential
+    cross-thread pattern `asyncio.to_thread(process_message, ...)`
+    relies on.
+
+376. **`daemon/test_loop.py::test_run_daemon_applies_a_matched_rules_action`**
+    A message matching a catch-all rule, run through `run_daemon()`
+    against a real `FileProvider`. Asserts the action lands in
+    `FileProvider`'s real JSON-lines actions log.
+
+377. **`daemon/test_loop.py::test_run_daemon_marks_processed_messages_in_state_db`**
+    Asserts both fixture messages end up `has_processed() == True` in
+    a real `StateDB` after running through the real asyncio loop.
+
+378. **`daemon/test_loop.py::test_run_daemon_fires_a_vip_alert_through_pipeline_observer`**
+    A VIP-sender rule's `alert_immediately`. Asserts the alert fires
+    through the real `LoggingAlerter` loaded from `config.alerts.spec`
+    — not a hand-constructed `PipelineObserver`.
+
+379. **`daemon/test_loop.py::test_run_daemon_stops_promptly_after_stop_event_is_set`**
+    Asserts `run_daemon()` actually returns once `stop_event` is set,
+    via a bounded `asyncio.wait_for()` that would itself fail the test
+    if the loop never stopped.
+
+380. **`daemon/test_loop_edge_cases.py::test_run_message_loop_stops_mid_batch_without_processing_the_rest`**
+    A fake `ActionApplier` sets `stop_event` as a side effect of
+    applying the first of two messages in one batch. Asserts the
+    second message is never processed.
+
+381. **`daemon/test_loop_edge_cases.py::test_run_message_loop_sleeps_rather_than_busy_looping_on_an_empty_source`**
+    An always-empty `Source` with a short `idle_delay_seconds`, run
+    for a fixed wall-clock window. Asserts a bounded `poll()` call
+    count (proving `asyncio.sleep()` actually elapsed, not a spin) and
+    separately asserts real wall-clock time actually passed.
+
+382. **`daemon/test_loop_edge_cases.py::test_run_daemon_propagates_a_missing_rules_file_error`**
+    A `rules_path` that doesn't exist. Asserts `RulesLoadError`
+    propagates as-is — `run_daemon()` is a library function, not a CLI
+    command, so it doesn't catch/report this itself.
+
+383. **`daemon/test_main.py::test_no_usable_config_produces_a_clean_error_not_a_traceback`**
+    `sporkd` run via subprocess with `XDG_CONFIG_HOME`/`XDG_CONFIG_DIRS`
+    pointed at empty tmp dirs (no config anywhere). Asserts exit code 1,
+    an `"Error:"` message, and no `"Traceback"` in stderr.

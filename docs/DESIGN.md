@@ -1496,9 +1496,14 @@ classDiagram
         <<function>>
         +_run_message_loop(source, rules, executor, state_db, ops, classifier, stop_event) None
     }
+    class _run_until_signalled {
+        <<function>>
+        +_run_until_signalled(config) None
+    }
 
     run --> main : typer.run(main)
-    main ..> run_daemon : asyncio.run(), on SIGTERM/SIGINT sets stop_event
+    main ..> _run_until_signalled : asyncio.run()
+    _run_until_signalled ..> run_daemon : awaits, stop_event set by SIGTERM/SIGINT handlers
     run_daemon ..> Provider : load_provider() -> build_source()/build_action_applier()
     run_daemon --> ActionExecutor : constructs
     run_daemon --> StateDB : opens

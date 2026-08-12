@@ -326,15 +326,17 @@ Two prerequisites landed as this milestone's own first items, not
 silently assumed: `spork.core.config` didn't exist at all before this
 milestone (flagged in `DESIGN.md` §6.1's component-tree caption, but
 untracked as work anywhere), and `sporkd`'s event loop was never
-actually assembled — `daemon/main.py` is still M0's `--version`-only
-stub, and M1's own exit criteria say so explicitly ("sporkd runs, logs
-each new inbox message's subject... **Not yet met**"). Neither is
-genuinely blocked on a live JMAP account: both are buildable and
-testable today against `FileProvider` + `RecordedLLMClient` +
-`LoggingAlerter`, the same "settle the real shape, let only the actual
-network leaf calls stay `NotImplementedError`" pattern M1a/M1b/M3 used
-— not new scope invented for M5, just work that had nowhere else on
-the roadmap to live until M5 needed something to control.
+actually assembled — `daemon/main.py` was still M0's `--version`-only
+stub, and M1's own exit criteria said so explicitly ("sporkd runs, logs
+each new inbox message's subject... **Not yet met**" — still true for
+the JMAP-specific path, since that's genuinely blocked on a live
+account, but no longer true of the loop itself). Neither was genuinely
+blocked on a live JMAP account: both were buildable and testable
+against `FileProvider` + `RecordedLLMClient` + `LoggingAlerter`, the
+same "settle the real shape, let only the actual network leaf calls
+stay `NotImplementedError`" pattern M1a/M1b/M3 used — not new scope
+invented for M5, just work that had nowhere else on the roadmap to
+live until M5 needed something to control.
 
 - [x] `spork.core.config`: `SporkConfig`/`TieringConfig`/`BackendSpec`
       pydantic schema + `load_config()` (M) — three-tier precedence
@@ -347,7 +349,7 @@ the roadmap to live until M5 needed something to control.
       mode, same convention as `RulesLoadError`/`ProviderLoadError`.
       Exit criterion's enforced-tier-wins test is real: see
       `docs/TEST_COVERAGE.md`'s `test_load_config_enforced_tier_overrides_user_tier`.
-- [ ] Daemon event loop assembly: `daemon/loop.py` composes
+- [x] Daemon event loop assembly: `daemon/loop.py` composes
       `load_config()` → `Provider.build_source()` → Tier 1
       `process_message()` → `PipelineObserver`/`Alerter` → `StateDB`,
       as a real asyncio loop, blocking calls bridged via
