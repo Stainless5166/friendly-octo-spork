@@ -133,6 +133,11 @@ flowchart TD
             pipeline_meta["meta.py<br/>MessageMeta"]
             pipeline_modules["modules.py<br/>7 concrete Filters/Selectors"]
             pipeline_default["default.py<br/>build_default_pipeline() +<br/>process_message()"]
+            subgraph pipeline_tier2["tier2/"]
+                tier2_meta["meta.py<br/>Tier2Meta"]
+                tier2_modules["modules.py<br/>13 concrete Filters/Selectors/Augment"]
+                tier2_default["default.py<br/>build_tier2_pipeline() +<br/>process_tier2_message()"]
+            end
         end
 
         subgraph providers["providers/"]
@@ -988,6 +993,159 @@ action execution, and audit logging into the one call a real message
 goes through, now composed from these seven modules instead of one
 function body. `ActionExecutor`/`StateDB`/`evaluate` are fully defined
 in their own diagrams above.
+
+A third diagram: `spork.core.pipeline.tier2` (§10.7), the Tier 2
+sibling to the diagram above — reuses the same generic framework and
+`MissingMetaError`, but its own `Tier2Meta` and 13 concrete modules,
+never M2's.
+
+```mermaid
+classDiagram
+    class Filter { <<Protocol>> }
+    class Selector { <<Protocol>> }
+    class Augment { <<Protocol>> }
+    class MissingMetaError { <<Exception>> }
+    class LLMClient { <<Protocol>> }
+    class DraftCreator { <<Protocol>> }
+    class ActionExecutor
+    class StateDB
+    class clean_body { <<function>> }
+    class validate_verdict { <<function>> }
+    class confidence_band { <<function>> }
+    class has_budget_remaining { <<function>> }
+
+    class Tier2Meta {
+        <<dataclass, frozen>>
+        +message: NormalizedMessage
+        +to_addresses: Sequence~str~
+        +thread_prior_subject: Optional~str~
+        +thread_user_has_replied: bool
+        +available_mailboxes: Sequence~str~
+        +ts: Optional~str~
+        +request: Optional~VerdictRequest~
+        +verdict: Optional~Verdict~
+        +band: Optional~ConfidenceBand~
+        +audit_event: Optional~str~
+        +audit_detail_json: Optional~str~
+    }
+
+    class TimestampFilter {
+        -now: function
+        +apply(payload) Payload
+    }
+    class BudgetGateSelector {
+        -state_db: StateDB
+        -daily_call_budget: int
+        +select(payload) tuple
+    }
+    class BuildVerdictRequestFilter {
+        -max_body_chars: int
+        +apply(payload) Payload
+    }
+    class CallLLMAugment {
+        -llm_client: LLMClient
+        +augment(payload) Payload
+    }
+    class RecordLLMUsageFilter {
+        -state_db: StateDB
+        +apply(payload) Payload
+    }
+    class ValidateVerdictFilter {
+        -allowed_categories: Sequence~str~
+        +apply(payload) Payload
+    }
+    class ConfidenceBandSelector {
+        -alert_threshold: float
+        -autoact_threshold: float
+        +select(payload) tuple
+    }
+    class ApplyVerdictActionFilter {
+        -executor: ActionExecutor
+        +apply(payload) Payload
+    }
+    class RecordAlertOnlyFilter {
+        +apply(payload) Payload
+    }
+    class RecordBudgetExhaustedFilter {
+        +apply(payload) Payload
+    }
+    class CreateDraftIfWantedFilter {
+        -draft_creator: DraftCreator
+        +apply(payload) Payload
+    }
+    class WriteAuditEntryFilter {
+        -state_db: StateDB
+        +apply(payload) Payload
+    }
+    class MarkProcessedFilter {
+        -state_db: StateDB
+        +apply(payload) Payload
+    }
+
+    Filter <|.. TimestampFilter : structurally satisfies
+    Selector <|.. BudgetGateSelector : structurally satisfies
+    Filter <|.. BuildVerdictRequestFilter : structurally satisfies
+    Augment <|.. CallLLMAugment : structurally satisfies
+    Filter <|.. RecordLLMUsageFilter : structurally satisfies
+    Filter <|.. ValidateVerdictFilter : structurally satisfies
+    Selector <|.. ConfidenceBandSelector : structurally satisfies
+    Filter <|.. ApplyVerdictActionFilter : structurally satisfies
+    Filter <|.. RecordAlertOnlyFilter : structurally satisfies
+    Filter <|.. RecordBudgetExhaustedFilter : structurally satisfies
+    Filter <|.. CreateDraftIfWantedFilter : structurally satisfies
+    Filter <|.. WriteAuditEntryFilter : structurally satisfies
+    Filter <|.. MarkProcessedFilter : structurally satisfies
+
+    BuildVerdictRequestFilter ..> MissingMetaError : raises
+    CallLLMAugment ..> MissingMetaError : raises
+    RecordLLMUsageFilter ..> MissingMetaError : raises
+    ValidateVerdictFilter ..> MissingMetaError : raises
+    ConfidenceBandSelector ..> MissingMetaError : raises
+    ApplyVerdictActionFilter ..> MissingMetaError : raises
+    CreateDraftIfWantedFilter ..> MissingMetaError : raises
+    WriteAuditEntryFilter ..> MissingMetaError : raises
+    MarkProcessedFilter ..> MissingMetaError : raises
+
+    BuildVerdictRequestFilter ..> clean_body : cleans body via
+    CallLLMAugment --> LLMClient : the one I/O stage — external API seam
+    ValidateVerdictFilter ..> validate_verdict : Tier 2 verdict validation
+    ConfidenceBandSelector ..> confidence_band : Tier 2 confidence gating
+    BudgetGateSelector ..> has_budget_remaining : Tier 2 budget check
+    ApplyVerdictActionFilter --> ActionExecutor : applies suggested_action via
+    CreateDraftIfWantedFilter --> DraftCreator : creates via, when draft_reply set
+    BudgetGateSelector --> StateDB
+    RecordLLMUsageFilter --> StateDB
+    WriteAuditEntryFilter --> StateDB
+    MarkProcessedFilter --> StateDB
+
+    class build_tier2_pipeline {
+        <<function>>
+        +build_tier2_pipeline(llm_client, executor, draft_creator, state_db, allowed_categories, daily_call_budget, alert_threshold, autoact_threshold, max_body_chars, now) Pipeline
+    }
+    class process_tier2_message {
+        <<function>>
+        +process_tier2_message(message, to_addresses, ..., now) Optional~Verdict~
+    }
+    build_tier2_pipeline ..> TimestampFilter : composes
+    build_tier2_pipeline ..> BudgetGateSelector : composes
+    build_tier2_pipeline ..> BuildVerdictRequestFilter : composes
+    build_tier2_pipeline ..> CallLLMAugment : composes
+    build_tier2_pipeline ..> RecordLLMUsageFilter : composes
+    build_tier2_pipeline ..> ValidateVerdictFilter : composes
+    build_tier2_pipeline ..> ConfidenceBandSelector : composes
+    build_tier2_pipeline ..> ApplyVerdictActionFilter : composes
+    build_tier2_pipeline ..> RecordAlertOnlyFilter : composes
+    build_tier2_pipeline ..> RecordBudgetExhaustedFilter : composes
+    build_tier2_pipeline ..> CreateDraftIfWantedFilter : composes
+    build_tier2_pipeline ..> WriteAuditEntryFilter : composes
+    build_tier2_pipeline ..> MarkProcessedFilter : composes
+    process_tier2_message ..> build_tier2_pipeline : builds, then runs
+```
+
+`"autoact"`/`"autoact_alert"` route to the same `act` `Pipeline`
+instance (not drawn as two separate branches above — see §10.7's
+prose for why one object under two route keys is the accurate
+picture, not a diagramming simplification).
 
 #### `spork.core.secrets`
 
@@ -2070,6 +2228,189 @@ method on the one that already exists.
   `DraftCreator` implementation, and no future pipeline module has any
   path to it, consistent with §11's "draft, never send" and §15's "no
   outbound send capability at all in v1."
+
+### 10.7 The Tier 2 pipeline, wired end to end
+
+§9.4 promised this: "M3's Tier 2 prompt-building chain ... is a
+`Filter`/`Augment` chain over the same `Payload`/`Pipeline` machinery,
+not a new abstraction." This section cashes that promise in —
+`spork.core.pipeline.tier2` composes every piece §10.1–§10.6 built into
+one runnable pipeline, the same way `spork.core.pipeline.default`
+composes M2's seven modules. It reuses the *generic* framework
+(`Payload`/`Filter`/`Selector`/`Augment`/`Pipeline`, `MissingMetaError`)
+verbatim; it does **not** reuse M2's *concrete* `MessageMeta`/modules —
+`RuleVerdict` and `llm.base.Verdict` are different shapes (the latter's
+action field is `suggested_action`, not `action`), so a Tier 2
+`MarkProcessedFilter` reusing M2's would read the wrong attribute and
+fail at runtime, and even the shape-compatible ones (`WriteAuditEntryFilter`)
+would fail `mypy --strict` reused against a different concrete meta
+type. `Tier2Meta` and its own module set are the honest way to keep
+both pipelines correctly typed.
+
+```python
+@dataclass(frozen=True, slots=True)
+class Tier2Meta:
+    message: NormalizedMessage
+    to_addresses: Sequence[str]
+    thread_prior_subject: Optional[str]
+    thread_user_has_replied: bool
+    available_mailboxes: Sequence[str]
+    ts: Optional[str] = None
+    request: Optional[VerdictRequest] = None
+    verdict: Optional[Verdict] = None
+    band: Optional[ConfidenceBand] = None
+    audit_event: Optional[str] = None
+    audit_detail_json: Optional[str] = None
+```
+
+`to_addresses`/`thread_prior_subject`/`thread_user_has_replied`/
+`available_mailboxes` are caller-supplied, exactly like `MessageMeta.rules`
+— this pipeline doesn't parse `NormalizedMessage.headers` itself
+(`NormalizedMessage` has no structured "to" field yet); assembling
+those from a real message is real-fetch-adjacent work for whatever
+eventually decides a message needs Tier 2 processing, not this
+pipeline's job.
+
+**Modules** (`spork.core.pipeline.tier2.modules`), in the order they
+run:
+
+1. **`TimestampFilter(now)`** — calls the clock once, same role as M2's.
+2. **`BudgetGateSelector(state_db, daily_call_budget)`** — reads
+   `meta.ts`'s date, calls `StateDB.get_llm_usage()` then
+   `has_budget_remaining()` (§10.4); routes `"budget_ok"` or
+   `"budget_exhausted"`.
+3. **`BuildVerdictRequestFilter(max_body_chars)`** — cleans
+   `payload.text` via `clean_body()` (§10, body cleaning), assembles a
+   `VerdictRequest` from it plus `meta`'s caller-supplied fields.
+4. **`CallLLMAugment(llm_client)`** — the one `Augment` in this
+   pipeline, and the only stage that reaches outside the payload:
+   calls `llm_client.get_verdict(meta.request)`, sets `meta.verdict`.
+   **This is the seam the external API sits behind** — with
+   `RecordedLLMClient` (§10.5) it runs today, no live account needed;
+   swap in a real `AnthropicLLMClient` once M3's live-call blocker
+   clears and nothing else in this pipeline changes.
+5. **`RecordLLMUsageFilter(state_db)`** — records that a call was made
+   (§10.4) immediately after it happens, before validation — the call
+   cost budget/tokens regardless of whether spork ends up liking the
+   response's shape. **Known limitation:** recorded with
+   `tokens_in=tokens_out=0` — `LLMClient.get_verdict()` returns a
+   `Verdict`, not a token-usage figure, so real counts aren't
+   available until a live client's real implementation reports them;
+   call-count enforcement (the part `daily_call_budget` actually
+   gates on) doesn't need them, so this isn't blocking, but `spork
+   status`'s token-spend display will read zeros until that's wired.
+6. **`ValidateVerdictFilter(allowed_categories)`** — calls
+   `validate_verdict()` (§10.2) against the configured category set
+   and `meta.available_mailboxes`; raises on failure. Same policy as
+   M2's `ApplyActionFilter`/`ActionExecutionError`: a raise here aborts
+   the run without marking the message processed, so it's retried next
+   cycle — an accepted tradeoff already in production for Tier 1, not
+   a new one introduced here.
+7. **`ConfidenceBandSelector(alert_threshold, autoact_threshold)`** —
+   calls `confidence_band()` (§10.3), sets `meta.band`, routes
+   `"autoact"` / `"autoact_alert"` / `"alert_only"`.
+8. **`ApplyVerdictActionFilter(executor)`** — applies
+   `verdict.suggested_action` via the same `ActionExecutor` (M2) a
+   Tier 1 terminal action uses; sets `audit_event`/`audit_detail_json`
+   naming `meta.band` so the entry records *which* band triggered it.
+9. **`RecordAlertOnlyFilter()`** — the `"alert_only"` branch's
+   counterpart to 8: no action applied, just records why.
+10. **`RecordBudgetExhaustedFilter()`** — the `"budget_exhausted"`
+    branch's counterpart: records that Tier 2 was skipped for budget,
+    matching §10's cost-control policy ("everything that would've
+    escalated instead goes straight to Needs-Review + alert").
+11. **`CreateDraftIfWantedFilter(draft_creator)`** — if
+    `meta.verdict.draft_reply` is set, creates it via `DraftCreator`
+    (§10.6). Runs on every non-budget-exhausted branch (`autoact`,
+    `autoact_alert`, *and* `alert_only`) — a draft is never sent, so
+    there's no reason to withhold one from a message a human still has
+    to review.
+12. **`WriteAuditEntryFilter(state_db)`** — writes whatever
+    `audit_event`/`audit_detail_json` describe, generic across all four
+    outcome branches, same role as M2's.
+13. **`MarkProcessedFilter(state_db)`** — marks the message processed.
+    Unlike M2's, doesn't require `meta.verdict` (the
+    `"budget_exhausted"` branch never sets one) — `tier_reached` is
+    always `"tier2"`, `action_taken` is the verdict's action type when
+    there is one, `None` otherwise.
+
+`MissingMetaError` (defined in `spork.core.pipeline.meta`, reused here
+rather than duplicated — it's a generic "module ran before its
+dependency" signal, never actually specific to `MessageMeta`) is what
+each of these raises when an earlier module it depends on hasn't run.
+
+**Composition** (`spork.core.pipeline.tier2.default.build_tier2_pipeline()`):
+
+```python
+act = Pipeline(
+    [
+        ApplyVerdictActionFilter(executor),
+        CreateDraftIfWantedFilter(draft_creator),
+        WriteAuditEntryFilter(state_db),
+        MarkProcessedFilter(state_db),
+    ]
+)
+alert_only = Pipeline(
+    [
+        RecordAlertOnlyFilter(),
+        CreateDraftIfWantedFilter(draft_creator),
+        WriteAuditEntryFilter(state_db),
+        MarkProcessedFilter(state_db),
+    ]
+)
+budget_ok = Pipeline(
+    [
+        BuildVerdictRequestFilter(max_body_chars),
+        CallLLMAugment(llm_client),
+        RecordLLMUsageFilter(state_db),
+        ValidateVerdictFilter(allowed_categories),
+    ],
+    selector=ConfidenceBandSelector(alert_threshold, autoact_threshold),
+    routes={"autoact": act, "autoact_alert": act, "alert_only": alert_only},
+)
+budget_exhausted = Pipeline(
+    [RecordBudgetExhaustedFilter(), WriteAuditEntryFilter(state_db), MarkProcessedFilter(state_db)]
+)
+return Pipeline(
+    [TimestampFilter(now)],
+    selector=BudgetGateSelector(state_db, daily_call_budget),
+    routes={"budget_ok": budget_ok, "budget_exhausted": budget_exhausted},
+)
+```
+
+`"autoact"` and `"autoact_alert"` deliberately route to the *same*
+`act` `Pipeline` object — nothing in `Pipeline.routes` requires distinct
+values per key, and the only difference between the two bands
+(whether a human gets alerted) is a fact `meta.band` already records
+for a future M4 `Alerter` to query, not a difference in what this
+pipeline does. A small, real demonstration of routes being "just
+another `Pipeline` value," not a special-cased branch table.
+
+`process_tier2_message(message, *, to_addresses, thread_prior_subject,
+thread_user_has_replied, available_mailboxes, llm_client, executor,
+draft_creator, state_db, allowed_categories, daily_call_budget,
+alert_threshold, autoact_threshold, max_body_chars=4000, now=...) ->
+Verdict | None` is the entry point, mirroring `process_message()`'s
+shape: builds the pipeline, seeds `Payload(text=message.body_text,
+meta=Tier2Meta(...))`, runs it, returns `result.meta.verdict` (`None`
+on the budget-exhausted branch).
+
+**Deliberately not built here: deciding *which* escalated message to
+run this on.** This pipeline doesn't duplicate Tier 1's
+`IdempotencyGateSelector`/`has_processed()` check — Tier 1's escalate
+branch already calls `mark_processed()` for an escalated message (the
+interim M2 policy, §9), so `has_processed()` would already read `True`
+before Tier 2 ever runs; a naive reuse would skip every message it's
+supposed to process. `MarkProcessedFilter`'s upsert (`StateDB.mark_processed()`'s
+existing `ON CONFLICT DO UPDATE`, built for `spork reclassify`) means a
+Tier 2 run simply overwrites Tier 1's row with `tier_reached="tier2"`
+and the real outcome — correct once *something* calls
+`process_tier2_message()` for the right message. That *something* —
+`sporkd`'s main loop deciding "this message escalated and hasn't had
+its Tier 2 run yet" — needs a live JMAP session to know what's
+actually pending, same blocker M1's daemon loop already has (M5). This
+pipeline is the part of "wire Tier 2 up" that's honestly buildable
+without one; the scheduling half isn't faked here.
 
 ## 11. Safety & human-in-the-loop
 
