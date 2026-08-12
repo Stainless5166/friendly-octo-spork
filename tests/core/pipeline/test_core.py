@@ -44,6 +44,27 @@ class _FixedBranchSelector:
         return self._branch, payload
 
 
+class _AddContextAugment:
+    """Appends a fixed piece of "looked-up" context to payload.text —
+    stands in for a real Augment (e.g. a thread-history or contact
+    lookup) without a real dependency: proves Pipeline dispatches to
+    `.augment()`, not what the lookup itself does."""
+
+    def __init__(self, context: str) -> None:
+        self._context = context
+
+    def augment(self, payload: Payload[int]) -> Payload[int]:
+        return dataclasses.replace(payload, text=payload.text + self._context)
+
+
+class _IncrementMetaAugment:
+    """Increments int meta — proves an Augment can enrich meta, not
+    just text, same as a Filter can."""
+
+    def augment(self, payload: Payload[int]) -> Payload[int]:
+        return dataclasses.replace(payload, meta=payload.meta + 1)
+
+
 def test_pipeline_runs_filters_in_order() -> None:
     """A straight-line chain of Filters applies each in sequence."""
     pipeline = Pipeline([_AppendFilter("a"), _AppendFilter("b"), _AppendFilter("c")])
@@ -115,3 +136,57 @@ def test_filters_can_update_meta_not_just_text() -> None:
     result = pipeline.run(Payload(text="", meta=0))
 
     assert result.meta == 3
+
+
+def test_pipeline_runs_augments_via_their_augment_method() -> None:
+    """A stage that only implements `.augment()` (no `.apply()`) runs
+    correctly in a Pipeline's stage list — Augment is a first-class
+    stage type, not a Filter in disguise."""
+    pipeline = Pipeline([_AddContextAugment("[context]")])
+
+    result = pipeline.run(Payload(text="start", meta=0))
+
+    assert result.text == "start[context]"
+
+
+def test_pipeline_interleaves_filters_and_augments_in_call_order() -> None:
+    """Filters and Augments compose freely in one ordered stage list —
+    the split is about intent (I/O or not), not about where a stage is
+    allowed to sit."""
+    pipeline = Pipeline(
+        [
+            _AppendFilter("-clean"),
+            _AddContextAugment("-context"),
+            _AppendFilter("-final"),
+        ]
+    )
+
+    result = pipeline.run(Payload(text="start", meta=0))
+
+    assert result.text == "start-clean-context-final"
+
+
+def test_augment_can_update_meta_not_just_text() -> None:
+    """Same meta-mutation contract as Filter — an Augment enriching
+    meta (e.g. attaching a looked-up contact record) is how a real
+    lookup makes its result visible downstream."""
+    pipeline = Pipeline([_IncrementMetaAugment(), _IncrementMetaAugment()])
+
+    result = pipeline.run(Payload(text="", meta=0))
+
+    assert result.meta == 2
+
+
+def test_augment_then_selector_pipeline_composes_like_a_filter_would() -> None:
+    """An Augment-then-Selector Pipeline works the same way a
+    Filter-then-Selector one does — Augment doesn't need special-case
+    support anywhere but the stage-dispatch loop."""
+    pipeline = Pipeline(
+        [_AddContextAugment("-context")],
+        selector=_FixedBranchSelector("a"),
+        routes={"a": Pipeline([_AppendFilter("-a-branch")])},
+    )
+
+    result = pipeline.run(Payload(text="start", meta=0))
+
+    assert result.text == "start-context-a-branch"
