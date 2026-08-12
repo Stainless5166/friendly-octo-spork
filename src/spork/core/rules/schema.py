@@ -35,6 +35,9 @@ class Condition(BaseModel):
 
     always: bool = False
     from_domain_in: list[str] | None = None
+    # Exact-address match, distinct from from_domain_in — the VIP-sender
+    # condition kind: "this specific mailbox," not "anyone at this domain."
+    from_in: list[str] | None = None
     # Resolved by calling the configured local classifier (§9.1) once
     # per message and checking whether its category is in this list —
     # this is the one condition kind whose result depends on which
