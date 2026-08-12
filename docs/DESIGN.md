@@ -126,7 +126,13 @@ flowchart TD
         config["config.py<br/>load/validate config.toml"]:::planned
         secrets_mod["secrets.py<br/>secretspec integration"]
         models_mod["models.py<br/>NormalizedMessage"]
-        pipeline_mod["pipeline.py<br/>process_message()"]
+
+        subgraph pipeline["pipeline/"]
+            pipeline_core["core.py<br/>Payload/Filter/Selector/Pipeline"]
+            pipeline_meta["meta.py<br/>MessageMeta"]
+            pipeline_modules["modules.py<br/>7 concrete Filters/Selectors"]
+            pipeline_default["default.py<br/>build_default_pipeline() +<br/>process_message()"]
+        end
 
         subgraph providers["providers/"]
             providers_base["base.py<br/>Provider + ActionApplier"]
@@ -657,24 +663,141 @@ classDiagram
 
 #### `spork.core.pipeline`
 
+Two diagrams: the generic framework (`core.py`), then the concrete
+message pipeline built on top of it (`meta.py`/`modules.py`/`default.py`)
+— see §9.4 for the full explanation.
+
 ```mermaid
 classDiagram
-    class StateDB
+    class Payload~M~ {
+        <<dataclass, frozen>>
+        +text: str
+        +meta: M
+    }
+    class Filter~M~ {
+        <<Protocol>>
+        +apply(payload: Payload~M~) Payload~M~
+    }
+    class Augment~M~ {
+        <<Protocol>>
+        +augment(payload: Payload~M~) Payload~M~
+    }
+    class Selector~M~ {
+        <<Protocol>>
+        +select(payload: Payload~M~) tuple
+    }
+    class UnknownBranchError { <<Exception>> }
+    class Pipeline~M~ {
+        -stages: list
+        -selector: Optional~Selector~
+        -routes: dict
+        +run(payload: Payload~M~) Payload~M~
+    }
+
+    Pipeline --> Filter : runs each in order (via .apply)
+    Pipeline --> Augment : runs each in order (via .augment)
+    Pipeline --> Selector : follows its chosen branch
+    Pipeline --> Pipeline : a route value is itself a Pipeline
+    Pipeline ..> UnknownBranchError : raises
+```
+
+`core.py` knows nothing about messages, rules, or the state DB —
+`Payload`/`Filter`/`Selector`/`Augment`/`Pipeline` are generic over a
+metadata type `M`, provably reusable for a differently-shaped
+pipeline, not just this one. `Filter` and `Selector` are conventionally
+pure (no I/O); `Augment` is the type for a stage that reaches outside
+the payload it was given (a database search, a contact lookup) —
+`Pipeline.run` tells them apart by `isinstance`, dispatching to
+`.augment()` or `.apply()` accordingly.
+
+```mermaid
+classDiagram
+    class Filter { <<Protocol>> }
+    class Selector { <<Protocol>> }
     class ActionExecutor
+    class StateDB
     class evaluate { <<function>> }
+
+    class MessageMeta {
+        <<dataclass, frozen>>
+        +message: NormalizedMessage
+        +rules: Sequence~Rule~
+        +default_unmatched_action: Action
+        +classifier: Optional~TextClassifier~
+        +verdict: Optional~RuleVerdict~
+        +ts: Optional~str~
+        +audit_event: Optional~str~
+        +audit_detail_json: Optional~str~
+    }
+    class MissingMetaError { <<Exception>> }
+
+    class IdempotencyGateSelector {
+        -state_db: StateDB
+        +select(payload) tuple
+    }
+    class TimestampFilter {
+        -now: function
+        +apply(payload) Payload
+    }
+    class RuleEvaluationSelector {
+        +select(payload) tuple
+    }
+    class ApplyActionFilter {
+        -executor: ActionExecutor
+        +apply(payload) Payload
+    }
+    class RecordEscalationFilter {
+        +apply(payload) Payload
+    }
+    class WriteAuditEntryFilter {
+        -state_db: StateDB
+        +apply(payload) Payload
+    }
+    class MarkProcessedFilter {
+        -state_db: StateDB
+        +apply(payload) Payload
+    }
+
+    Selector <|.. IdempotencyGateSelector : structurally satisfies
+    Filter <|.. TimestampFilter : structurally satisfies
+    Selector <|.. RuleEvaluationSelector : structurally satisfies
+    Filter <|.. ApplyActionFilter : structurally satisfies
+    Filter <|.. RecordEscalationFilter : structurally satisfies
+    Filter <|.. WriteAuditEntryFilter : structurally satisfies
+    Filter <|.. MarkProcessedFilter : structurally satisfies
+
+    ApplyActionFilter ..> MissingMetaError : raises
+    WriteAuditEntryFilter ..> MissingMetaError : raises
+    MarkProcessedFilter ..> MissingMetaError : raises
+
+    RuleEvaluationSelector ..> evaluate : Tier 1 evaluation
+    ApplyActionFilter --> ActionExecutor : delegates non-escalate actions to
+    IdempotencyGateSelector --> StateDB
+    WriteAuditEntryFilter --> StateDB
+    MarkProcessedFilter --> StateDB
+
+    class build_default_pipeline {
+        <<function>>
+        +build_default_pipeline(executor, state_db, now) Pipeline
+    }
     class process_message {
         <<function>>
         +process_message(message, rules, default_unmatched_action, executor, state_db, classifier, now) Optional~RuleVerdict~
     }
-
-    process_message ..> StateDB : has_processed / mark_processed / write_audit_entry
-    process_message ..> evaluate : Tier 1 evaluation
-    process_message ..> ActionExecutor : executes non-escalate verdicts
+    build_default_pipeline ..> IdempotencyGateSelector : composes
+    build_default_pipeline ..> TimestampFilter : composes
+    build_default_pipeline ..> RuleEvaluationSelector : composes
+    build_default_pipeline ..> ApplyActionFilter : composes
+    build_default_pipeline ..> RecordEscalationFilter : composes
+    build_default_pipeline ..> WriteAuditEntryFilter : composes
+    build_default_pipeline ..> MarkProcessedFilter : composes
+    process_message ..> build_default_pipeline : builds, then runs
 ```
 
 The orchestrator §9 describes in prose — ties idempotency, evaluation,
 action execution, and audit logging into the one call a real message
-goes through. `StateDB`/`ActionExecutor`/`evaluate` are fully defined
+goes through, now composed from these seven modules instead of one
+function body. `ActionExecutor`/`StateDB`/`evaluate` are fully defined
 in their own diagrams above.
 
 #### `spork.core.secrets`
@@ -988,14 +1111,17 @@ a rule can read e.g. "if the local classifier scores this `urgent` and
 the sender isn't a known list, escalate" without that scoring logic
 living in the rule engine itself.
 
-**Orchestration: `spork.core.pipeline.process_message()`** (M2) ties
-the idempotency check (`StateDB.has_processed`), the rule engine, the
-action executor, and the audit log into the single call a real message
-goes through: skip if already processed; otherwise evaluate, act (or
-not), record. A message is only ever marked processed *after* its
-action successfully applies — if the executor raises, nothing is
-recorded, so a retry (the next poll/push cycle) picks the same message
-up again rather than silently losing it.
+**Orchestration: `spork.core.pipeline`** ties the idempotency check
+(`StateDB.has_processed`), the rule engine, the action executor, and
+the audit log into the single call a real message goes through: skip
+if already processed; otherwise evaluate, act (or not), record. A
+message is only ever marked processed *after* its action successfully
+applies — if the executor raises, nothing is recorded, so a retry (the
+next poll/push cycle) picks the same message up again rather than
+silently losing it. `process_message()` (the public entry point M2
+shipped, and every existing caller/test's contract) is a thin wrapper
+over a pipeline **composed from independently testable/benchmarkable
+Filter and Selector modules** — see §9.4.
 
 **Interim policy for `escalate` before Tier 2 exists (M3).** A verdict
 that resolves to `escalate` has nowhere to actually go until M3 builds
@@ -1255,6 +1381,180 @@ generic business logic that depends on it, not the reverse.
   actually holds for a backend other than JMAP — plus a genuinely handy
   building block for local dev/demo/CI work that wants a Provider
   without any network dependency.
+
+### 9.4 Modularity: Filter/Selector/Augment pipeline modules
+
+Message processing is a fixed sequence today, but M3 adds a real fork:
+an escalated verdict needs to go somewhere — a Tier 2 LLM call —
+before anything is applied, and building that LLM call's prompt is
+going to need context a message doesn't carry on its own (a thread's
+prior messages, a sender's contact record). Rather than growing
+`process_message()`'s body with another
+`if verdict.action.type == "escalate":` branch (the pattern that would
+keep recurring at every future tier), `spork.core.pipeline` is built
+from three structural kinds of module, generic over a metadata type
+`M` (`spork.core.pipeline.core`):
+
+```python
+@dataclass(frozen=True, slots=True)
+class Payload(Generic[M]):
+    """The (text, metadata) unit every module reads and returns.
+
+    `text` is whatever content payload is currently in flight — a
+    message body for a cleaning/prompt-building chain, unused (left
+    alone) by a module that only cares about `meta`. `meta` is a
+    concrete, typed value per pipeline (never a loose dict — see
+    MessageMeta below) so mypy --strict still catches a module reading
+    a field another module never set.
+    """
+
+    text: str
+    meta: M
+
+
+class Filter(Protocol[M]):
+    """A module that transforms one Payload into another. Always
+    produces exactly one output — no branching, no routing.
+    Conventionally *pure*: no I/O, deterministic given its input — see
+    `Augment` for the type that's expected to reach outside the
+    payload."""
+
+    def apply(self, payload: Payload[M]) -> Payload[M]: ...
+
+
+class Selector(Protocol[M]):
+    """A module that reads one Payload and routes it to exactly one of
+    its named branches, chosen per-payload — the sole place branching
+    logic lives, so no Filter ever needs an if/else about what happens
+    next. Conventionally pure like `Filter` — routing decisions read
+    `meta`, they don't fetch anything to make one."""
+
+    def select(self, payload: Payload[M]) -> tuple[str, Payload[M]]: ...
+
+
+class Augment(Protocol[M]):
+    """A module that enriches a Payload with additional context before
+    passing it on — the type for I/O: a database search for a
+    message's thread history, a contact-details lookup, anything that
+    reaches outside the payload it was given.
+
+    Same one-in-one-out shape as `Filter` and interchangeable with it
+    inside a `Pipeline`'s stage list — the split is not about output
+    shape, it's a signal to the reader (and to `Pipeline.run`, which
+    dispatches on it via `isinstance`) that this stage is expected to
+    talk to something external. Nothing in the type system stops a
+    `Filter` from doing I/O; the split exists so a module's declared
+    type alone tells a reader — and its own tests — whether to expect
+    a real dependency.
+    """
+
+    def augment(self, payload: Payload[M]) -> Payload[M]: ...
+
+
+Stage = Filter[M] | Augment[M]
+
+
+class Pipeline(Generic[M]):
+    """Composes modules: a straight-line chain of Filters/Augments,
+    optionally ending in a Selector whose branches are themselves
+    Pipelines.
+
+    Recursive by construction — a `routes` value is just another
+    Pipeline, so an arbitrarily deep branching tree is built by nesting
+    Pipeline(...) calls, never by teaching this class about a specific
+    branch's meaning. An empty Pipeline() (no stages, no selector) is
+    the identity — the natural "this branch stops here." Filters and
+    Augments interleave freely in one `stages` list — dispatched via
+    `isinstance(stage, Augment)` (`.augment()`) or otherwise (`.apply()`)
+    — so an Augment (fetch contact) can sit between two Filters
+    (clean, then compose) with no separate list to keep in sync.
+    """
+
+    def __init__(
+        self,
+        stages: Sequence[Stage[M]] = (),
+        *,
+        selector: Selector[M] | None = None,
+        routes: Mapping[str, "Pipeline[M]"] | None = None,
+    ) -> None: ...
+    def run(self, payload: Payload[M]) -> Payload[M]: ...
+```
+
+`spork.core.pipeline`'s three existing state-DB-touching modules
+(`IdempotencyGateSelector`'s read, `WriteAuditEntryFilter`'s and
+`MarkProcessedFilter`'s writes) predate the Filter/Selector purity
+convention above and stay `Selector`/`Filter` rather than becoming
+`Augment` — they're the pipeline's own bookkeeping (idempotency,
+audit), not context fetched *for* a message, which is what `Augment`
+is for. No concrete `Augment` ships yet: there's no live thread-search
+or contact-lookup backend in this codebase to call (JMAP search is
+still behind `NotImplementedError` — see §8), and stubbing one against
+fake data would be exactly the thing CLAUDE.md's TDD rules forbid
+faking. This section adds the framework-level `Augment` Protocol and
+`Pipeline` support only; a concrete Augment lands when M3's
+prompt-building chain actually needs one and can call something real.
+
+`spork.core.pipeline.meta.MessageMeta` is the concrete metadata type
+the M2/M3 message pipeline uses — `message`, `rules`,
+`default_unmatched_action`, `classifier`, `verdict`, `ts`,
+`audit_event`, `audit_detail_json`, all `Optional` until the module
+responsible for that field has run. `spork.core.pipeline.modules`
+implements the seven concrete Filters/Selectors that reproduce M2's
+`process_message()` behavior exactly:
+
+- **`IdempotencyGateSelector`** — branches `"skip"` (already processed)
+  or `"continue"`.
+- **`TimestampFilter`** — calls the injected clock exactly once; every
+  later module reads the shared `meta.ts` rather than each calling its
+  own clock (a real M2 behavior gap this refactor closes: the old
+  `process_message()` called `now()` twice, once for the audit
+  entry and once for `processed_at`, which could record two
+  microseconds-apart timestamps for what's really one event).
+- **`RuleEvaluationSelector`** — runs `rules.engine.evaluate()`, sets
+  `meta.verdict`, branches `"terminal"` or `"escalate"`.
+- **`ApplyActionFilter`** — calls `ActionExecutor.execute()` for a
+  terminal verdict; sets `meta.audit_event`/`audit_detail_json`.
+- **`RecordEscalationFilter`** — the `"escalate"` branch's counterpart:
+  no action to apply, just sets `meta.audit_event =
+  "escalated_pending_tier2"`.
+- **`WriteAuditEntryFilter`** — writes whatever `meta.audit_event`/
+  `audit_detail_json` describe via `state_db.write_audit_entry()`.
+  Generic across both branches — it doesn't know or care which one set
+  those fields.
+- **`MarkProcessedFilter`** — writes `state_db.mark_processed()`.
+
+`spork.core.pipeline.default.build_default_pipeline(...)` wires these
+into the nested `Pipeline` `process_message()` runs — the same
+construction M2's `process_message()` did inline, now named and
+reusable on its own, and the exact seam M3's Tier 2 escalation work
+slots into: the `"escalate"` route is a `Pipeline[MessageMeta]` like
+any other, so replacing it with one that calls Claude first is a
+change to *what pipeline that route points at*, never a rewrite of
+`Pipeline`, `RuleEvaluationSelector`, or the `"terminal"` branch.
+
+- **Independently validated.** A module's acceptance tests construct a
+  bare `Payload` and assert what `.apply()`/`.select()`/`.augment()`
+  returns — no `Pipeline`, no other module, no full `process_message()`
+  call needed to test that `WriteAuditEntryFilter` writes the right
+  entry, and (once one exists) a future `Augment`'s tests are free to
+  mock exactly the one dependency it calls, nothing else in the chain.
+- **Independently benchmarked.** `benchmarks/core/pipeline/` (outside
+  `testpaths`, so it never runs as part of `uv run pytest` — a
+  `pytest-benchmark` repeated-call timing run is a different kind of
+  test than the correctness suite and shouldn't slow every push) times
+  each module's `.apply()`/`.select()` in isolation via
+  `pytest-benchmark`'s `benchmark` fixture. Run with
+  `uv run pytest benchmarks/` — this is the seam that matters most for
+  a future `Augment`: an I/O-bound lookup is exactly the kind of stage
+  worth timing on its own, separate from the pure stages around it.
+- **Composed.** `Pipeline` and `Payload`/`Filter`/`Selector`/`Augment`
+  know nothing about messages, rules, or audit logs — `MessageMeta` and
+  `spork.core.pipeline.modules` are one concrete use of a generic
+  framework, provably reusable for a differently-shaped pipeline (M3's
+  Tier 2 prompt-building chain — clean the body, look up thread/contact
+  context, build the prompt, call Claude, parse the verdict — is a
+  `Filter`/`Augment` chain over the same `Payload`/`Pipeline` machinery,
+  not a new abstraction).
 
 ## 10. LLM integration (Claude API)
 

@@ -23,7 +23,19 @@ to traceback. **M2 is now 7/7.** Updated once more for `spork doctor`
 (M1's last unstubbed item): real CLI wiring, connectivity check a
 settled-shape `NotImplementedError`. **Every item in M0–M2 is now
 either fully implemented or a settled-shape stub with a passing test —
-none are unspecified.**
+none are unspecified.** Updated once more for M3's first item:
+`spork.core.llm.clean.clean_body()` — pure, dependency-free body
+cleaning (HTML strip, quote-chain collapse, truncation). **M3 is 1/7.**
+Updated once more: `spork.core.pipeline` rebuilt on a generic Filter/
+Selector/Pipeline framework (docs/DESIGN.md §9.4), `process_message()`
+unchanged in signature/behavior, plus a `benchmarks/` directory for
+per-module performance measurement outside the correctness suite.
+Updated once more: a third module kind, `Augment[M]`, added to that
+framework for stages that enrich a Payload via I/O (a thread-history
+search, a contact-details lookup) — `Filter`/`Selector` stay
+conventionally pure, `Pipeline`'s stage list now dispatches each stage
+to `.apply()` or `.augment()` by type. No concrete Augment exists yet;
+this is the framework-level Protocol only.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -200,13 +212,49 @@ recent mail — is a settled-shape `NotImplementedError`, caught and
 reported as a clean CLI error (test 140) rather than left to produce a
 raw traceback.
 
-### M3–M7
+**Internal refactor (not a new checklist item — M2 stays 7/7):**
+`spork.core.pipeline` was rebuilt on the Filter/Selector framework
+(docs/DESIGN.md §9.4) — `process_message()`'s signature and behavior
+are unchanged (proven by tests 114-121 passing verbatim, relocated but
+not rewritten), now composed from a generic `Payload`/`Filter`/
+`Selector`/`Pipeline` framework plus seven concrete modules, each
+independently tested (161-185) and independently benchmarkable
+(`benchmarks/core/pipeline/`, outside `testpaths`). Motivated by M3:
+the escalate branch is a `Pipeline[MessageMeta]` value like any other
+route, so a future Tier 2 escalation stage is a change to what that
+route points at, not a rewrite. A third module kind, `Augment[M]`, was
+then added to the same framework (tests 186-191) for stages that
+enrich a Payload via I/O — a thread-history search, a contact-details
+lookup — keeping `Filter`/`Selector` conventionally pure. No concrete
+Augment exists yet (no live lookup backend to call); this is the
+Protocol-level seam M3's prompt-building chain is expected to use.
+
+### M3 — LLM escalation (Tier 2) — 1/7
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| Body cleaning (HTML strip, quote-chain collapse, truncation) | ✅ | ✅ — tests 150–160 (11 tests), 100% line coverage |
+| Claude client wrapper + verdict schema | ❌ | — |
+| Verdict validation against configured mailbox/category set | ❌ | — |
+| Confidence-band logic | ❌ | — |
+| `daily_call_budget` + `llm_usage` tracking | ❌ | — |
+| Draft creation path | ❌ | — |
+| Recorded-response fixtures for CI | ❌ | — |
+
+`spork.core.llm.clean.clean_body()` is pure string transformation with
+no dependency on `NormalizedMessage`, JMAP, or the Claude API — HTML
+stripped via a hand-rolled `HTMLParser` subclass (no new dependency),
+quoted-reply chains collapsed at the earliest of several marker
+patterns, truncated on a word boundary with an explicit marker, and
+excess blank lines normalized.
+
+### M4–M7
 
 No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (121 tests, all passing — 0 xfail)
+## Full test inventory (191 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -808,40 +856,48 @@ not a placeholder assertion.
     A stub applier that always raises. Asserts the exception
     propagates out of `execute()` rather than being swallowed.
 
-### tests/core (pipeline, M2)
+### tests/core/pipeline (process_message, M2)
 
-114. **`test_pipeline.py::test_process_message_skips_already_processed_messages`**
+Relocated from `tests/core/test_pipeline.py`/`test_pipeline_edge_cases.py`
+(pure structural move, no content changes — entries 114-121 below are
+unchanged from their original M2 form) now that `process_message()`
+lives in `spork.core.pipeline.default`, one file among several in the
+`spork.core.pipeline` package built from composable Filter/Selector
+modules (§9.4). See "tests/core/pipeline (Filter/Selector pipeline
+framework, §9.4)" further down for the modules themselves.
+
+114. **`test_default.py::test_process_message_skips_already_processed_messages`**
     A message already `mark_processed()`-ed. Asserts `process_message()`
     returns `None` and never touches the applier.
 
-115. **`test_pipeline.py::test_process_message_applies_matched_rule_action_and_marks_processed`**
+115. **`test_default.py::test_process_message_applies_matched_rule_action_and_marks_processed`**
     A message matching a `move` rule. Asserts the applier was called,
     `has_processed()` becomes `True`, and the returned verdict matches.
 
-116. **`test_pipeline.py::test_process_message_writes_an_audit_entry_for_applied_actions`**
+116. **`test_default.py::test_process_message_writes_an_audit_entry_for_applied_actions`**
     After processing, asserts exactly one audit entry exists with the
     injected clock's timestamp.
 
-117. **`test_pipeline.py::test_process_message_handles_escalate_without_calling_executor`**
+117. **`test_default.py::test_process_message_handles_escalate_without_calling_executor`**
     A verdict resolving to `escalate`. Asserts the applier was never
     called, but the message is still marked processed (the interim
     pending-Tier-2 policy, docs/DESIGN.md §9).
 
-118. **`test_pipeline.py::test_process_message_returns_the_verdict`**
+118. **`test_default.py::test_process_message_returns_the_verdict`**
     Asserts the returned `RuleVerdict` matches what was actually acted
     on.
 
-119. **`test_pipeline_edge_cases.py::test_process_message_propagates_executor_failure_and_does_not_mark_processed`**
+119. **`test_default_edge_cases.py::test_process_message_propagates_executor_failure_and_does_not_mark_processed`**
     A failing applier. Asserts the exception propagates AND that
     neither `has_processed()` nor the audit log reflect the message —
     the retry-on-next-cycle guarantee the ordering exists for.
 
-120. **`test_pipeline_edge_cases.py::test_mark_processed_uses_the_injected_clock`**
+120. **`test_default_edge_cases.py::test_mark_processed_uses_the_injected_clock`**
     Checks `processed_messages.processed_at` directly (via a fresh
     connection) after processing with a fixed clock. Asserts it
     matches — not just the audit entry's timestamp, per 116.
 
-121. **`test_pipeline_edge_cases.py::test_default_clock_produces_a_real_parseable_timestamp`**
+121. **`test_default_edge_cases.py::test_default_clock_produces_a_real_parseable_timestamp`**
     Calls `process_message()` without `now=` at all (the real default
     clock). Asserts the recorded timestamp is genuinely parseable —
     proving the default itself works, not just that a fake one can
@@ -974,3 +1030,189 @@ not a placeholder assertion.
     `spork --help`. Asserts `"doctor"` is listed — confirms
     `app.command("doctor")(doctor)` wiring, not just that the module
     imports.
+
+### tests/core/llm (body cleaning, M3)
+
+150. **`test_clean.py::test_clean_body_strips_html_tags`**
+    A body with nested `<p>`/`<b>` tags. Asserts no `<` survives and
+    the text content is preserved.
+
+151. **`test_clean.py::test_clean_body_collapses_a_quote_chain_introduced_by_wrote_line`**
+    A body with new content followed by an "On ... wrote:" header and
+    quoted lines. Asserts the new content survives and everything from
+    the header onward is dropped.
+
+152. **`test_clean.py::test_clean_body_collapses_a_quote_chain_introduced_by_gt_prefixed_lines`**
+    A body going straight into `>`-prefixed lines with no "wrote:"
+    header. Asserts the quoted portion is still dropped.
+
+153. **`test_clean.py::test_clean_body_truncates_long_bodies`**
+    A body far longer than `max_chars`. Asserts the result length is
+    bounded and a truncation marker is present.
+
+154. **`test_clean.py::test_clean_body_leaves_a_short_plain_body_unchanged_in_substance`**
+    A short, already-plain, unquoted body. Asserts it passes through
+    intact — cleaning doesn't mangle the common case.
+
+155. **`test_clean.py::test_clean_body_normalizes_excess_blank_lines`**
+    An HTML-sourced body producing runs of blank lines after tag
+    stripping. Asserts they collapse rather than bloating the prompt.
+
+156. **`test_clean_edge_cases.py::test_clean_body_handles_an_empty_string`**
+    Empty input. Asserts empty output, not an error.
+
+157. **`test_clean_edge_cases.py::test_clean_body_decodes_html_entities`**
+    A body containing `&amp;`/`&mdash;`. Asserts entities decode to
+    real characters, not the literal escape sequence.
+
+158. **`test_clean_edge_cases.py::test_clean_body_uses_the_earliest_quote_marker_when_several_are_present`**
+    A body with both a "wrote:" header and a later "-----Original
+    Message-----" line. Asserts the cut happens at the earliest
+    marker, so no quoted content leaks through either path.
+
+159. **`test_clean_edge_cases.py::test_clean_body_does_not_add_a_truncation_marker_at_exactly_max_chars`**
+    A body exactly `max_chars` long. Asserts it's returned unchanged
+    with no spurious truncation marker — the limit is inclusive.
+
+160. **`test_clean_edge_cases.py::test_clean_body_truncates_a_single_long_word_with_no_space_to_break_on`**
+    A single unbroken "word" longer than `max_chars`. Asserts
+    truncation still completes cleanly rather than crashing on the
+    word-boundary split.
+
+### tests/core/pipeline (Filter/Selector/Augment pipeline framework, §9.4)
+
+`spork.core.pipeline.core` (generic Payload/Filter/Selector/Augment/
+Pipeline) tested with a plain `int` metadata type to prove genuine
+generality; `spork.core.pipeline.meta`/`modules` (the concrete message
+pipeline) tested against a bare `Payload[MessageMeta]` per module, no
+`Pipeline` or `process_message()` call needed.
+
+161. **`test_core.py::test_pipeline_runs_filters_in_order`**
+    Three filters each appending a letter. Asserts the result reflects
+    all three, in order.
+
+162. **`test_core.py::test_empty_pipeline_is_the_identity`**
+    `Pipeline()` with no filters, no selector. Asserts the payload
+    passes through unchanged.
+
+163. **`test_core.py::test_pipeline_with_a_selector_routes_to_the_chosen_branch`**
+    A selector fixed to branch `"a"`, two routes. Asserts only `"a"`'s
+    filters ran — `"b"`'s never executed.
+
+164. **`test_core.py::test_pipeline_branches_compose_recursively`**
+    A route's `Pipeline` itself ends in a selector. Asserts the nested
+    branch's filter ran — branching composes by nesting, with no
+    special-casing in `Pipeline`.
+
+165. **`test_core.py::test_unknown_branch_name_raises_a_clear_error`**
+    A selector returning a branch name absent from `routes`. Asserts
+    `UnknownBranchError`, not a raw `KeyError`.
+
+166. **`test_core.py::test_filters_can_update_meta_not_just_text`**
+    Three filters each incrementing an int meta. Asserts the final
+    meta reflects all three — filters aren't limited to transforming
+    text.
+
+167. **`test_core_edge_cases.py::test_payload_is_frozen`**
+    Asserts `Payload` can't be mutated in place
+    (`dataclasses.FrozenInstanceError`).
+
+168. **`test_core_edge_cases.py::test_pipeline_with_only_a_selector_and_no_filters_routes_immediately`**
+    A selector-only `Pipeline` (empty filters). Asserts it routes
+    correctly with no filters to run first.
+
+169. **`test_core_edge_cases.py::test_branch_pipeline_receives_the_selectors_own_payload_edits`**
+    A selector that both edits the payload and routes. Asserts the
+    branch pipeline sees the selector's edit, not the pre-select
+    payload.
+
+170. **`test_core_edge_cases.py::test_pipeline_is_reusable_across_independent_runs`**
+    The same `Pipeline` instance run twice with different inputs.
+    Asserts two independent, correct results — no leaked state.
+
+171. **`test_core_edge_cases.py::test_unknown_branch_error_names_the_known_routes`**
+    Asserts the `UnknownBranchError` message names the routes that
+    *were* available, not just that the lookup failed.
+
+172. **`test_modules.py::test_idempotency_gate_selector_routes_skip_for_an_already_processed_message`**
+    A message already `mark_processed()`-ed. Asserts the selector
+    routes `"skip"`.
+
+173. **`test_modules.py::test_idempotency_gate_selector_routes_continue_for_a_new_message`**
+    A never-seen message. Asserts the selector routes `"continue"`.
+
+174. **`test_modules.py::test_timestamp_filter_sets_ts_from_the_injected_clock`**
+    Asserts `meta.ts` is set from whatever clock callable was given.
+
+175. **`test_modules.py::test_rule_evaluation_selector_routes_terminal_for_a_matched_rule`**
+    A message matching a terminal rule. Asserts the branch is
+    `"terminal"` and `meta.verdict` carries the matched rule's id.
+
+176. **`test_modules.py::test_rule_evaluation_selector_routes_escalate_when_nothing_matches`**
+    No matching rule, default policy escalate. Asserts the branch is
+    `"escalate"`.
+
+177. **`test_modules.py::test_apply_action_filter_calls_the_executor_and_sets_audit_fields`**
+    A terminal verdict. Asserts the executor was called and
+    `meta.audit_event`/`audit_detail_json` are set for the next
+    module.
+
+178. **`test_modules.py::test_record_escalation_filter_sets_the_escalation_audit_event`**
+    The escalate branch's counterpart to 177 — no executor call,
+    just `meta.audit_event = "escalated_pending_tier2"`.
+
+179. **`test_modules.py::test_write_audit_entry_filter_writes_what_meta_describes`**
+    Asserts the audit entry written matches whatever
+    `meta.audit_event`/`audit_detail_json` say — generic across both
+    branches.
+
+180. **`test_modules.py::test_mark_processed_filter_writes_the_processed_row`**
+    Asserts `has_processed()` becomes `True` after the filter runs.
+
+181. **`test_modules_edge_cases.py::test_apply_action_filter_raises_when_verdict_is_missing`**
+    `ApplyActionFilter` run standalone with no prior
+    `RuleEvaluationSelector`. Asserts `MissingMetaError`, not a raw
+    `AttributeError`/`None` access.
+
+182. **`test_modules_edge_cases.py::test_write_audit_entry_filter_raises_when_ts_is_missing`**
+    Same pattern for `WriteAuditEntryFilter` missing `meta.ts`.
+
+183. **`test_modules_edge_cases.py::test_write_audit_entry_filter_raises_when_audit_event_is_missing`**
+    Same pattern for `WriteAuditEntryFilter` missing `meta.audit_event`.
+
+184. **`test_modules_edge_cases.py::test_mark_processed_filter_raises_when_verdict_is_missing`**
+    Same pattern for `MarkProcessedFilter` missing `meta.verdict`.
+
+185. **`test_modules_edge_cases.py::test_mark_processed_filter_raises_when_ts_is_missing`**
+    Same pattern for `MarkProcessedFilter` missing `meta.ts`, with
+    `meta.verdict` present — proves each field is checked
+    independently, not just "is anything missing."
+
+186. **`test_core.py::test_pipeline_runs_augments_via_their_augment_method`**
+    A stage implementing only `.augment()` (no `.apply()`). Asserts it
+    runs correctly in a `Pipeline`'s stage list — `Augment` is a
+    first-class stage type, not a `Filter` in disguise.
+
+187. **`test_core.py::test_pipeline_interleaves_filters_and_augments_in_call_order`**
+    A stage list mixing `Filter`, `Augment`, `Filter`. Asserts each ran
+    in call order — the two kinds compose freely in one list.
+
+188. **`test_core.py::test_augment_can_update_meta_not_just_text`**
+    Two augments each incrementing an int meta. Asserts the final meta
+    reflects both — same meta-mutation contract as `Filter`.
+
+189. **`test_core.py::test_augment_then_selector_pipeline_composes_like_a_filter_would`**
+    An augment followed by a selector-routed branch. Asserts it works
+    the same way a filter-then-selector `Pipeline` does — `Augment`
+    needs no special-case support beyond the stage-dispatch loop.
+
+190. **`test_core_edge_cases.py::test_a_stage_implementing_both_methods_dispatches_via_augment`**
+    A stage implementing both `.apply()` and `.augment()`, each
+    producing a distinguishable result. Asserts `.augment()` wins —
+    documents `Pipeline.run`'s isinstance-checks-Augment-first
+    precedence for this (unlikely) ambiguous case.
+
+191. **`test_core_edge_cases.py::test_a_stage_with_neither_apply_nor_augment_fails_loudly`**
+    A stage satisfying neither `Filter` nor `Augment` (a wiring
+    mistake). Asserts a clear `AttributeError` naming the missing
+    method, not a silent no-op.
