@@ -13,6 +13,7 @@ import typer
 
 from spork import __version__
 from spork.cli.commands.doctor import doctor
+from spork.cli.commands.logs import logs
 from spork.cli.commands.pause import pause, resume
 from spork.cli.commands.rules import app as rules_app
 from spork.cli.commands.status import status
@@ -28,6 +29,7 @@ app.command("doctor")(doctor)
 app.command("status")(status)
 app.command("pause")(pause)
 app.command("resume")(resume)
+app.command("logs")(logs)
 
 
 @app.callback(invoke_without_command=True)
