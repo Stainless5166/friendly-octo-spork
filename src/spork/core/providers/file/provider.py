@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 
 from spork.core.models import NormalizedMessage
-from spork.core.providers.base import ActionApplier
+from spork.core.providers.base import ActionApplier, DraftCreator
 from spork.core.providers.file.messages import load_messages
 from spork.core.rules.schema import Action
 from spork.core.sources.base import Source
@@ -47,6 +47,24 @@ class _FileActionApplier:
             f.write(json.dumps(entry) + "\n")
 
 
+class _FileDraftCreator:
+    """Appends each created draft to a JSON-lines log instead of creating
+    anything real.
+
+    A second, distinct log from `_FileActionApplier`'s — a draft isn't
+    an action, and keeping them in separate files means either can be
+    inspected without filtering the other out (docs/DESIGN.md §10.6).
+    """
+
+    def __init__(self, log_path: Path) -> None:
+        self._log_path = log_path
+
+    def create_draft(self, in_reply_to: NormalizedMessage, body: str) -> None:
+        entry = {"in_reply_to_message_id": in_reply_to.message_id, "body": body}
+        with self._log_path.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+
 class FileProvider:
     """Adapts a local JSON messages file to the `Provider` contract.
 
@@ -54,14 +72,29 @@ class FileProvider:
     once via `ImmediateTrigger` + `SequenceContentFetcher`
     (`spork.core.sources.replay`) — no polling, no push, just the
     fixed set of messages the file contains at the moment `poll()` is
-    first called. `build_action_applier()` is the write-side
-    counterpart: it logs to `actions_log_path` rather than mutating
-    anything, since there's no real backend underneath to mutate.
+    first called. `build_action_applier()`/`build_draft_creator()` are
+    the write-side counterparts: both log to a JSON-lines file rather
+    than mutating anything, since there's no real backend underneath
+    to mutate. `drafts_log_path` defaults to `drafts.jsonl` next to
+    `actions_log_path` when not given explicitly, so existing two-arg
+    `FileProvider(messages_path, actions_log_path)` call sites keep
+    working unchanged.
     """
 
-    def __init__(self, messages_path: str | Path, actions_log_path: str | Path) -> None:
+    def __init__(
+        self,
+        messages_path: str | Path,
+        actions_log_path: str | Path,
+        *,
+        drafts_log_path: str | Path | None = None,
+    ) -> None:
         self._messages_path = Path(messages_path)
         self._actions_log_path = Path(actions_log_path)
+        self._drafts_log_path = (
+            Path(drafts_log_path)
+            if drafts_log_path is not None
+            else self._actions_log_path.with_name("drafts.jsonl")
+        )
 
     def build_source(self) -> Source:
         messages = load_messages(self._messages_path)
@@ -74,3 +107,6 @@ class FileProvider:
 
     def build_action_applier(self) -> ActionApplier:
         return _FileActionApplier(self._actions_log_path)
+
+    def build_draft_creator(self) -> DraftCreator:
+        return _FileDraftCreator(self._drafts_log_path)

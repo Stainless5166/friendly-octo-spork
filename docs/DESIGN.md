@@ -112,11 +112,12 @@ Two OS processes, one shared library:
 ### 6.1 Core library (`spork.core`)
 
 Solid boxes are built and tested today; dashed boxes are planned
-layout for a milestone that hasn't landed yet (M3's `llm/`, M4's
-`alerts/`, M5's `ipc/` + most of `cli/commands/`, and `config.py`,
-still needed by anything that reads `config.toml`). This is layout
-orientation only — see §6.4 for what each built module's classes
-actually look like.
+layout for a milestone that hasn't landed yet (M3's `llm/prompts.py`
+— the not-yet-built step that assembles a `VerdictRequest` from a
+message —, M4's `alerts/`, M5's `ipc/` + most of `cli/commands/`, and
+`config.py`, still needed by anything that reads `config.toml`). This
+is layout orientation only — see §6.4 for what each built module's
+classes actually look like.
 
 ```mermaid
 flowchart TD
@@ -132,6 +133,11 @@ flowchart TD
             pipeline_meta["meta.py<br/>MessageMeta"]
             pipeline_modules["modules.py<br/>7 concrete Filters/Selectors"]
             pipeline_default["default.py<br/>build_default_pipeline() +<br/>process_message()"]
+            subgraph pipeline_tier2["tier2/"]
+                tier2_meta["meta.py<br/>Tier2Meta"]
+                tier2_modules["modules.py<br/>13 concrete Filters/Selectors/Augment"]
+                tier2_default["default.py<br/>build_tier2_pipeline() +<br/>process_tier2_message()"]
+            end
         end
 
         subgraph providers["providers/"]
@@ -176,9 +182,17 @@ flowchart TD
         end
 
         subgraph llm["llm/ (M3)"]
-            llm_client["client.py"]:::planned
-            llm_prompts["prompts.py"]:::planned
-            llm_verdict["verdict.py"]:::planned
+            llm_clean["clean.py<br/>clean_body()"]
+            llm_prompts["prompts.py<br/>VerdictRequest builder"]:::planned
+            llm_base["base.py<br/>LLMClient +<br/>VerdictRequest/Verdict"]
+            llm_validate["validate.py<br/>validate_verdict()"]
+            llm_confidence["confidence.py<br/>confidence_band()"]
+            llm_budget["budget.py<br/>has_budget_remaining()"]
+            llm_loader["loader.py<br/>load_llm_client()"]
+            subgraph llm_clients["clients/"]
+                llm_anthropic["anthropic.py<br/>AnthropicLLMClient"]
+                llm_recorded["recorded.py<br/>RecordedLLMClient"]
+            end
         end
 
         subgraph actions["actions/"]
@@ -316,15 +330,21 @@ classDiagram
         <<Protocol>>
         +apply(message: NormalizedMessage, action: Action) None
     }
+    class DraftCreator {
+        <<Protocol>>
+        +create_draft(in_reply_to: NormalizedMessage, body: str) None
+    }
     class Provider {
         <<Protocol>>
         +build_source() Source
         +build_action_applier() ActionApplier
+        +build_draft_creator() DraftCreator
     }
     class Source { <<Protocol>> }
 
     Provider ..> Source : builds
     Provider ..> ActionApplier : builds
+    Provider ..> DraftCreator : builds
 ```
 
 `Source` is fully defined in `spork.core.sources`' own diagram below;
@@ -355,6 +375,7 @@ classDiagram
     class ContentFetcher { <<Protocol>> }
     class Source { <<Protocol>> }
     class ActionApplier { <<Protocol>> }
+    class DraftCreator { <<Protocol>> }
     class Provider { <<Protocol>> }
 
     class JmapClient {
@@ -363,6 +384,7 @@ classDiagram
         +connect() None
         +fetch_new_messages(since_cursor: Optional~str~) Sequence
         +apply_action(message: NormalizedMessage, action: Action) None
+        +create_draft(message: NormalizedMessage, body: str) None
     }
     class JmapPushTrigger {
         -client: JmapClient
@@ -391,6 +413,7 @@ classDiagram
         -cursor: Optional~str~
         +build_source() Source
         +build_action_applier() ActionApplier
+        +build_draft_creator() DraftCreator
     }
     class _JmapContentFetcher {
         -client: JmapClient
@@ -401,10 +424,15 @@ classDiagram
         -client: JmapClient
         +apply(message: NormalizedMessage, action: Action) None
     }
+    class _JmapDraftCreator {
+        -client: JmapClient
+        +create_draft(in_reply_to: NormalizedMessage, body: str) None
+    }
 
     Trigger <|.. JmapPushTrigger : structurally satisfies
     ContentFetcher <|.. _JmapContentFetcher : structurally satisfies
     ActionApplier <|.. _JmapActionApplier : structurally satisfies
+    DraftCreator <|.. _JmapDraftCreator : structurally satisfies
     Provider <|.. JmapProvider : structurally satisfies
 
     JmapPushTrigger --> JmapClient : wraps
@@ -415,8 +443,10 @@ classDiagram
     JmapProvider ..> JmapPushTrigger : builds
     JmapProvider ..> _JmapContentFetcher : builds
     JmapProvider ..> _JmapActionApplier : builds
+    JmapProvider ..> _JmapDraftCreator : builds
     _JmapContentFetcher --> JmapClient : delegates to
     _JmapActionApplier --> JmapClient : delegates to
+    _JmapDraftCreator --> JmapClient : delegates to
 ```
 
 `backoff.next_delay()` is a pure function of `(schedule, attempt)`
@@ -430,6 +460,7 @@ doesn't call it yet; the daemon's future reconnect loop will).
 classDiagram
     class Provider { <<Protocol>> }
     class ActionApplier { <<Protocol>> }
+    class DraftCreator { <<Protocol>> }
     class MessagesLoadError { <<Exception>> }
     class load_messages {
         <<function>>
@@ -439,18 +470,26 @@ classDiagram
         -log_path: Path
         +apply(message: NormalizedMessage, action: Action) None
     }
+    class _FileDraftCreator {
+        -log_path: Path
+        +create_draft(in_reply_to: NormalizedMessage, body: str) None
+    }
     class FileProvider {
         -messages_path: Path
         -actions_log_path: Path
+        -drafts_log_path: Path
         +build_source() Source
         +build_action_applier() ActionApplier
+        +build_draft_creator() DraftCreator
     }
 
     Provider <|.. FileProvider : structurally satisfies
     ActionApplier <|.. _FileActionApplier : structurally satisfies
+    DraftCreator <|.. _FileDraftCreator : structurally satisfies
     load_messages ..> MessagesLoadError : raises
     FileProvider ..> load_messages : uses
     FileProvider ..> _FileActionApplier : builds
+    FileProvider ..> _FileDraftCreator : builds
 ```
 
 #### `spork.core.sources`
@@ -620,6 +659,151 @@ classDiagram
     HighestConfidenceCombiner ..> CombineError : raises
 ```
 
+#### `spork.core.llm.base`
+
+```mermaid
+classDiagram
+    class Action { <<pydantic BaseModel>> }
+    class VerdictRequest {
+        <<dataclass, frozen>>
+        +subject: str
+        +from_address: str
+        +to_addresses: tuple
+        +cleaned_body: str
+        +thread_prior_subject: Optional~str~
+        +thread_user_has_replied: bool
+        +available_mailboxes: tuple
+    }
+    class Verdict {
+        <<pydantic BaseModel>>
+        +category: str
+        +urgency: Literal
+        +confidence: float
+        +suggested_action: Action
+        +summary: str
+        +draft_reply: Optional~str~
+        +reasoning: str
+    }
+    class LLMClient {
+        <<Protocol>>
+        +get_verdict(request: VerdictRequest) Verdict
+    }
+
+    Verdict *-- Action : suggested_action
+    LLMClient ..> VerdictRequest : reads
+    LLMClient ..> Verdict : returns
+```
+
+`Action` is fully defined in `spork.core.rules`'s own diagram — reused
+here, not redefined, so a Tier 2 verdict and a Tier 1 rule produce the
+exact same terminal-action shape.
+
+#### `spork.core.llm.validate`
+
+```mermaid
+classDiagram
+    class Verdict { <<pydantic BaseModel>> }
+    class VerdictValidationError { <<Exception>> }
+    class validate_verdict {
+        <<function>>
+        +validate_verdict(verdict: Verdict, allowed_categories: Sequence, allowed_mailboxes: Sequence) Verdict
+    }
+
+    validate_verdict ..> Verdict : checks category/suggested_action.mailbox against config-provided sets
+    validate_verdict ..> VerdictValidationError : raises
+```
+
+#### `spork.core.llm.confidence`
+
+```mermaid
+classDiagram
+    class ConfidenceBand { <<Literal>> }
+    class confidence_band {
+        <<function>>
+        +confidence_band(confidence: float, alert_threshold: float, autoact_threshold: float) ConfidenceBand
+    }
+
+    confidence_band ..> ConfidenceBand : returns
+    confidence_band ..> ValueError : raises (alert_threshold > autoact_threshold)
+```
+
+#### `spork.core.llm.budget`
+
+```mermaid
+classDiagram
+    class LLMUsage { <<dataclass, frozen>> }
+    class has_budget_remaining {
+        <<function>>
+        +has_budget_remaining(usage: LLMUsage, daily_call_budget: int) bool
+    }
+
+    has_budget_remaining ..> LLMUsage : reads
+```
+
+`LLMUsage` is fully defined in `spork.core.state`'s own diagram below
+— `StateDB.get_llm_usage()` produces it, this module only consumes it.
+
+#### `spork.core.llm.loader`
+
+```mermaid
+classDiagram
+    class LLMClientLoadError { <<Exception>> }
+    class load_llm_client {
+        <<function>>
+        +load_llm_client(spec: str, kwargs: dict) LLMClient
+    }
+    class LLMClient { <<Protocol>> }
+
+    load_llm_client ..> LLMClient : constructs
+    load_llm_client ..> LLMClientLoadError : raises
+```
+
+#### `spork.core.llm.clients.anthropic`
+
+```mermaid
+classDiagram
+    class LLMClient { <<Protocol>> }
+    class AnthropicLLMClient {
+        -api_key: str
+        -model: str
+        -max_tokens: int
+        +get_verdict(request: VerdictRequest) Verdict
+    }
+
+    LLMClient <|.. AnthropicLLMClient : structurally satisfies
+    AnthropicLLMClient ..> NotImplementedError : raises (docs/ROADMAP.md M3)
+```
+
+`get_verdict()` requires a live Anthropic API call — same
+settled-shape-stub reasoning as `JmapClient` (§9.3): constructor args
+and the method signature are real, the call itself isn't yet.
+
+#### `spork.core.llm.clients.recorded`
+
+```mermaid
+classDiagram
+    class LLMClient { <<Protocol>> }
+    class RecordedResponsesLoadError { <<Exception>> }
+    class UnrecordedResponseError { <<Exception>> }
+    class load_recorded_responses {
+        <<function>>
+        +load_recorded_responses(path) dict
+    }
+    class RecordedLLMClient {
+        -responses: dict
+        +get_verdict(request: VerdictRequest) Verdict
+    }
+
+    LLMClient <|.. RecordedLLMClient : structurally satisfies
+    RecordedLLMClient *-- load_recorded_responses : loads via, at construction
+    load_recorded_responses ..> RecordedResponsesLoadError : raises
+    RecordedLLMClient ..> UnrecordedResponseError : raises
+```
+
+The `LLMClient` equivalent of `FileProvider` (§9.3) — a second, fully
+real adapter with no `NotImplementedError` anywhere, for CI/offline use
+(§10.5), never a stand-in for a live verdict in production.
+
 #### `spork.core.actions`
 
 ```mermaid
@@ -647,6 +831,13 @@ classDiagram
         +event: str
         +detail_json: Optional~str~
     }
+    class LLMUsage {
+        <<dataclass, frozen>>
+        +date: str
+        +calls: int
+        +tokens_in: int
+        +tokens_out: int
+    }
     class StateDB {
         -conn: Connection
         +get_cursor(account_id: str) Optional~str~
@@ -655,10 +846,13 @@ classDiagram
         +mark_processed(jmap_id: str, ...) None
         +write_audit_entry(...) None
         +get_audit_entries(jmap_id: Optional~str~) list
+        +record_llm_call(date: str, tokens_in: int, tokens_out: int) None
+        +get_llm_usage(date: str) LLMUsage
         +close() None
     }
 
     StateDB ..> AuditEntry : returns from get_audit_entries()
+    StateDB ..> LLMUsage : returns from get_llm_usage()
 ```
 
 #### `spork.core.pipeline`
@@ -799,6 +993,159 @@ action execution, and audit logging into the one call a real message
 goes through, now composed from these seven modules instead of one
 function body. `ActionExecutor`/`StateDB`/`evaluate` are fully defined
 in their own diagrams above.
+
+A third diagram: `spork.core.pipeline.tier2` (§10.7), the Tier 2
+sibling to the diagram above — reuses the same generic framework and
+`MissingMetaError`, but its own `Tier2Meta` and 13 concrete modules,
+never M2's.
+
+```mermaid
+classDiagram
+    class Filter { <<Protocol>> }
+    class Selector { <<Protocol>> }
+    class Augment { <<Protocol>> }
+    class MissingMetaError { <<Exception>> }
+    class LLMClient { <<Protocol>> }
+    class DraftCreator { <<Protocol>> }
+    class ActionExecutor
+    class StateDB
+    class clean_body { <<function>> }
+    class validate_verdict { <<function>> }
+    class confidence_band { <<function>> }
+    class has_budget_remaining { <<function>> }
+
+    class Tier2Meta {
+        <<dataclass, frozen>>
+        +message: NormalizedMessage
+        +to_addresses: Sequence~str~
+        +thread_prior_subject: Optional~str~
+        +thread_user_has_replied: bool
+        +available_mailboxes: Sequence~str~
+        +ts: Optional~str~
+        +request: Optional~VerdictRequest~
+        +verdict: Optional~Verdict~
+        +band: Optional~ConfidenceBand~
+        +audit_event: Optional~str~
+        +audit_detail_json: Optional~str~
+    }
+
+    class TimestampFilter {
+        -now: function
+        +apply(payload) Payload
+    }
+    class BudgetGateSelector {
+        -state_db: StateDB
+        -daily_call_budget: int
+        +select(payload) tuple
+    }
+    class BuildVerdictRequestFilter {
+        -max_body_chars: int
+        +apply(payload) Payload
+    }
+    class CallLLMAugment {
+        -llm_client: LLMClient
+        +augment(payload) Payload
+    }
+    class RecordLLMUsageFilter {
+        -state_db: StateDB
+        +apply(payload) Payload
+    }
+    class ValidateVerdictFilter {
+        -allowed_categories: Sequence~str~
+        +apply(payload) Payload
+    }
+    class ConfidenceBandSelector {
+        -alert_threshold: float
+        -autoact_threshold: float
+        +select(payload) tuple
+    }
+    class ApplyVerdictActionFilter {
+        -executor: ActionExecutor
+        +apply(payload) Payload
+    }
+    class RecordAlertOnlyFilter {
+        +apply(payload) Payload
+    }
+    class RecordBudgetExhaustedFilter {
+        +apply(payload) Payload
+    }
+    class CreateDraftIfWantedFilter {
+        -draft_creator: DraftCreator
+        +apply(payload) Payload
+    }
+    class WriteAuditEntryFilter {
+        -state_db: StateDB
+        +apply(payload) Payload
+    }
+    class MarkProcessedFilter {
+        -state_db: StateDB
+        +apply(payload) Payload
+    }
+
+    Filter <|.. TimestampFilter : structurally satisfies
+    Selector <|.. BudgetGateSelector : structurally satisfies
+    Filter <|.. BuildVerdictRequestFilter : structurally satisfies
+    Augment <|.. CallLLMAugment : structurally satisfies
+    Filter <|.. RecordLLMUsageFilter : structurally satisfies
+    Filter <|.. ValidateVerdictFilter : structurally satisfies
+    Selector <|.. ConfidenceBandSelector : structurally satisfies
+    Filter <|.. ApplyVerdictActionFilter : structurally satisfies
+    Filter <|.. RecordAlertOnlyFilter : structurally satisfies
+    Filter <|.. RecordBudgetExhaustedFilter : structurally satisfies
+    Filter <|.. CreateDraftIfWantedFilter : structurally satisfies
+    Filter <|.. WriteAuditEntryFilter : structurally satisfies
+    Filter <|.. MarkProcessedFilter : structurally satisfies
+
+    BuildVerdictRequestFilter ..> MissingMetaError : raises
+    CallLLMAugment ..> MissingMetaError : raises
+    RecordLLMUsageFilter ..> MissingMetaError : raises
+    ValidateVerdictFilter ..> MissingMetaError : raises
+    ConfidenceBandSelector ..> MissingMetaError : raises
+    ApplyVerdictActionFilter ..> MissingMetaError : raises
+    CreateDraftIfWantedFilter ..> MissingMetaError : raises
+    WriteAuditEntryFilter ..> MissingMetaError : raises
+    MarkProcessedFilter ..> MissingMetaError : raises
+
+    BuildVerdictRequestFilter ..> clean_body : cleans body via
+    CallLLMAugment --> LLMClient : the one I/O stage — external API seam
+    ValidateVerdictFilter ..> validate_verdict : Tier 2 verdict validation
+    ConfidenceBandSelector ..> confidence_band : Tier 2 confidence gating
+    BudgetGateSelector ..> has_budget_remaining : Tier 2 budget check
+    ApplyVerdictActionFilter --> ActionExecutor : applies suggested_action via
+    CreateDraftIfWantedFilter --> DraftCreator : creates via, when draft_reply set
+    BudgetGateSelector --> StateDB
+    RecordLLMUsageFilter --> StateDB
+    WriteAuditEntryFilter --> StateDB
+    MarkProcessedFilter --> StateDB
+
+    class build_tier2_pipeline {
+        <<function>>
+        +build_tier2_pipeline(llm_client, executor, draft_creator, state_db, allowed_categories, daily_call_budget, alert_threshold, autoact_threshold, max_body_chars, now) Pipeline
+    }
+    class process_tier2_message {
+        <<function>>
+        +process_tier2_message(message, to_addresses, ..., now) Optional~Verdict~
+    }
+    build_tier2_pipeline ..> TimestampFilter : composes
+    build_tier2_pipeline ..> BudgetGateSelector : composes
+    build_tier2_pipeline ..> BuildVerdictRequestFilter : composes
+    build_tier2_pipeline ..> CallLLMAugment : composes
+    build_tier2_pipeline ..> RecordLLMUsageFilter : composes
+    build_tier2_pipeline ..> ValidateVerdictFilter : composes
+    build_tier2_pipeline ..> ConfidenceBandSelector : composes
+    build_tier2_pipeline ..> ApplyVerdictActionFilter : composes
+    build_tier2_pipeline ..> RecordAlertOnlyFilter : composes
+    build_tier2_pipeline ..> RecordBudgetExhaustedFilter : composes
+    build_tier2_pipeline ..> CreateDraftIfWantedFilter : composes
+    build_tier2_pipeline ..> WriteAuditEntryFilter : composes
+    build_tier2_pipeline ..> MarkProcessedFilter : composes
+    process_tier2_message ..> build_tier2_pipeline : builds, then runs
+```
+
+`"autoact"`/`"autoact_alert"` route to the same `act` `Pipeline`
+instance (not drawn as two separate branches above — see §10.7's
+prose for why one object under two route keys is the accurate
+picture, not a diagramming simplification).
 
 #### `spork.core.secrets`
 
@@ -980,21 +1327,26 @@ default = "keyring://"
 
 ### 7.4 State store (SQLite)
 
-Single file, WAL mode, no external DB dependency. Tables (indicative,
-not final):
+Single file, WAL mode, no external DB dependency. Built tables (final —
+`StateDB` has real, tested methods for each):
 
 - `processed_messages(jmap_id, thread_id, received_at, tier_reached, verdict_json, action_taken, processed_at)`
   — the dedupe/idempotency key. A message is only ever acted on once
   unless a manual `spork reclassify` forces it.
 - `audit_log(id, ts, jmap_id, event, detail_json)` — human-readable
   trail for `spork logs`.
-- `rule_stats(rule_id, matches, last_matched_at)` — powers
-  `spork rules stats` so unused/over-firing rules are visible.
 - `push_cursor(account_id, state)` — the last JMAP `state` string seen,
   so a restart resumes from where it left off instead of re-scanning the
   whole mailbox.
-- `llm_usage(date, calls, tokens_in, tokens_out)` — feeds the daily
-  budget check in §7.2.
+- `llm_usage(date, calls, tokens_in, tokens_out)` — `date` is the
+  primary key (one row per day, upserted via `record_llm_call()`);
+  feeds the daily budget check (§10.4) and makes actual spend visible
+  via `spork status` (§7.2, M5).
+
+Still indicative, not final — not built yet:
+
+- `rule_stats(rule_id, matches, last_matched_at)` — powers
+  `spork rules stats` so unused/over-firing rules are visible.
 
 ### 7.5 Rules (`rules.toml`)
 
@@ -1305,20 +1657,28 @@ class ActionApplier(Protocol):
     def apply(self, message: NormalizedMessage, action: Action) -> None: ...
 
 
+class DraftCreator(Protocol):
+    """Creates a draft reply in the account's Drafts mailbox — never sent."""
+
+    def create_draft(self, in_reply_to: NormalizedMessage, body: str) -> None: ...
+
+
 class Provider(Protocol):
     """What every mail-backend integration adapts to.
 
     A provider is the daemon's *entire* relationship to one remote
-    source of truth — reading from it (`build_source`) and writing to
-    it (`build_action_applier`) are two operations against the same
+    source of truth — reading from it (`build_source`), writing an
+    action to it (`build_action_applier`), and writing a draft to it
+    (`build_draft_creator`) are three operations against the same
     backend, not separate concerns that happen to share one. Mailbox
     role resolution and anything else backend-specific is reached
     through whatever a provider hands back, not through this Protocol
-    — but read and write both belong here.
+    — but every kind of read/write belongs here.
     """
 
     def build_source(self) -> Source: ...
     def build_action_applier(self) -> ActionApplier: ...
+    def build_draft_creator(self) -> DraftCreator: ...
 ```
 
 `spork.core.actions.executor.ActionExecutor` (M2) is the one consumer
@@ -1329,7 +1689,11 @@ one means something upstream routed a Tier-2-only action to the
 terminal step by mistake). `ActionApplier` lives in
 `spork.core.providers.base` alongside `Provider`, not in
 `spork.core.actions` — it's provider-owned I/O; `ActionExecutor` is
-generic business logic that depends on it, not the reverse.
+generic business logic that depends on it, not the reverse. `DraftCreator`
+is the M3 counterpart for `Verdict.draft_reply` (§10.1, §10.6) —
+provider-owned I/O the same way `ActionApplier` is, for the same
+reason: creating a draft is backend-specific work, not something a
+generic caller should know how to do itself.
 
 - **Package layout: `spork.core.providers.<name>`.** JMAP's
   client/push/mailbox/backoff modules move from
@@ -1339,12 +1703,12 @@ generic business logic that depends on it, not the reverse.
 - **The Adapter: `JmapProvider`.** Wraps `JmapClient` +
   `JmapPushTrigger` (§8) into a `Source` via the existing
   `TriggeredSource` (§9.2) for `build_source()`, and wraps
-  `JmapClient.apply_action()` (the third `NotImplementedError` stub
-  alongside `connect()`/`fetch_new_messages()`, same reason — a live
-  session is real-network work) for `build_action_applier()`.
-  `JmapProvider` doesn't reimplement fetch/push/mutate logic, it
-  composes pieces that already exist into the shape `Provider`
-  promises.
+  `JmapClient.apply_action()` (one of four `NotImplementedError` stubs
+  alongside `connect()`/`fetch_new_messages()`/`create_draft()`, same
+  reason — a live session is real-network work) for
+  `build_action_applier()`/`build_draft_creator()`. `JmapProvider`
+  doesn't reimplement fetch/push/mutate logic, it composes pieces that
+  already exist into the shape `Provider` promises.
 - **Loadable at runtime: `spork.core.providers.loader`.** A provider is
   named in config as a `"module.path:ClassName"` spec (e.g.
   `"spork.core.providers.jmap.provider:JmapProvider"`) and resolved via
@@ -1362,25 +1726,27 @@ generic business logic that depends on it, not the reverse.
   (§9.1).
 - **A second, fully real Adapter: `FileProvider`.** `JmapProvider` is
   the only provider spork ships that talks to a live backend, and it's
-  still mid-M1 (`connect()`/`fetch_new_messages()`/`apply_action()` are
-  settled-shape `NotImplementedError` stubs) — which means until a
-  live Fastmail session exists, nothing has ever actually exercised
-  `Provider` as an *abstraction* end to end, only as one
-  half-implemented instance of it. `spork.core.providers.file.FileProvider`
+  still mid-M1 (`connect()`/`fetch_new_messages()`/`apply_action()`/
+  `create_draft()` are settled-shape `NotImplementedError` stubs) —
+  which means until a live Fastmail session exists, nothing has ever
+  actually exercised `Provider` as an *abstraction* end to end, only as
+  one half-implemented instance of it. `spork.core.providers.file.FileProvider`
   closes that gap: it adapts a literal, explicitly-supplied JSON file
   of messages to `Provider`, with no NotImplementedError anywhere.
   `build_source()` replays the file's messages once via
   `ImmediateTrigger` + `SequenceContentFetcher` (§9.2); `build_action_applier()`
   appends every applied action to a JSON-lines log instead of mutating
-  anything, since there's no real mailbox underneath to mutate. It is
-  **not** a way to fake "recent mail" for `JmapProvider` or for `spork
-  rules test` (§13) — spork has no local mail store to substitute for
-  one, and `FileProvider` doesn't pretend to be JMAP or claim to be
-  live mail at all. Its purpose is narrower and more useful: proving,
-  with a real second implementation, that `Provider`'s read/write split
-  actually holds for a backend other than JMAP — plus a genuinely handy
-  building block for local dev/demo/CI work that wants a Provider
-  without any network dependency.
+  anything, since there's no real mailbox underneath to mutate;
+  `build_draft_creator()` (§10.6) does the same for drafts — a second
+  JSON-lines log, distinct from the actions one, since a draft isn't an
+  action. It is **not** a way to fake "recent mail" for `JmapProvider`
+  or for `spork rules test` (§13) — spork has no local mail store to
+  substitute for one, and `FileProvider` doesn't pretend to be JMAP or
+  claim to be live mail at all. Its purpose is narrower and more
+  useful: proving, with a real second implementation, that `Provider`'s
+  read/write split actually holds for a backend other than JMAP — plus
+  a genuinely handy building block for local dev/demo/CI work that
+  wants a Provider without any network dependency.
 
 ### 9.4 Modularity: Filter/Selector/Augment pipeline modules
 
@@ -1594,6 +1960,457 @@ change to *what pipeline that route points at*, never a rewrite of
   - Prompt kept short (truncated body, no full quoted history) to bound
     tokens per call; `llm_usage` table makes actual spend visible via
     `spork status`.
+
+### 10.1 Modularity: the `LLMClient` adapter
+
+Claude is the only Tier 2 backend spork talks to today, but — same
+reasoning as §9.3's mail-backend `Provider` — it's built as one
+**client** behind a common adapter, not called directly from the
+pipeline, so a second backend (a different model provider entirely) is
+an addition, not a rewrite.
+
+```python
+@dataclass(frozen=True, slots=True)
+class VerdictRequest:
+    """Everything an LLMClient needs to produce one Verdict — already
+    assembled by the (not-yet-built) prompt-building step, so an
+    LLMClient implementation never touches NormalizedMessage or the
+    rule engine directly."""
+
+    subject: str
+    from_address: str
+    to_addresses: tuple[str, ...]
+    cleaned_body: str
+    thread_prior_subject: str | None
+    thread_user_has_replied: bool
+    available_mailboxes: tuple[str, ...]
+
+
+class Verdict(BaseModel):
+    """One Tier 2 verdict — the parsed, schema-validated form of this
+    section's JSON output. A pydantic model, not a dataclass (unlike
+    VerdictRequest): this is the one place spork parses untrusted
+    external structured output, same reasoning as `rules.schema`
+    validating a hand-edited rules.toml."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: str
+    urgency: Literal["low", "medium", "high"]
+    confidence: float  # Field(ge=0.0, le=1.0)
+    suggested_action: Action  # reuses rules.schema.Action
+    summary: str
+    draft_reply: str | None = None
+    reasoning: str
+
+
+class LLMClient(Protocol):
+    """What every Tier 2 backend adapts to: given one VerdictRequest,
+    return one schema-validated Verdict."""
+
+    def get_verdict(self, request: VerdictRequest) -> Verdict: ...
+```
+
+- **`Verdict` reuses `rules.schema.Action`** for `suggested_action` —
+  the same terminal-action shape a Tier 1 rule produces, so
+  `ActionExecutor` (M2) can consume either without knowing which tier
+  produced it. `extra="forbid"` plus a `field_validator` rejecting
+  `suggested_action.type == "escalate"` (a schema-level contradiction —
+  a verdict already *is* Tier 2's output, there's nowhere further to
+  escalate to) mean a malformed or hallucinated field is a validation
+  failure at the client boundary, not something that reaches the
+  executor. Validating `category`/`suggested_action.mailbox` against
+  *this deployment's* configured set is deliberately a separate, later
+  step (`docs/ROADMAP.md`'s "Verdict validation against configured
+  mailbox/category set") — `Verdict` only enforces shape, not
+  deployment-specific vocabulary.
+- **Package layout: `spork.core.llm.clients.<name>`** — mirrors
+  `spork.core.providers.<name>`. `AnthropicLLMClient` is the first (and
+  today, only) implementation.
+- **Loadable at runtime: `spork.core.llm.loader`** — a client is named
+  in config (e.g.
+  `[llm] client = "spork.core.llm.clients.anthropic:AnthropicLLMClient"`)
+  and resolved via `importlib` at startup, identical mechanics to
+  `spork.core.providers.loader.load_provider` (down to the error type's
+  shape, `LLMClientLoadError`) — spork never imports the `anthropic`
+  SDK unless an Anthropic client is the one actually configured.
+- **`AnthropicLLMClient` is a settled-shape stub, like `JmapClient`.**
+  `get_verdict()` requires a live Anthropic API call, which this
+  environment can't exercise honestly — constructor args (`api_key`,
+  `model`, `max_tokens`) and the method signature are settled now,
+  `get_verdict()` raises `NotImplementedError` pointing at
+  `docs/ROADMAP.md`'s M3 until a real call (and the recorded-response
+  CI fixtures M3's last item calls for) lands. No `anthropic` import
+  anywhere yet — same reason `jmapc` isn't imported by `JmapClient`
+  (§9.3): the SDK isn't a dependency until there's a real call to make
+  with it.
+
+### 10.2 Verdict validation against configured mailbox/category set
+
+A `Verdict` (§10.1) only proves its own shape — pydantic can't know
+*this deployment's* configured categories or mailbox names, since
+those live in `config.toml`/JMAP mailbox state, not in the schema.
+`spork.core.llm.validate` closes that gap as one pure function:
+
+```python
+class VerdictValidationError(Exception):
+    """Raised when a Verdict's category or suggested_action.mailbox
+    falls outside this deployment's configured closed set — an
+    out-of-set value from the model is treated as a schema failure
+    (§10), not silently applied."""
+
+
+def validate_verdict(
+    verdict: Verdict,
+    *,
+    allowed_categories: Sequence[str],
+    allowed_mailboxes: Sequence[str],
+) -> Verdict: ...
+```
+
+No I/O, no dependency on `Provider`/JMAP — `allowed_categories`/
+`allowed_mailboxes` are passed in already resolved (from
+`config.toml`'s category list and a provider's mailbox listing),
+keeping this function trivially unit-testable. Returns `verdict`
+unchanged on success (never coerces/truncates a bad value into a valid
+one — a deployment-specific mismatch is exactly the kind of thing that
+should stop the pipeline, not get silently rewritten);
+`suggested_action.mailbox` is only checked when set (`None` for
+`ignore`, per `rules.schema.Action`'s docstring).
+
+### 10.3 Confidence-band logic
+
+§11's three bands — autoact silently, autoact + alert, alert-only (no
+action) — as one pure function of a verdict's confidence and the two
+`config.toml` thresholds (§7.2):
+
+```python
+ConfidenceBand = Literal["autoact", "autoact_alert", "alert_only"]
+
+
+def confidence_band(
+    confidence: float,
+    *,
+    alert_threshold: float,
+    autoact_threshold: float,
+) -> ConfidenceBand: ...
+```
+
+`confidence >= autoact_threshold` → `"autoact"`;
+`alert_threshold <= confidence < autoact_threshold` → `"autoact_alert"`;
+`confidence < alert_threshold` → `"alert_only"`. Both thresholds are
+config values, not verdict fields, so `spork.core.llm.confidence`
+guards the one invariant config could get backwards —
+`alert_threshold > autoact_threshold` (a misconfigured `config.toml`
+where the "always alert" line is set higher than the "never alert"
+line) — by raising `ValueError` eagerly rather than silently producing
+whichever band the broken comparison happens to fall into.
+
+### 10.4 `daily_call_budget` enforcement + `llm_usage` tracking
+
+Two pieces, both real today (no live API call needed to build or test
+either): `StateDB` (§7.4) gains an `llm_usage` table plus the methods
+to read/write it, and `spork.core.llm.budget` gains the pure
+enforcement check.
+
+```python
+@dataclass(frozen=True, slots=True)
+class LLMUsage:
+    date: str
+    calls: int
+    tokens_in: int
+    tokens_out: int
+
+
+class StateDB:
+    def record_llm_call(self, date: str, *, tokens_in: int, tokens_out: int) -> None: ...
+    def get_llm_usage(self, date: str) -> LLMUsage: ...
+
+
+def has_budget_remaining(usage: LLMUsage, *, daily_call_budget: int) -> bool: ...
+```
+
+`get_llm_usage()` never returns `None` — a date with no recorded calls
+is `LLMUsage(date, calls=0, tokens_in=0, tokens_out=0)`, so a caller
+never special-cases "never called today" separately from "called zero
+times today." `record_llm_call()` upserts (accumulates onto an
+existing day's row, doesn't overwrite it) — the same
+`INSERT ... ON CONFLICT DO UPDATE` pattern `set_cursor()`/
+`mark_processed()` already use.
+
+`has_budget_remaining()` is deliberately decoupled from `StateDB` —
+`usage.calls < daily_call_budget`, nothing else — the same way
+`confidence_band()` is decoupled from `Verdict`. A future
+`BudgetGateSelector` (the escalate branch's actual gate, once the
+Tier 2 pipeline is wired end to end) calls `get_llm_usage()` then this
+function: the same two-step shape `IdempotencyGateSelector` already
+uses for `has_processed()` (docs/DESIGN.md §9.4). Once budget is
+exhausted, §10's policy applies: everything that would've escalated
+instead goes straight to Needs-Review + alert, never a silently
+dropped message.
+
+### 10.5 Recorded-response fixtures for CI
+
+`AnthropicLLMClient` can't be exercised in CI — no live API key, and
+even with one, a real call is slow, costs money, and isn't
+deterministic. `spork.core.llm.clients.recorded.RecordedLLMClient` is
+the `LLMClient` equivalent of `FileProvider` (§9.3): a second, *fully
+real* adapter with no `NotImplementedError` anywhere, that replays
+pre-recorded `Verdict`s instead of calling a live API.
+
+```python
+class RecordedResponsesLoadError(ValueError):
+    """Raised when a recorded-responses JSON file can't be parsed into Verdicts."""
+
+
+class UnrecordedResponseError(KeyError):
+    """Raised when a request has no matching recorded response."""
+
+
+def load_recorded_responses(path: str | Path) -> dict[str, Verdict]: ...
+
+
+class RecordedLLMClient:
+    def __init__(self, responses_path: str | Path) -> None: ...
+    def get_verdict(self, request: VerdictRequest) -> Verdict: ...
+```
+
+- **Fixture shape:** a JSON object keyed by `request.subject` —
+  `{"Re: Thursday call": {"category": "needs_reply", ...}}` — loaded
+  once at construction (fail fast on a malformed fixture file, not on
+  the first `get_verdict()` call). Keyed by subject rather than a hash
+  of the full request for one reason: a human reading the fixture file
+  can immediately tell which recorded email each entry is for. A
+  request whose subject has no matching entry raises
+  `UnrecordedResponseError` naming the subjects that *were* recorded —
+  same "name what's available" shape as `UnknownBranchError` (§9.4).
+- **Not a way to fake a live verdict for production use** — same
+  caveat `FileProvider`'s docstring states for messages: this is
+  explicitly a recording/replay backend for CI and offline dry-runs,
+  documented as exactly that, never a stand-in for `AnthropicLLMClient`
+  in a real deployment.
+- **Loadable the same way `AnthropicLLMClient` is** —
+  `spork.core.llm.loader.load_llm_client()` works on any `LLMClient`
+  spec, so
+  `"spork.core.llm.clients.recorded:RecordedLLMClient"` with a
+  `responses_path=` kwarg is a config change, not special-cased code.
+
+### 10.6 Draft creation path
+
+A `Verdict.draft_reply` (§10.1) needs somewhere real to land: §11's
+hard invariant is "draft, never send" — no code path calls
+`Email/set` into `EmailSubmission`, only into the account's Drafts
+mailbox. `DraftCreator` (§9.3) is that write, alongside `ActionApplier`
+on the same `Provider` contract every backend already adapts to — a
+verdict's draft doesn't need a parallel abstraction, it needs one more
+method on the one that already exists.
+
+- **`JmapClient.create_draft()` is a fourth settled-shape stub**,
+  alongside `connect()`/`fetch_new_messages()`/`apply_action()`:
+  creating a real draft means a real `Email/set` call against a live
+  Fastmail session, which this environment can't exercise honestly.
+  Signature settled now (`create_draft(message, body) -> None`),
+  raises `NotImplementedError` pointing at `docs/ROADMAP.md`'s M3 in
+  the meantime. `_JmapDraftCreator` (in `spork.core.providers.jmap.provider`,
+  alongside `_JmapContentFetcher`/`_JmapActionApplier`) is a pure
+  delegation to it, same shape as the other two.
+- **`FileProvider.build_draft_creator()` is real**, same reasoning as
+  its `build_action_applier()`: `_FileDraftCreator` appends every
+  created draft to a second JSON-lines log (`drafts_log_path`,
+  distinct from `actions_log_path` — a draft isn't an action, and
+  keeping them in separate files means either can be inspected without
+  filtering the other out). Defaults to a `drafts.jsonl` next to
+  `actions_log_path` when not given explicitly, so existing
+  `FileProvider(messages_path, actions_log_path)` call sites keep
+  working unchanged.
+- **Never wired to `EmailSubmission` anywhere in this design** — the
+  hard invariant is enforced by omission: no `Provider` method, no
+  `DraftCreator` implementation, and no future pipeline module has any
+  path to it, consistent with §11's "draft, never send" and §15's "no
+  outbound send capability at all in v1."
+
+### 10.7 The Tier 2 pipeline, wired end to end
+
+§9.4 promised this: "M3's Tier 2 prompt-building chain ... is a
+`Filter`/`Augment` chain over the same `Payload`/`Pipeline` machinery,
+not a new abstraction." This section cashes that promise in —
+`spork.core.pipeline.tier2` composes every piece §10.1–§10.6 built into
+one runnable pipeline, the same way `spork.core.pipeline.default`
+composes M2's seven modules. It reuses the *generic* framework
+(`Payload`/`Filter`/`Selector`/`Augment`/`Pipeline`, `MissingMetaError`)
+verbatim; it does **not** reuse M2's *concrete* `MessageMeta`/modules —
+`RuleVerdict` and `llm.base.Verdict` are different shapes (the latter's
+action field is `suggested_action`, not `action`), so a Tier 2
+`MarkProcessedFilter` reusing M2's would read the wrong attribute and
+fail at runtime, and even the shape-compatible ones (`WriteAuditEntryFilter`)
+would fail `mypy --strict` reused against a different concrete meta
+type. `Tier2Meta` and its own module set are the honest way to keep
+both pipelines correctly typed.
+
+```python
+@dataclass(frozen=True, slots=True)
+class Tier2Meta:
+    message: NormalizedMessage
+    to_addresses: Sequence[str]
+    thread_prior_subject: Optional[str]
+    thread_user_has_replied: bool
+    available_mailboxes: Sequence[str]
+    ts: Optional[str] = None
+    request: Optional[VerdictRequest] = None
+    verdict: Optional[Verdict] = None
+    band: Optional[ConfidenceBand] = None
+    audit_event: Optional[str] = None
+    audit_detail_json: Optional[str] = None
+```
+
+`to_addresses`/`thread_prior_subject`/`thread_user_has_replied`/
+`available_mailboxes` are caller-supplied, exactly like `MessageMeta.rules`
+— this pipeline doesn't parse `NormalizedMessage.headers` itself
+(`NormalizedMessage` has no structured "to" field yet); assembling
+those from a real message is real-fetch-adjacent work for whatever
+eventually decides a message needs Tier 2 processing, not this
+pipeline's job.
+
+**Modules** (`spork.core.pipeline.tier2.modules`), in the order they
+run:
+
+1. **`TimestampFilter(now)`** — calls the clock once, same role as M2's.
+2. **`BudgetGateSelector(state_db, daily_call_budget)`** — reads
+   `meta.ts`'s date, calls `StateDB.get_llm_usage()` then
+   `has_budget_remaining()` (§10.4); routes `"budget_ok"` or
+   `"budget_exhausted"`.
+3. **`BuildVerdictRequestFilter(max_body_chars)`** — cleans
+   `payload.text` via `clean_body()` (§10, body cleaning), assembles a
+   `VerdictRequest` from it plus `meta`'s caller-supplied fields.
+4. **`CallLLMAugment(llm_client)`** — the one `Augment` in this
+   pipeline, and the only stage that reaches outside the payload:
+   calls `llm_client.get_verdict(meta.request)`, sets `meta.verdict`.
+   **This is the seam the external API sits behind** — with
+   `RecordedLLMClient` (§10.5) it runs today, no live account needed;
+   swap in a real `AnthropicLLMClient` once M3's live-call blocker
+   clears and nothing else in this pipeline changes.
+5. **`RecordLLMUsageFilter(state_db)`** — records that a call was made
+   (§10.4) immediately after it happens, before validation — the call
+   cost budget/tokens regardless of whether spork ends up liking the
+   response's shape. **Known limitation:** recorded with
+   `tokens_in=tokens_out=0` — `LLMClient.get_verdict()` returns a
+   `Verdict`, not a token-usage figure, so real counts aren't
+   available until a live client's real implementation reports them;
+   call-count enforcement (the part `daily_call_budget` actually
+   gates on) doesn't need them, so this isn't blocking, but `spork
+   status`'s token-spend display will read zeros until that's wired.
+6. **`ValidateVerdictFilter(allowed_categories)`** — calls
+   `validate_verdict()` (§10.2) against the configured category set
+   and `meta.available_mailboxes`; raises on failure. Same policy as
+   M2's `ApplyActionFilter`/`ActionExecutionError`: a raise here aborts
+   the run without marking the message processed, so it's retried next
+   cycle — an accepted tradeoff already in production for Tier 1, not
+   a new one introduced here.
+7. **`ConfidenceBandSelector(alert_threshold, autoact_threshold)`** —
+   calls `confidence_band()` (§10.3), sets `meta.band`, routes
+   `"autoact"` / `"autoact_alert"` / `"alert_only"`.
+8. **`ApplyVerdictActionFilter(executor)`** — applies
+   `verdict.suggested_action` via the same `ActionExecutor` (M2) a
+   Tier 1 terminal action uses; sets `audit_event`/`audit_detail_json`
+   naming `meta.band` so the entry records *which* band triggered it.
+9. **`RecordAlertOnlyFilter()`** — the `"alert_only"` branch's
+   counterpart to 8: no action applied, just records why.
+10. **`RecordBudgetExhaustedFilter()`** — the `"budget_exhausted"`
+    branch's counterpart: records that Tier 2 was skipped for budget,
+    matching §10's cost-control policy ("everything that would've
+    escalated instead goes straight to Needs-Review + alert").
+11. **`CreateDraftIfWantedFilter(draft_creator)`** — if
+    `meta.verdict.draft_reply` is set, creates it via `DraftCreator`
+    (§10.6). Runs on every non-budget-exhausted branch (`autoact`,
+    `autoact_alert`, *and* `alert_only`) — a draft is never sent, so
+    there's no reason to withhold one from a message a human still has
+    to review.
+12. **`WriteAuditEntryFilter(state_db)`** — writes whatever
+    `audit_event`/`audit_detail_json` describe, generic across all four
+    outcome branches, same role as M2's.
+13. **`MarkProcessedFilter(state_db)`** — marks the message processed.
+    Unlike M2's, doesn't require `meta.verdict` (the
+    `"budget_exhausted"` branch never sets one) — `tier_reached` is
+    always `"tier2"`, `action_taken` is the verdict's action type when
+    there is one, `None` otherwise.
+
+`MissingMetaError` (defined in `spork.core.pipeline.meta`, reused here
+rather than duplicated — it's a generic "module ran before its
+dependency" signal, never actually specific to `MessageMeta`) is what
+each of these raises when an earlier module it depends on hasn't run.
+
+**Composition** (`spork.core.pipeline.tier2.default.build_tier2_pipeline()`):
+
+```python
+act = Pipeline(
+    [
+        ApplyVerdictActionFilter(executor),
+        CreateDraftIfWantedFilter(draft_creator),
+        WriteAuditEntryFilter(state_db),
+        MarkProcessedFilter(state_db),
+    ]
+)
+alert_only = Pipeline(
+    [
+        RecordAlertOnlyFilter(),
+        CreateDraftIfWantedFilter(draft_creator),
+        WriteAuditEntryFilter(state_db),
+        MarkProcessedFilter(state_db),
+    ]
+)
+budget_ok = Pipeline(
+    [
+        BuildVerdictRequestFilter(max_body_chars),
+        CallLLMAugment(llm_client),
+        RecordLLMUsageFilter(state_db),
+        ValidateVerdictFilter(allowed_categories),
+    ],
+    selector=ConfidenceBandSelector(alert_threshold, autoact_threshold),
+    routes={"autoact": act, "autoact_alert": act, "alert_only": alert_only},
+)
+budget_exhausted = Pipeline(
+    [RecordBudgetExhaustedFilter(), WriteAuditEntryFilter(state_db), MarkProcessedFilter(state_db)]
+)
+return Pipeline(
+    [TimestampFilter(now)],
+    selector=BudgetGateSelector(state_db, daily_call_budget),
+    routes={"budget_ok": budget_ok, "budget_exhausted": budget_exhausted},
+)
+```
+
+`"autoact"` and `"autoact_alert"` deliberately route to the *same*
+`act` `Pipeline` object — nothing in `Pipeline.routes` requires distinct
+values per key, and the only difference between the two bands
+(whether a human gets alerted) is a fact `meta.band` already records
+for a future M4 `Alerter` to query, not a difference in what this
+pipeline does. A small, real demonstration of routes being "just
+another `Pipeline` value," not a special-cased branch table.
+
+`process_tier2_message(message, *, to_addresses, thread_prior_subject,
+thread_user_has_replied, available_mailboxes, llm_client, executor,
+draft_creator, state_db, allowed_categories, daily_call_budget,
+alert_threshold, autoact_threshold, max_body_chars=4000, now=...) ->
+Verdict | None` is the entry point, mirroring `process_message()`'s
+shape: builds the pipeline, seeds `Payload(text=message.body_text,
+meta=Tier2Meta(...))`, runs it, returns `result.meta.verdict` (`None`
+on the budget-exhausted branch).
+
+**Deliberately not built here: deciding *which* escalated message to
+run this on.** This pipeline doesn't duplicate Tier 1's
+`IdempotencyGateSelector`/`has_processed()` check — Tier 1's escalate
+branch already calls `mark_processed()` for an escalated message (the
+interim M2 policy, §9), so `has_processed()` would already read `True`
+before Tier 2 ever runs; a naive reuse would skip every message it's
+supposed to process. `MarkProcessedFilter`'s upsert (`StateDB.mark_processed()`'s
+existing `ON CONFLICT DO UPDATE`, built for `spork reclassify`) means a
+Tier 2 run simply overwrites Tier 1's row with `tier_reached="tier2"`
+and the real outcome — correct once *something* calls
+`process_tier2_message()` for the right message. That *something* —
+`sporkd`'s main loop deciding "this message escalated and hasn't had
+its Tier 2 run yet" — needs a live JMAP session to know what's
+actually pending, same blocker M1's daemon loop already has (M5). This
+pipeline is the part of "wire Tier 2 up" that's honestly buildable
+without one; the scheduling half isn't faked here.
 
 ## 11. Safety & human-in-the-loop
 

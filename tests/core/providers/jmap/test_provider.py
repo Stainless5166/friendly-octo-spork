@@ -12,7 +12,12 @@ from __future__ import annotations
 import pytest
 
 from spork.core.providers.jmap.client import JmapClient
-from spork.core.providers.jmap.provider import JmapProvider, _JmapActionApplier, _JmapContentFetcher
+from spork.core.providers.jmap.provider import (
+    JmapProvider,
+    _JmapActionApplier,
+    _JmapContentFetcher,
+    _JmapDraftCreator,
+)
 from spork.core.rules.schema import Action
 from spork.core.sources.triggered import TriggeredSource
 
@@ -72,3 +77,26 @@ def test_action_applier_delegates_to_the_client_directly(make_message) -> None:
 
     with pytest.raises(NotImplementedError):
         applier.apply(make_message(), Action(type="tag", mailbox="Urgent"))
+
+
+def test_build_draft_creator_returns_something_that_can_create_a_draft(make_message) -> None:
+    """build_draft_creator() returns an object satisfying DraftCreator
+    (has a .create_draft() method) — the third leg of the Provider
+    contract per docs/DESIGN.md §10.6."""
+    provider = JmapProvider(host="api.fastmail.com", api_token="fake-token")
+
+    draft_creator = provider.build_draft_creator()
+
+    with pytest.raises(NotImplementedError):
+        draft_creator.create_draft(make_message(), "Friday 2pm works for me.")
+
+
+def test_draft_creator_delegates_to_the_client_directly(make_message) -> None:
+    """The draft creator is a real delegation to JmapClient.create_draft(),
+    not a second placeholder — mirrors
+    test_action_applier_delegates_to_the_client_directly."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+    draft_creator = _JmapDraftCreator(client)
+
+    with pytest.raises(NotImplementedError):
+        draft_creator.create_draft(make_message(), "Friday 2pm works for me.")

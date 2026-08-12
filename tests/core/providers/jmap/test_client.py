@@ -44,3 +44,12 @@ def test_apply_action_raises_not_implemented(make_message) -> None:
 
     with pytest.raises(NotImplementedError):
         client.apply_action(make_message(), Action(type="move", mailbox="Reading"))
+
+
+def test_create_draft_raises_not_implemented(make_message) -> None:
+    """create_draft() would create a draft via Email/set into Drafts
+    against a live session (docs/DESIGN.md §10.6) — not built yet."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+
+    with pytest.raises(NotImplementedError):
+        client.create_draft(make_message(), "Friday 2pm works for me.")

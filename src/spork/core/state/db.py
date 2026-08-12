@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS audit_log (
     event TEXT NOT NULL,
     detail_json TEXT
 );
+
+CREATE TABLE IF NOT EXISTS llm_usage (
+    date TEXT PRIMARY KEY,
+    calls INTEGER NOT NULL DEFAULT 0,
+    tokens_in INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -53,6 +60,18 @@ class AuditEntry:
     jmap_id: str
     event: str
     detail_json: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class LLMUsage:
+    """One day's Tier 2 (Claude) call volume — what §10.4's
+    `daily_call_budget` check reads, and what `spork status` (M5)
+    will surface as actual spend."""
+
+    date: str
+    calls: int
+    tokens_in: int
+    tokens_out: int
 
 
 class StateDB:
@@ -188,3 +207,47 @@ class StateDB:
                 (jmap_id,),
             ).fetchall()
         return [AuditEntry(*row) for row in rows]
+
+    # --- llm_usage: daily Tier 2 call volume, for the budget check ---
+
+    def record_llm_call(self, date: str, *, tokens_in: int, tokens_out: int) -> None:
+        """Record one Tier 2 call against `date` (accumulates onto any
+        existing row for that date rather than overwriting it — a
+        day's second call adds to its first, it doesn't replace it).
+
+        Rejects negative token counts eagerly: SQLite has no opinion on
+        an INTEGER column's sign, so an unguarded caller bug (e.g. a
+        miscalculated token delta) could otherwise silently corrupt a
+        day's running total instead of failing where the bad value
+        originated.
+        """
+        if tokens_in < 0:
+            raise ValueError(f"tokens_in must not be negative, got {tokens_in}")
+        if tokens_out < 0:
+            raise ValueError(f"tokens_out must not be negative, got {tokens_out}")
+        self._conn.execute(
+            "INSERT INTO llm_usage (date, calls, tokens_in, tokens_out) "
+            "VALUES (?, 1, ?, ?) "
+            "ON CONFLICT(date) DO UPDATE SET "
+            "calls = calls + 1, "
+            "tokens_in = tokens_in + excluded.tokens_in, "
+            "tokens_out = tokens_out + excluded.tokens_out",
+            (date, tokens_in, tokens_out),
+        )
+        self._conn.commit()
+
+    def get_llm_usage(self, date: str) -> LLMUsage:
+        """Return `date`'s recorded Tier 2 call volume.
+
+        Never returns None — a date with no `record_llm_call()` yet is
+        `LLMUsage(date, calls=0, tokens_in=0, tokens_out=0)`, so a
+        caller (§10.4's budget check) never special-cases "never
+        called today" separately from "called zero times today."
+        """
+        row = self._conn.execute(
+            "SELECT calls, tokens_in, tokens_out FROM llm_usage WHERE date = ?", (date,)
+        ).fetchone()
+        if row is None:
+            return LLMUsage(date=date, calls=0, tokens_in=0, tokens_out=0)
+        calls, tokens_in, tokens_out = row
+        return LLMUsage(date=date, calls=calls, tokens_in=tokens_in, tokens_out=tokens_out)

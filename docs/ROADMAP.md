@@ -193,17 +193,74 @@ drives an action.
       via a hand-rolled `HTMLParser` subclass (no new dependency),
       quote chains cut at the earliest of several marker patterns,
       word-boundary truncation with an explicit marker.
-- [ ] Claude client wrapper + structured verdict schema (§10) (M)
-- [ ] Verdict validation against configured mailbox/category set (S)
-- [ ] Confidence-band logic: autoact / autoact+alert / alert-only (§9) (M)
-- [ ] `daily_call_budget` enforcement + `llm_usage` tracking (S)
-- [ ] Draft creation path (`Email/set` into Drafts, never `EmailSubmission`) (M)
-- [ ] Recorded-response fixtures for CI (no live API calls in tests) (M)
+- [x] Claude client wrapper + structured verdict schema (§10) (M) —
+      `LLMClient` Protocol adapter (§10.1, mirrors `Provider`'s
+      pattern for mail backends) + `spork.core.llm.loader` dynamic
+      `"module:ClassName"` loading + a pydantic `Verdict` schema
+      (reuses `rules.schema.Action` for `suggested_action`).
+      `AnthropicLLMClient` is a settled-shape stub like `JmapClient`:
+      real constructor/method signature, `get_verdict()` a clean
+      `NotImplementedError` until a live Anthropic API session is
+      possible — no `anthropic` import yet, same as `jmapc`.
+- [x] Verdict validation against configured mailbox/category set (S) —
+      `spork.core.llm.validate.validate_verdict()` (§10.2): checks
+      `category`/`suggested_action.mailbox` against sets passed in
+      already resolved from config — pure logic, no `Provider`/JMAP
+      dependency, no live-account blocker.
+- [x] Confidence-band logic: autoact / autoact+alert / alert-only (§9) (M) —
+      `spork.core.llm.confidence.confidence_band()` (§10.3): a pure
+      function of confidence + the two `config.toml` thresholds, with
+      an eager `ValueError` guard against a misconfigured
+      `alert_threshold > autoact_threshold`.
+- [x] `daily_call_budget` enforcement + `llm_usage` tracking (S) —
+      `StateDB` gains an `llm_usage` table + `record_llm_call()`/
+      `get_llm_usage()` (§7.4, §10.4); `spork.core.llm.budget.has_budget_remaining()`
+      is the pure enforcement half, decoupled from `StateDB` the same
+      way `confidence_band()` is decoupled from `Verdict`.
+- [x] Draft creation path (`Email/set` into Drafts, never `EmailSubmission`) (M) —
+      `Provider` gains `build_draft_creator()` (§9.3, §10.6); `JmapClient.create_draft()`
+      is a fourth settled-shape `NotImplementedError` stub (needs a
+      live Fastmail session, same as `connect()`/`fetch_new_messages()`/
+      `apply_action()`); `FileProvider.build_draft_creator()` is real,
+      appending to a second JSON-lines log distinct from the actions
+      one. Never wired to `EmailSubmission` anywhere — §11's invariant
+      enforced by omission.
+- [x] Recorded-response fixtures for CI (no live API calls in tests) (M) —
+      `spork.core.llm.clients.recorded.RecordedLLMClient` (§10.5): the
+      `LLMClient` equivalent of `FileProvider` — a second, fully real
+      adapter with no `NotImplementedError` anywhere, replaying
+      pre-recorded `Verdict`s from a JSON fixture keyed by subject.
+
+- [x] Tier 2 pipeline wired end to end (§10.7) —
+      `spork.core.pipeline.tier2` (`Tier2Meta` + 13 modules +
+      `build_tier2_pipeline()`/`process_tier2_message()`) composes all
+      seven items above into one runnable pipeline: budget gate → LLM
+      call → usage recording → verdict validation → confidence gating
+      → action application/draft creation → audit → idempotency.
+      `test_default.py` runs it end to end against `RecordedLLMClient`
+      — a real escalated message gets a real (recorded) verdict, a
+      real action applied, a real draft created, zero live API calls.
+      Not one of the original 7 checklist items; called out separately
+      since it's the integration work those items existed to enable.
 
 **Exit criteria:** an escalated test email gets a sane structured verdict,
 the corresponding action is applied, and a drafted reply lands in Drafts
 un-sent. Budget cutoff verified by lowering `daily_call_budget` to 1 in a
-test run.
+test run. **All 7 items above, plus the Tier 2 pipeline wiring, are done
+in the same sense M1's JMAP work is "done"** — every piece buildable
+without a live account is real and tested; **not yet met** as an
+end-to-end exit criterion, still blocked on the same live Fastmail
+session M1 needs (`JmapClient.connect()`/`fetch_new_messages()`/
+`apply_action()`/`create_draft()`) plus a live Anthropic API session
+(`AnthropicLLMClient.get_verdict()`) to swap in for `RecordedLLMClient`.
+One piece is deliberately still unbuilt even with those two live
+sessions: deciding *which* escalated message needs a Tier 2 run — Tier
+1's escalate branch already marks a message processed (the interim M2
+policy), so `process_tier2_message()` can't reuse that idempotency
+check to find pending work; that scheduling decision is real `sporkd`
+main-loop work (M5), needing a live JMAP session to know what's
+actually pending, not something invented here to appear more done than
+it is.
 
 ## M4 — Alerting
 

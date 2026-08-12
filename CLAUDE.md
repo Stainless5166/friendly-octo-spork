@@ -21,9 +21,10 @@ see "Keeping docs in sync" below.
 - **UV** for dependency management (`uv sync`, `uv run ...`).
 - **Typer** (built on Click) for both CLIs — `spork` is a command
   group, `sporkd` is a single-command app.
-- **pydantic** for the rule schema; **SecretSpec** for secrets
-  (`secretspec.toml` + `spork.core.secrets`); **jmapc** for JMAP (not
-  yet a dependency — still behind `NotImplementedError` stubs, see
+- **pydantic** for the rule schema and the Tier 2 `Verdict` schema;
+  **SecretSpec** for secrets (`secretspec.toml` + `spork.core.secrets`);
+  **jmapc** for JMAP and **anthropic** for the Claude API (neither yet
+  a dependency — both still behind `NotImplementedError` stubs, see
   below).
 - **ruff** (lint + format), **mypy --strict**, **pytest** + **pytest-cov**.
 

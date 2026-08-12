@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from spork.core.models import NormalizedMessage
-from spork.core.providers.base import ActionApplier
+from spork.core.providers.base import ActionApplier, DraftCreator
 from spork.core.providers.jmap.client import JmapClient
 from spork.core.providers.jmap.push import JmapPushTrigger
 from spork.core.rules.schema import Action
@@ -54,14 +54,30 @@ class _JmapActionApplier:
         self._client.apply_action(message, action)
 
 
+class _JmapDraftCreator:
+    """Adapts `JmapClient.create_draft()` to the `DraftCreator` contract.
+
+    A pure delegation, same shape as `_JmapActionApplier` — no logic
+    of its own beyond presenting `JmapClient`'s method under the name
+    `DraftCreator` expects.
+    """
+
+    def __init__(self, client: JmapClient) -> None:
+        self._client = client
+
+    def create_draft(self, in_reply_to: NormalizedMessage, body: str) -> None:
+        self._client.create_draft(in_reply_to, body)
+
+
 class JmapProvider:
     """Adapts a JMAP account to the `Provider` contract.
 
     `build_source()` composes `JmapPushTrigger` (the trigger) and a
     `JmapClient`-backed fetcher (the content) via `TriggeredSource` —
     exactly the split docs/DESIGN.md §9.2 describes for JMAP.
-    `build_action_applier()` is the write-side counterpart (§9.3): both
-    are assembled here once instead of duplicated at every call site.
+    `build_action_applier()`/`build_draft_creator()` are the write-side
+    counterparts (§9.3, §10.6): all three are assembled here once
+    instead of duplicated at every call site.
     """
 
     def __init__(self, host: str, api_token: str, *, cursor: str | None = None) -> None:
@@ -75,3 +91,6 @@ class JmapProvider:
 
     def build_action_applier(self) -> ActionApplier:
         return _JmapActionApplier(self._client)
+
+    def build_draft_creator(self) -> DraftCreator:
+        return _JmapDraftCreator(self._client)
