@@ -180,6 +180,8 @@ flowchart TD
             llm_clean["clean.py<br/>clean_body()"]
             llm_prompts["prompts.py<br/>VerdictRequest builder"]:::planned
             llm_base["base.py<br/>LLMClient +<br/>VerdictRequest/Verdict"]
+            llm_validate["validate.py<br/>validate_verdict()"]
+            llm_confidence["confidence.py<br/>confidence_band()"]
             llm_loader["loader.py<br/>load_llm_client()"]
             subgraph llm_clients["clients/"]
                 llm_anthropic["anthropic.py<br/>AnthropicLLMClient"]
@@ -663,6 +665,35 @@ classDiagram
 `Action` is fully defined in `spork.core.rules`'s own diagram — reused
 here, not redefined, so a Tier 2 verdict and a Tier 1 rule produce the
 exact same terminal-action shape.
+
+#### `spork.core.llm.validate`
+
+```mermaid
+classDiagram
+    class Verdict { <<pydantic BaseModel>> }
+    class VerdictValidationError { <<Exception>> }
+    class validate_verdict {
+        <<function>>
+        +validate_verdict(verdict: Verdict, allowed_categories: Sequence, allowed_mailboxes: Sequence) Verdict
+    }
+
+    validate_verdict ..> Verdict : checks category/suggested_action.mailbox against config-provided sets
+    validate_verdict ..> VerdictValidationError : raises
+```
+
+#### `spork.core.llm.confidence`
+
+```mermaid
+classDiagram
+    class ConfidenceBand { <<Literal>> }
+    class confidence_band {
+        <<function>>
+        +confidence_band(confidence: float, alert_threshold: float, autoact_threshold: float) ConfidenceBand
+    }
+
+    confidence_band ..> ConfidenceBand : returns
+    confidence_band ..> ValueError : raises (alert_threshold > autoact_threshold)
+```
 
 #### `spork.core.llm.loader`
 
@@ -1757,6 +1788,67 @@ class LLMClient(Protocol):
   anywhere yet — same reason `jmapc` isn't imported by `JmapClient`
   (§9.3): the SDK isn't a dependency until there's a real call to make
   with it.
+
+### 10.2 Verdict validation against configured mailbox/category set
+
+A `Verdict` (§10.1) only proves its own shape — pydantic can't know
+*this deployment's* configured categories or mailbox names, since
+those live in `config.toml`/JMAP mailbox state, not in the schema.
+`spork.core.llm.validate` closes that gap as one pure function:
+
+```python
+class VerdictValidationError(Exception):
+    """Raised when a Verdict's category or suggested_action.mailbox
+    falls outside this deployment's configured closed set — an
+    out-of-set value from the model is treated as a schema failure
+    (§10), not silently applied."""
+
+
+def validate_verdict(
+    verdict: Verdict,
+    *,
+    allowed_categories: Sequence[str],
+    allowed_mailboxes: Sequence[str],
+) -> Verdict: ...
+```
+
+No I/O, no dependency on `Provider`/JMAP — `allowed_categories`/
+`allowed_mailboxes` are passed in already resolved (from
+`config.toml`'s category list and a provider's mailbox listing),
+keeping this function trivially unit-testable. Returns `verdict`
+unchanged on success (never coerces/truncates a bad value into a valid
+one — a deployment-specific mismatch is exactly the kind of thing that
+should stop the pipeline, not get silently rewritten);
+`suggested_action.mailbox` is only checked when set (`None` for
+`ignore`, per `rules.schema.Action`'s docstring).
+
+### 10.3 Confidence-band logic
+
+§11's three bands — autoact silently, autoact + alert, alert-only (no
+action) — as one pure function of a verdict's confidence and the two
+`config.toml` thresholds (§7.2):
+
+```python
+ConfidenceBand = Literal["autoact", "autoact_alert", "alert_only"]
+
+
+def confidence_band(
+    confidence: float,
+    *,
+    alert_threshold: float,
+    autoact_threshold: float,
+) -> ConfidenceBand: ...
+```
+
+`confidence >= autoact_threshold` → `"autoact"`;
+`alert_threshold <= confidence < autoact_threshold` → `"autoact_alert"`;
+`confidence < alert_threshold` → `"alert_only"`. Both thresholds are
+config values, not verdict fields, so `spork.core.llm.confidence`
+guards the one invariant config could get backwards —
+`alert_threshold > autoact_threshold` (a misconfigured `config.toml`
+where the "always alert" line is set higher than the "never alert"
+line) — by raising `ValueError` eagerly rather than silently producing
+whichever band the broken comparison happens to fall into.
 
 ## 11. Safety & human-in-the-loop
 
