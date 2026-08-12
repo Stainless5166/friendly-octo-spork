@@ -222,7 +222,8 @@ flowchart TD
     end
 
     subgraph daemon_pkg["daemon/"]
-        daemon_main["main.py<br/>sporkd entrypoint (stub loop)"]
+        daemon_main["main.py<br/>sporkd entrypoint"]
+        daemon_loop["loop.py<br/>run_daemon() (Tier 1 only, §6.2.1)"]
     end
 
     subgraph cli_pkg["cli/"]
@@ -261,6 +262,92 @@ Single-process, asyncio event loop:
    taken, latency, token cost if Tier 2) in the state DB.
 10. Serve the local control socket concurrently for CLI requests
     (status, pause, "reclassify message X", "reload rules").
+
+#### 6.2.1 Bridging synchronous I/O into the asyncio loop
+
+Every I/O dependency this daemon actually has is synchronous:
+[`jmapc`](https://github.com/smkent/jmapc) is built on `requests` (no
+`async def` anywhere in it), and its push mechanism (`Client.events`)
+is a **blocking generator** wrapping `sseclient` — `for event in
+client.events:` blocks the calling thread on each iteration, with no
+async alternative and no built-in reconnect/backoff (confirmed against
+the library directly, not assumed — which is exactly why this
+codebase already built its own `backoff.next_delay()` rather than
+relying on one). `Source.poll()`/`Trigger.wait()`/`ContentFetcher.fetch()`
+(§9.2) are all plain `def` for the same reason: they were designed as
+a synchronous contract from the start, deliberately compatible with a
+library that offers nothing else.
+
+"Asyncio event loop" therefore never means "jmapc yields control to
+the loop" — it can't. It means: the loop's *structure* (task
+lifecycle, cancellation, one coordinated shutdown, concurrent IPC
+serving once that lands) is asyncio-native, and every blocking call —
+`source.poll()`, and the entire `process_message()` call (which itself
+may block on a live `ActionApplier`'s JMAP write) — runs via
+`asyncio.to_thread()`. This needs no persistent listener thread or
+hand-off queue: `Source.poll()` already embodies "block until there's
+something" (`Trigger.wait()` then `ContentFetcher.fetch()`), so
+wrapping each `poll()` call in `to_thread` *is* the bridge — the
+default thread pool executor recycles a worker between calls since
+nothing here runs concurrently with itself.
+
+Three consequences worth stating rather than discovering later:
+
+- **Graceful shutdown latency is bounded by whatever `source.poll()`
+  call is currently in flight**, not instant. Cancelling a
+  `to_thread`-wrapped `asyncio.Task` stops the *coroutine* from
+  awaiting it, but the underlying OS thread keeps running — Python
+  can't forcibly kill a thread. `IntervalTimer.wait()` sleeps via
+  plain `time.sleep()` (uninterruptible mid-sleep); a real
+  `JmapPushTrigger` would need its own SSE connection closed to unblock
+  its generator. A short poll interval keeps this bound small in
+  practice; true instant interruption would mean teaching `Trigger`
+  implementations to accept a cancellation signal, a bigger change not
+  taken on here.
+- **A source that's caught up needs an explicit idle delay, not a
+  busy-loop.** `FileProvider`'s `Source` (`ImmediateTrigger` + an
+  exhausted `SequenceContentFetcher`) returns immediately with `[]`
+  forever once its fixed batch is consumed — correct for its stated
+  "replay a fixture once" purpose (§9.3), but it means the daemon loop
+  itself, not any particular `Source`, is responsible for not spinning
+  a CPU core on an empty result: `await asyncio.sleep(...)` (a real,
+  cancellable asyncio sleep, unlike the thread-wrapped `poll()`) after
+  an empty batch.
+- **`StateDB`'s SQLite connection needs `check_same_thread=False`.**
+  Python's `sqlite3` module refuses to use a connection from any
+  thread but the one that created it by default — and here, the
+  connection is created on the event loop's thread but every
+  `process_message()` call touching it runs inside `to_thread()`, on
+  whichever worker thread the pool hands out (not necessarily the same
+  one twice). This is safe specifically because the loop never awaits
+  two `to_thread(process_message, ...)` calls concurrently — one
+  message's full pipeline run completes (including every `StateDB`
+  write) before the next begins, so two threads never touch the
+  connection at the same instant, only in sequence. `check_same_thread=False`
+  turns off a guard rail Python's own docs describe as unnecessary
+  exactly under that condition; it does not change SQLite's own
+  locking behavior.
+
+**Scope decision, found while designing this, not before:** the loop
+composes **Tier 1 only** this round. Chaining a freshly-escalated
+message straight into `process_tier2_message()` in the same poll cycle
+looked initially like free extra scope (no live-JMAP blocker prevents
+it — `RecordedLLMClient`/`LoggingAlerter` are both fully real), but
+`Tier2Meta`'s `to_addresses`/`thread_prior_subject`/
+`thread_user_has_replied`/`available_mailboxes` are caller-supplied by
+design (§10.7) and nothing resolves them today: `NormalizedMessage`
+has no `to` field, `Provider` exposes no thread-history or
+mailbox-listing method, and inventing placeholder values for them
+would be exactly the "fake data standing in for the real thing" this
+project has repeatedly refused to do elsewhere (§13's `spork rules
+test`, `FileProvider`'s own docstring). Tier 1 alone needs none of
+this — closes over `message`, `rules`, `executor`, `state_db`, and
+`ops` (so a `RecordEscalationFilter`-triggered VIP alert still fires
+for real) — and is fully provable against `FileProvider` today.
+Wiring Tier 2 into the daemon loop is real, tracked follow-up work,
+not silently dropped — it's blocked on a `Provider` capability this
+one doesn't have yet, which is a different kind of gap than "needs a
+live account."
 
 ### 6.3 CLI (`spork`)
 
@@ -978,6 +1065,20 @@ classDiagram
     StateDB ..> LLMUsage : returns from get_llm_usage()
 ```
 
+The underlying `sqlite3.connect()` call sets `check_same_thread=False`
+— not shown above since it's a constructor implementation detail, not
+part of `StateDB`'s own interface, but load-bearing for §6.2.1's daemon
+loop: the connection is created on the event loop's thread, and every
+`asyncio.to_thread(process_message, ...)` call touching it runs on
+whichever worker thread the pool hands out. Safe specifically because
+the loop never runs two such calls concurrently — each message's
+pipeline run (every `StateDB` write included) completes before the
+next begins, so two threads never touch the connection at the same
+instant, only handed off in sequence. This does not make concurrent
+multi-thread access to one `StateDB` safe in general — it turns off a
+guard rail that's unnecessary under sequential handoff specifically,
+not SQLite's own locking.
+
 #### `spork.core.pipeline`
 
 Four diagrams: the generic framework (`core.py`); `observer.py`'s
@@ -1380,14 +1481,38 @@ classDiagram
         <<function>>
         +run() None
     }
+    class Provider { <<Protocol>> }
+    class Source { <<Protocol>> }
+    class ActionExecutor
+    class StateDB
+    class PipelineObserver
+    class process_message { <<function>> }
+
+    class run_daemon {
+        <<function>>
+        +run_daemon(config, stop_event) None
+    }
+    class _run_message_loop {
+        <<function>>
+        +_run_message_loop(source, rules, executor, state_db, ops, classifier, stop_event) None
+    }
 
     run --> main : typer.run(main)
+    main ..> run_daemon : asyncio.run(), on SIGTERM/SIGINT sets stop_event
+    run_daemon ..> Provider : load_provider() -> build_source()/build_action_applier()
+    run_daemon --> ActionExecutor : constructs
+    run_daemon --> StateDB : opens
+    run_daemon --> PipelineObserver : constructs
+    run_daemon ..> _run_message_loop : awaits
+    _run_message_loop --> Source : polls, via asyncio.to_thread (§6.2.1)
+    _run_message_loop ..> process_message : Tier 1 only, via asyncio.to_thread
 ```
 
-Still just the `--version`/`--help` handling plus a settled-shape
-`NotImplementedError` for the real event loop (docs/ROADMAP.md M1) —
-this diagram will grow substantially once the daemon actually wires
-`spork.core`'s pieces together.
+`main.py` is the thin Typer entrypoint (config loading, signal
+handling); `loop.py`'s `run_daemon()`/`_run_message_loop()` are the
+actual composition and are deliberately callable with no Typer/CLI
+involvement at all, so tests drive them directly with an injected
+`stop_event` rather than through a subprocess.
 
 ## 7. Data & configuration
 

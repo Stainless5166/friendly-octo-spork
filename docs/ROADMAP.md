@@ -347,13 +347,29 @@ the roadmap to live until M5 needed something to control.
       mode, same convention as `RulesLoadError`/`ProviderLoadError`.
       Exit criterion's enforced-tier-wins test is real: see
       `docs/TEST_COVERAGE.md`'s `test_load_config_enforced_tier_overrides_user_tier`.
-- [ ] Daemon event loop assembly: `daemon/main.py` composes
+- [ ] Daemon event loop assembly: `daemon/loop.py` composes
       `load_config()` → `Provider.build_source()` → Tier 1
-      `process_message()` → Tier 2 escalation → `PipelineObserver`/
-      `Alerter` → `StateDB`, as a real asyncio loop (§6.2's 10 steps)
-      (M) — proven end-to-end against `FileProvider`; the
-      JMAP-specific path stays the settled-shape `NotImplementedError`
-      it already is (M1) until a live account exists to test against.
+      `process_message()` → `PipelineObserver`/`Alerter` → `StateDB`,
+      as a real asyncio loop, blocking calls bridged via
+      `asyncio.to_thread()` (§6.2.1) (M) — proven end-to-end against
+      `FileProvider`; the JMAP-specific path stays the settled-shape
+      `NotImplementedError` it already is (M1) until a live account
+      exists to test against. **Tier 1 only this round** — chaining a
+      freshly-escalated message into `process_tier2_message()` needs
+      `to_addresses`/thread-history/`available_mailboxes` that nothing
+      resolves yet (`NormalizedMessage` has no `to` field; `Provider`
+      exposes no thread-history or mailbox-listing method); see the
+      new item below. Also required: `StateDB`'s SQLite connection
+      gains `check_same_thread=False` (§6.4's `spork.core.state` note)
+      — safe under this loop's sequential (never concurrent)
+      `to_thread` access pattern, not a general concurrency change.
+- [ ] Wire Tier 2 into the daemon loop: resolve `to_addresses` (real
+      data — parseable from `NormalizedMessage.headers`, not invented)
+      and add whatever `Provider` capability thread-history/
+      `available_mailboxes` actually needs (a new method on the
+      `Provider` protocol, most likely) so an escalated message can
+      flow straight into `process_tier2_message()` in the same poll
+      cycle (S)
 - [ ] IPC protocol + Unix socket server in `sporkd` (M) — newline-
       delimited JSON over the socket (§15's filesystem-permission
       model already rules out needing an auth scheme; no new
