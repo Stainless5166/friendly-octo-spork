@@ -30,6 +30,12 @@ Updated once more: `spork.core.pipeline` rebuilt on a generic Filter/
 Selector/Pipeline framework (docs/DESIGN.md §9.4), `process_message()`
 unchanged in signature/behavior, plus a `benchmarks/` directory for
 per-module performance measurement outside the correctness suite.
+Updated once more: a third module kind, `Augment[M]`, added to that
+framework for stages that enrich a Payload via I/O (a thread-history
+search, a contact-details lookup) — `Filter`/`Selector` stay
+conventionally pure, `Pipeline`'s stage list now dispatches each stage
+to `.apply()` or `.augment()` by type. No concrete Augment exists yet;
+this is the framework-level Protocol only.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -216,7 +222,12 @@ independently tested (161-185) and independently benchmarkable
 (`benchmarks/core/pipeline/`, outside `testpaths`). Motivated by M3:
 the escalate branch is a `Pipeline[MessageMeta]` value like any other
 route, so a future Tier 2 escalation stage is a change to what that
-route points at, not a rewrite.
+route points at, not a rewrite. A third module kind, `Augment[M]`, was
+then added to the same framework (tests 186-191) for stages that
+enrich a Payload via I/O — a thread-history search, a contact-details
+lookup — keeping `Filter`/`Selector` conventionally pure. No concrete
+Augment exists yet (no live lookup backend to call); this is the
+Protocol-level seam M3's prompt-building chain is expected to use.
 
 ### M3 — LLM escalation (Tier 2) — 1/7
 
@@ -243,7 +254,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (185 tests, all passing — 0 xfail)
+## Full test inventory (191 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -1068,13 +1079,13 @@ framework, §9.4)" further down for the modules themselves.
     truncation still completes cleanly rather than crashing on the
     word-boundary split.
 
-### tests/core/pipeline (Filter/Selector pipeline framework, §9.4)
+### tests/core/pipeline (Filter/Selector/Augment pipeline framework, §9.4)
 
-`spork.core.pipeline.core` (generic Payload/Filter/Selector/Pipeline)
-tested with a plain `int` metadata type to prove genuine generality;
-`spork.core.pipeline.meta`/`modules` (the concrete message pipeline)
-tested against a bare `Payload[MessageMeta]` per module, no `Pipeline`
-or `process_message()` call needed.
+`spork.core.pipeline.core` (generic Payload/Filter/Selector/Augment/
+Pipeline) tested with a plain `int` metadata type to prove genuine
+generality; `spork.core.pipeline.meta`/`modules` (the concrete message
+pipeline) tested against a bare `Payload[MessageMeta]` per module, no
+`Pipeline` or `process_message()` call needed.
 
 161. **`test_core.py::test_pipeline_runs_filters_in_order`**
     Three filters each appending a letter. Asserts the result reflects
@@ -1176,3 +1187,32 @@ or `process_message()` call needed.
     Same pattern for `MarkProcessedFilter` missing `meta.ts`, with
     `meta.verdict` present — proves each field is checked
     independently, not just "is anything missing."
+
+186. **`test_core.py::test_pipeline_runs_augments_via_their_augment_method`**
+    A stage implementing only `.augment()` (no `.apply()`). Asserts it
+    runs correctly in a `Pipeline`'s stage list — `Augment` is a
+    first-class stage type, not a `Filter` in disguise.
+
+187. **`test_core.py::test_pipeline_interleaves_filters_and_augments_in_call_order`**
+    A stage list mixing `Filter`, `Augment`, `Filter`. Asserts each ran
+    in call order — the two kinds compose freely in one list.
+
+188. **`test_core.py::test_augment_can_update_meta_not_just_text`**
+    Two augments each incrementing an int meta. Asserts the final meta
+    reflects both — same meta-mutation contract as `Filter`.
+
+189. **`test_core.py::test_augment_then_selector_pipeline_composes_like_a_filter_would`**
+    An augment followed by a selector-routed branch. Asserts it works
+    the same way a filter-then-selector `Pipeline` does — `Augment`
+    needs no special-case support beyond the stage-dispatch loop.
+
+190. **`test_core_edge_cases.py::test_a_stage_implementing_both_methods_dispatches_via_augment`**
+    A stage implementing both `.apply()` and `.augment()`, each
+    producing a distinguishable result. Asserts `.augment()` wins —
+    documents `Pipeline.run`'s isinstance-checks-Augment-first
+    precedence for this (unlikely) ambiguous case.
+
+191. **`test_core_edge_cases.py::test_a_stage_with_neither_apply_nor_augment_fails_loudly`**
+    A stage satisfying neither `Filter` nor `Augment` (a wiring
+    mistake). Asserts a clear `AttributeError` naming the missing
+    method, not a silent no-op.
