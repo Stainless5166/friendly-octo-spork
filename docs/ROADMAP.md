@@ -202,16 +202,47 @@ drives an action.
       real constructor/method signature, `get_verdict()` a clean
       `NotImplementedError` until a live Anthropic API session is
       possible — no `anthropic` import yet, same as `jmapc`.
-- [ ] Verdict validation against configured mailbox/category set (S)
-- [ ] Confidence-band logic: autoact / autoact+alert / alert-only (§9) (M)
-- [ ] `daily_call_budget` enforcement + `llm_usage` tracking (S)
-- [ ] Draft creation path (`Email/set` into Drafts, never `EmailSubmission`) (M)
-- [ ] Recorded-response fixtures for CI (no live API calls in tests) (M)
+- [x] Verdict validation against configured mailbox/category set (S) —
+      `spork.core.llm.validate.validate_verdict()` (§10.2): checks
+      `category`/`suggested_action.mailbox` against sets passed in
+      already resolved from config — pure logic, no `Provider`/JMAP
+      dependency, no live-account blocker.
+- [x] Confidence-band logic: autoact / autoact+alert / alert-only (§9) (M) —
+      `spork.core.llm.confidence.confidence_band()` (§10.3): a pure
+      function of confidence + the two `config.toml` thresholds, with
+      an eager `ValueError` guard against a misconfigured
+      `alert_threshold > autoact_threshold`.
+- [x] `daily_call_budget` enforcement + `llm_usage` tracking (S) —
+      `StateDB` gains an `llm_usage` table + `record_llm_call()`/
+      `get_llm_usage()` (§7.4, §10.4); `spork.core.llm.budget.has_budget_remaining()`
+      is the pure enforcement half, decoupled from `StateDB` the same
+      way `confidence_band()` is decoupled from `Verdict`.
+- [x] Draft creation path (`Email/set` into Drafts, never `EmailSubmission`) (M) —
+      `Provider` gains `build_draft_creator()` (§9.3, §10.6); `JmapClient.create_draft()`
+      is a fourth settled-shape `NotImplementedError` stub (needs a
+      live Fastmail session, same as `connect()`/`fetch_new_messages()`/
+      `apply_action()`); `FileProvider.build_draft_creator()` is real,
+      appending to a second JSON-lines log distinct from the actions
+      one. Never wired to `EmailSubmission` anywhere — §11's invariant
+      enforced by omission.
+- [x] Recorded-response fixtures for CI (no live API calls in tests) (M) —
+      `spork.core.llm.clients.recorded.RecordedLLMClient` (§10.5): the
+      `LLMClient` equivalent of `FileProvider` — a second, fully real
+      adapter with no `NotImplementedError` anywhere, replaying
+      pre-recorded `Verdict`s from a JSON fixture keyed by subject.
 
 **Exit criteria:** an escalated test email gets a sane structured verdict,
 the corresponding action is applied, and a drafted reply lands in Drafts
 un-sent. Budget cutoff verified by lowering `daily_call_budget` to 1 in a
-test run.
+test run. **All 7 items above are done in the same sense M1's JMAP work
+is "done"** — every piece buildable without a live account is real and
+tested; **not yet met** as an end-to-end exit criterion, still blocked
+on the same live Fastmail session M1 needs (`JmapClient.connect()`/
+`fetch_new_messages()`/`apply_action()`/`create_draft()`) plus a live
+Anthropic API session (`AnthropicLLMClient.get_verdict()`), and on
+wiring these seven pieces into one live pipeline branch (the
+`"escalate"` route, docs/DESIGN.md §9.4) — the composability seam
+exists (§9.4), but assembling it end to end is still open work.
 
 ## M4 — Alerting
 

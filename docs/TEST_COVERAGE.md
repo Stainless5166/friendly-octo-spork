@@ -40,7 +40,22 @@ second item: `spork.core.llm.base`/`loader`/`clients.anthropic` — an
 `LLMClient` Protocol adapter for Tier 2 backends (mirroring
 `spork.core.providers`' `Provider` pattern), a pydantic `Verdict`
 schema, and `AnthropicLLMClient` as a settled-shape stub like
-`JmapClient`. **M3 is 2/7.**
+`JmapClient`. **M3 is 2/7.** Updated once more for M3's remaining five
+items, all in one pass: verdict validation against a deployment's
+configured mailbox/category set (`spork.core.llm.validate`);
+confidence-band logic (`spork.core.llm.confidence`); `daily_call_budget`
+enforcement + `llm_usage` tracking (`StateDB` extended,
+`spork.core.llm.budget`); `RecordedLLMClient` (`spork.core.llm.clients.recorded`)
+— the `LLMClient` equivalent of `FileProvider`, a second fully real
+adapter for CI/offline use; and the draft creation path
+(`Provider.build_draft_creator()`, a `JmapClient.create_draft()`
+settled-shape stub, a real `FileProvider` implementation). **M3 is
+7/7** — see the milestone table below for the same "done in the same
+sense JmapProvider was" caveat that applies to every item touching a
+live account. Two real gaps were found and fixed along the way (not
+just documented): `StateDB.record_llm_call()` had no guard against
+negative token counts, and DESIGN.md's §7.4 "indicative, not final"
+framing was stale for tables built since M1.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -234,17 +249,17 @@ lookup — keeping `Filter`/`Selector` conventionally pure. No concrete
 Augment exists yet (no live lookup backend to call); this is the
 Protocol-level seam M3's prompt-building chain is expected to use.
 
-### M3 — LLM escalation (Tier 2) — 2/7
+### M3 — LLM escalation (Tier 2) — 7/7
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | Body cleaning (HTML strip, quote-chain collapse, truncation) | ✅ | ✅ — tests 150–160 (11 tests), 100% line coverage |
 | Claude client wrapper + verdict schema | ✅ | ✅ — tests 192–210 (19 tests), 100% line coverage |
-| Verdict validation against configured mailbox/category set | ❌ | — |
-| Confidence-band logic | ❌ | — |
-| `daily_call_budget` + `llm_usage` tracking | ❌ | — |
-| Draft creation path | ❌ | — |
-| Recorded-response fixtures for CI | ❌ | — |
+| Verdict validation against configured mailbox/category set | ✅ | ✅ — tests 211–217 (7 tests), 100% line coverage |
+| Confidence-band logic | ✅ | ✅ — tests 218–225 (8 tests), 100% line coverage |
+| `daily_call_budget` + `llm_usage` tracking | ✅ | ✅ — tests 226–239 (14 tests), 100% line coverage |
+| Recorded-response fixtures for CI | ✅ | ✅ — tests 240–252 (13 tests), 100% line coverage |
+| Draft creation path | ✅ | ✅ — tests 253–261 (9 tests), 100% line coverage |
 
 `spork.core.llm.clean.clean_body()` is pure string transformation with
 no dependency on `NormalizedMessage`, JMAP, or the Claude API — HTML
@@ -266,13 +281,27 @@ piece that isn't — an actual Anthropic API call — is a settled-shape
 treatment as `JmapClient`'s stubs (§9.3). No `anthropic` import
 anywhere, matching `jmapc`'s not-yet-a-dependency status.
 
+The remaining five items are all real, no live-account blocker: the
+budget/draft items depend on `StateDB`/`Provider`, both fully testable
+without a network call, and `RecordedLLMClient`'s whole point is *not*
+needing one. **M3 is 7/7**, in the same sense M1's JMAP client is
+"complete" — everything buildable without a live Fastmail/Anthropic
+session is real and tested; the genuinely-blocked pieces
+(`JmapClient.connect()`/`fetch_new_messages()`/`apply_action()`/
+`create_draft()`, `AnthropicLLMClient.get_verdict()`) are settled-shape
+`NotImplementedError` stubs, not gaps. Wiring these seven pieces into
+one live Tier 2 pipeline branch (the `"escalate"` route,
+docs/DESIGN.md §9.4) is still open — that's integration work for a
+pipeline that has the pieces to be built from now, not a missing
+piece itself.
+
 ### M4–M7
 
 No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (210 tests, all passing — 0 xfail)
+## Full test inventory (261 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -1321,3 +1350,239 @@ settled-shape `NotImplementedError` stubs).
     Constructs with non-default `model`/`max_tokens`. Asserts
     construction itself doesn't raise — only `get_verdict()` is
     unimplemented.
+
+### tests/core/llm (verdict validation, §10.2)
+
+`spork.core.llm.validate.validate_verdict()` — pure logic, no
+`Provider`/JMAP dependency.
+
+211. **`test_validate.py::test_validate_verdict_returns_the_verdict_unchanged_on_success`**
+    A verdict whose category and mailbox are both configured. Asserts
+    it's returned unchanged — validation never coerces.
+
+212. **`test_validate.py::test_validate_verdict_rejects_a_category_outside_the_configured_set`**
+    An unconfigured category. Asserts `VerdictValidationError` naming
+    the bad value.
+
+213. **`test_validate.py::test_validate_verdict_rejects_a_mailbox_outside_the_configured_set`**
+    An unconfigured `suggested_action.mailbox`. Asserts
+    `VerdictValidationError` naming the bad value.
+
+214. **`test_validate.py::test_validate_verdict_skips_the_mailbox_check_when_mailbox_is_none`**
+    An `ignore` verdict (no mailbox set). Asserts it passes even
+    against an empty `allowed_mailboxes`.
+
+215. **`test_validate_edge_cases.py::test_validate_verdict_reports_the_category_error_first_when_both_are_invalid`**
+    Both category and mailbox invalid. Asserts the category error is
+    the one raised — documents actual precedence.
+
+216. **`test_validate_edge_cases.py::test_validate_verdict_category_check_is_case_sensitive`**
+    A configured `"Needs_Reply"` vs. a verdict's `"needs_reply"`.
+    Asserts `VerdictValidationError` — no fuzzy matching.
+
+217. **`test_validate_edge_cases.py::test_validate_verdict_does_not_itself_require_a_mailbox_for_move_or_tag`**
+    A `move` verdict with no mailbox at all. Asserts it passes
+    `validate_verdict()` — documents that `ActionExecutor`, not this
+    function, is what rejects a mailbox-less move/tag.
+
+### tests/core/llm (confidence-band logic, §10.3)
+
+`spork.core.llm.confidence.confidence_band()` — pure function of
+`(confidence, alert_threshold, autoact_threshold)`.
+
+218. **`test_confidence.py::test_confidence_above_autoact_threshold_is_autoact`**
+    High confidence. Asserts `"autoact"`.
+
+219. **`test_confidence.py::test_confidence_between_thresholds_is_autoact_alert`**
+    Mid-band confidence. Asserts `"autoact_alert"`.
+
+220. **`test_confidence.py::test_confidence_below_alert_threshold_is_alert_only`**
+    Low confidence. Asserts `"alert_only"`.
+
+221. **`test_confidence.py::test_confidence_at_autoact_threshold_is_autoact`**
+    Confidence exactly equal to `autoact_threshold`. Asserts
+    `"autoact"` — inclusive on its own side.
+
+222. **`test_confidence.py::test_confidence_at_alert_threshold_is_autoact_alert`**
+    Confidence exactly equal to `alert_threshold`. Asserts
+    `"autoact_alert"` — inclusive on its own side.
+
+223. **`test_confidence_edge_cases.py::test_misconfigured_thresholds_raise_value_error`**
+    `alert_threshold > autoact_threshold`. Asserts `ValueError` rather
+    than silently picking a band.
+
+224. **`test_confidence_edge_cases.py::test_equal_thresholds_never_produce_autoact_alert`**
+    `alert_threshold == autoact_threshold` (a legitimate degenerate
+    config). Asserts `"autoact_alert"` is unreachable — documented so
+    it isn't mistaken for a bug.
+
+225. **`test_confidence_edge_cases.py::test_confidence_of_exactly_zero_and_one_are_handled`**
+    `confidence` at the extremes of `Verdict`'s valid range. Asserts
+    both classify without error.
+
+### tests/core/state (llm_usage tracking, §7.4, §10.4)
+
+`StateDB.record_llm_call()`/`get_llm_usage()` — extends the existing
+`StateDB`, same real-SQLite-under-tmp_path style as `test_db.py`.
+
+226. **`test_llm_usage.py::test_get_llm_usage_is_zeroed_for_a_date_never_recorded`**
+    A date with no recorded calls. Asserts `LLMUsage` with all zeros,
+    not `None`.
+
+227. **`test_llm_usage.py::test_record_llm_call_then_get_llm_usage_reflects_it`**
+    One recorded call. Asserts it's reflected in the next read.
+
+228. **`test_llm_usage.py::test_record_llm_call_accumulates_across_multiple_calls_same_day`**
+    Two calls, same date. Asserts both `calls` and token counts sum.
+
+229. **`test_llm_usage.py::test_record_llm_call_keeps_different_dates_independent`**
+    Calls on two different dates. Asserts each date's usage is
+    tracked independently.
+
+230. **`test_llm_usage_edge_cases.py::test_record_llm_call_with_zero_tokens_still_increments_calls`**
+    A call with `tokens_in=tokens_out=0`. Asserts `calls` still
+    increments.
+
+231. **`test_llm_usage_edge_cases.py::test_llm_usage_persists_across_reopening_the_database`**
+    Usage recorded, DB closed and reopened. Asserts it's still there —
+    same durability contract as `push_cursor`/`processed_messages`.
+
+232. **`test_llm_usage_edge_cases.py::test_record_llm_call_rejects_negative_tokens_in`**
+    `tokens_in=-1`. Asserts `ValueError` — found a real gap (no guard
+    existed) and fixed it in the same round.
+
+233. **`test_llm_usage_edge_cases.py::test_record_llm_call_rejects_negative_tokens_out`**
+    Same guard, `tokens_out=-1`.
+
+### tests/core/llm (budget enforcement, §10.4)
+
+`spork.core.llm.budget.has_budget_remaining()` — pure function,
+decoupled from `StateDB` the same way `confidence_band()` is decoupled
+from `Verdict`.
+
+234. **`test_budget.py::test_budget_remaining_when_calls_are_below_the_limit`**
+    `calls < daily_call_budget`. Asserts `True`.
+
+235. **`test_budget.py::test_no_budget_remaining_once_the_limit_is_reached`**
+    `calls == daily_call_budget`. Asserts `False` — the limit is
+    exclusive.
+
+236. **`test_budget.py::test_no_budget_remaining_once_the_limit_is_exceeded`**
+    `calls > daily_call_budget`. Asserts `False`.
+
+237. **`test_budget.py::test_budget_remaining_on_a_never_called_day`**
+    `calls=0`, any positive budget. Asserts `True`.
+
+238. **`test_budget_edge_cases.py::test_a_zero_daily_call_budget_always_denies`**
+    `daily_call_budget=0`. Asserts `False` even with zero calls made.
+
+239. **`test_budget_edge_cases.py::test_a_negative_daily_call_budget_always_denies`**
+    `daily_call_budget=-5` (nonsensical but not ambiguous). Asserts
+    `False` — documented as intentionally unguarded, unlike
+    `confidence.py`'s threshold-ordering check.
+
+### tests/core/llm/clients (RecordedLLMClient, §10.5)
+
+`spork.core.llm.clients.recorded` — the `LLMClient` equivalent of
+`FileProvider`: a second, fully real adapter with no
+`NotImplementedError` anywhere.
+
+240. **`test_recorded.py::test_get_verdict_returns_the_recorded_verdict_for_a_matching_subject`**
+    A request whose subject matches a recorded entry. Asserts the
+    matching `Verdict` is returned.
+
+241. **`test_recorded.py::test_get_verdict_returns_different_verdicts_for_different_subjects`**
+    Two different recorded subjects. Asserts each returns its own
+    distinct verdict.
+
+242. **`test_recorded.py::test_get_verdict_raises_for_a_subject_with_no_recorded_response`**
+    An unrecorded subject. Asserts `UnrecordedResponseError` naming
+    what *was* recorded.
+
+243. **`test_recorded_responses.py::test_load_recorded_responses_parses_a_valid_json_file`**
+    A well-formed `responses.json`. Asserts it parses into `Verdict`s
+    keyed by subject.
+
+244. **`test_recorded_responses.py::test_load_recorded_responses_returns_empty_dict_for_empty_object`**
+    A file containing `{}`. Asserts zero responses, not an error.
+
+245. **`test_recorded_responses.py::test_load_recorded_responses_raises_for_malformed_json`**
+    Broken JSON syntax. Asserts `RecordedResponsesLoadError`, not a
+    raw `json.JSONDecodeError`.
+
+246. **`test_recorded_responses.py::test_load_recorded_responses_raises_for_non_object_json`**
+    A top-level JSON array instead of an object. Asserts
+    `RecordedResponsesLoadError`.
+
+247. **`test_recorded_responses.py::test_load_recorded_responses_raises_for_an_invalid_verdict_entry`**
+    An entry that fails `Verdict`'s own validation. Asserts
+    `RecordedResponsesLoadError` naming the subject.
+
+248. **`test_recorded_responses.py::test_load_recorded_responses_raises_for_missing_file`**
+    A nonexistent path. Asserts `RecordedResponsesLoadError`, not a
+    raw `FileNotFoundError`.
+
+249. **`test_recorded_edge_cases.py::test_load_recorded_responses_fails_entirely_when_any_entry_is_invalid`**
+    One valid entry + one invalid entry. Asserts the whole load fails
+    — no silent partial success dropping the bad entry.
+
+250. **`test_recorded_edge_cases.py::test_duplicate_subject_keys_in_the_json_keep_only_the_last`**
+    A JSON object with a literal duplicate key. Asserts only the last
+    occurrence survives — documents `json.loads`'s own behavior, not
+    anything spork does.
+
+251. **`test_recorded_edge_cases.py::test_a_directory_path_raises_an_unwrapped_os_error`**
+    A directory instead of a file. Asserts a raw `IsADirectoryError`
+    leaks through — a known gap shared with
+    `providers.file.messages.load_messages()`'s identical limitation,
+    deliberately left unfixed to keep this loader an intentional
+    mirror of its sibling.
+
+252. **`test_recorded_edge_cases.py::test_get_verdict_can_be_called_more_than_once_for_the_same_subject`**
+    The same subject requested twice. Asserts both calls return the
+    same recorded `Verdict` — not a single-use queue.
+
+### tests/core/providers (draft creation, §10.6)
+
+Extends `JmapClient`/`JmapProvider`/`FileProvider` with
+`create_draft()`/`build_draft_creator()` — same acceptance pattern as
+the existing action-applier tests for each.
+
+253. **`jmap/test_client.py::test_create_draft_raises_not_implemented`**
+    `JmapClient.create_draft()`. Asserts `NotImplementedError` — a
+    live Fastmail session isn't something this environment can
+    exercise honestly.
+
+254. **`jmap/test_provider.py::test_build_draft_creator_returns_something_that_can_create_a_draft`**
+    `JmapProvider.build_draft_creator()`. Asserts the returned object's
+    `create_draft()` raises `NotImplementedError`.
+
+255. **`jmap/test_provider.py::test_draft_creator_delegates_to_the_client_directly`**
+    `_JmapDraftCreator` used standalone. Asserts it's a real delegation
+    to `JmapClient.create_draft()`, not a second placeholder.
+
+256. **`file/test_provider.py::test_build_draft_creator_returns_something_that_can_create_a_draft`**
+    `FileProvider.build_draft_creator()`. Asserts the returned object
+    genuinely creates a draft (the `drafts.jsonl` file exists after).
+
+257. **`file/test_provider.py::test_draft_creator_appends_one_jsonl_entry_per_create_draft_call`**
+    Two `create_draft()` calls. Asserts two JSON-lines entries, in
+    order, each recording the replied-to message and the body.
+
+258. **`file/test_provider.py::test_drafts_log_defaults_next_to_the_actions_log`**
+    `drafts_log_path` not given explicitly. Asserts a real
+    `drafts.jsonl` is created next to `actions_log_path` — existing
+    two-arg `FileProvider(...)` call sites keep working unchanged.
+
+259. **`file/test_provider_edge_cases.py::test_draft_creator_appends_across_separate_build_calls`**
+    Two separately-obtained draft creators, same log path. Asserts
+    both append rather than truncating.
+
+260. **`file/test_provider_edge_cases.py::test_create_draft_with_an_empty_body_is_recorded_as_is`**
+    An empty draft body. Asserts it's recorded as `""`, not rejected.
+
+261. **`file/test_provider_edge_cases.py::test_pointing_drafts_log_path_at_the_actions_log_path_interleaves_both_shapes`**
+    `drafts_log_path` set equal to `actions_log_path`. Asserts both
+    differently-shaped JSON entries land in the same file, in call
+    order — documented, not guarded against (a dev/CI tool, not a
+    production data store).
