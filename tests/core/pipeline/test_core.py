@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
+
 from spork.core.pipeline.core import Payload, Pipeline, UnknownBranchError
 
 

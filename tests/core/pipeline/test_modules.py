@@ -10,6 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from spork.core.actions.executor import ActionExecutor
+from spork.core.models import NormalizedMessage
+from spork.core.pipeline.core import Payload
 from spork.core.pipeline.meta import MessageMeta
 from spork.core.pipeline.modules import (
     ApplyActionFilter,
@@ -20,10 +23,6 @@ from spork.core.pipeline.modules import (
     TimestampFilter,
     WriteAuditEntryFilter,
 )
-
-from spork.core.actions.executor import ActionExecutor
-from spork.core.models import NormalizedMessage
-from spork.core.pipeline.core import Payload
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
 
