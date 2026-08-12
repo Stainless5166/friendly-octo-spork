@@ -114,10 +114,11 @@ Two OS processes, one shared library:
 Solid boxes are built and tested today; dashed boxes are planned
 layout for a milestone that hasn't landed yet (M3's `llm/prompts.py`
 — the not-yet-built step that assembles a `VerdictRequest` from a
-message —, M4's `alerts/`, M5's `ipc/` + most of `cli/commands/`, and
-`config.py`, still needed by anything that reads `config.toml`). This
-is layout orientation only — see §6.4 for what each built module's
-classes actually look like.
+message —, a future real desktop-notification `Alerter` backend
+alongside M4's `alerts/log.py`, M5's `ipc/` + most of `cli/commands/`,
+and `config.py`, still needed by anything that reads `config.toml`).
+This is layout orientation only — see §6.4 for what each built
+module's classes actually look like.
 
 ```mermaid
 flowchart TD
@@ -133,6 +134,7 @@ flowchart TD
             pipeline_meta["meta.py<br/>MessageMeta"]
             pipeline_modules["modules.py<br/>7 concrete Filters/Selectors"]
             pipeline_default["default.py<br/>build_default_pipeline() +<br/>process_message()"]
+            pipeline_observer["observer.py<br/>PipelineObserver"]
             subgraph pipeline_tier2["tier2/"]
                 tier2_meta["meta.py<br/>Tier2Meta"]
                 tier2_modules["modules.py<br/>13 concrete Filters/Selectors/Augment"]
@@ -197,13 +199,12 @@ flowchart TD
 
         subgraph actions["actions/"]
             actions_executor["executor.py<br/>ActionExecutor"]
-            actions_drafts["drafts.py (M3)"]:::planned
         end
 
         subgraph alerts["alerts/ (M4)"]
-            alerts_base["base.py"]:::planned
-            alerts_desktop["desktop.py"]:::planned
-            alerts_push["push.py"]:::planned
+            alerts_base["base.py<br/>Alerter + AlertUrgency"]
+            alerts_log["log.py<br/>LoggingAlerter"]
+            alerts_loader["loader.py<br/>load_alerter()"]
         end
 
         subgraph state["state/"]
@@ -553,6 +554,7 @@ classDiagram
         <<pydantic BaseModel, extra=forbid>>
         +always: bool
         +from_domain_in: Optional~list~
+        +from_in: Optional~list~
         +local_classifier_category_in: Optional~list~
     }
     class Action {
@@ -560,6 +562,7 @@ classDiagram
         +type: str
         +mailbox: Optional~str~
         +reason: Optional~str~
+        +alert_immediately: bool
     }
     class Rule {
         <<pydantic BaseModel, extra=forbid>>
@@ -819,6 +822,51 @@ classDiagram
     ActionExecutor ..> ActionExecutionError : raises
 ```
 
+#### `spork.core.alerts.base`
+
+```mermaid
+classDiagram
+    class AlertUrgency { <<Literal>> }
+    class Alerter {
+        <<Protocol>>
+        +notify(title: str, body: str, url: Optional~str~, urgency: AlertUrgency) None
+    }
+
+    Alerter ..> AlertUrgency : urgency parameter
+```
+
+#### `spork.core.alerts.log`
+
+```mermaid
+classDiagram
+    class Alerter { <<Protocol>> }
+    class LoggingAlerter {
+        +notify(title: str, body: str, url: Optional~str~, urgency: AlertUrgency) None
+    }
+
+    Alerter <|.. LoggingAlerter : structurally satisfies
+```
+
+The v1 backend: logs each alert via `logging.getLogger(__name__)`
+rather than showing a GUI popup — a real, inspectable delivery
+channel, not a stub. Never configures handlers itself (Python logging
+best practice — that's the application's job, `docs/ROADMAP.md` M7).
+
+#### `spork.core.alerts.loader`
+
+```mermaid
+classDiagram
+    class AlerterLoadError { <<Exception>> }
+    class load_alerter {
+        <<function>>
+        +load_alerter(spec: str, kwargs: dict) Alerter
+    }
+    class Alerter { <<Protocol>> }
+
+    load_alerter ..> Alerter : constructs
+    load_alerter ..> AlerterLoadError : raises
+```
+
 #### `spork.core.state`
 
 ```mermaid
@@ -857,9 +905,10 @@ classDiagram
 
 #### `spork.core.pipeline`
 
-Two diagrams: the generic framework (`core.py`), then the concrete
-message pipeline built on top of it (`meta.py`/`modules.py`/`default.py`)
-— see §9.4 for the full explanation.
+Four diagrams: the generic framework (`core.py`); `observer.py`'s
+`PipelineObserver` (§12.2, shared by both concrete pipelines below);
+then the concrete Tier 1 pipeline (`meta.py`/`modules.py`/`default.py`,
+§9.4); then Tier 2's (`tier2/`, §10.7).
 
 ```mermaid
 classDiagram
@@ -906,10 +955,32 @@ the payload it was given (a database search, a contact lookup) —
 
 ```mermaid
 classDiagram
+    class Alerter { <<Protocol>> }
+    class PipelineObserver {
+        -alerter: Alerter
+        -logger: Logger
+        +trace(correlation_id, event, fields) None
+        +alert(correlation_id, title, body, url, urgency) None
+    }
+
+    PipelineObserver --> Alerter : delegates to, from alert()
+```
+
+`PipelineObserver` bundles §12.2's "combine logging and alerting"
+decision into one injectable object — every alert-firing pipeline
+module below takes one via constructor DI, same as `state_db`.
+`trace()` always logs (a `logging.LoggerAdapter`-style correlation-ID
+injection); `alert()` does that and delegates to `Alerter.notify()`
+(§12.1) — `Alerter` itself is unchanged, `PipelineObserver` composes
+it rather than replacing it.
+
+```mermaid
+classDiagram
     class Filter { <<Protocol>> }
     class Selector { <<Protocol>> }
     class ActionExecutor
     class StateDB
+    class PipelineObserver
     class evaluate { <<function>> }
 
     class MessageMeta {
@@ -920,6 +991,7 @@ classDiagram
         +classifier: Optional~TextClassifier~
         +verdict: Optional~RuleVerdict~
         +ts: Optional~str~
+        +correlation_id: Optional~str~
         +audit_event: Optional~str~
         +audit_detail_json: Optional~str~
     }
@@ -933,6 +1005,10 @@ classDiagram
         -now: function
         +apply(payload) Payload
     }
+    class CorrelationIdFilter {
+        -new_id: function
+        +apply(payload) Payload
+    }
     class RuleEvaluationSelector {
         +select(payload) tuple
     }
@@ -941,6 +1017,7 @@ classDiagram
         +apply(payload) Payload
     }
     class RecordEscalationFilter {
+        -ops: PipelineObserver
         +apply(payload) Payload
     }
     class WriteAuditEntryFilter {
@@ -954,6 +1031,7 @@ classDiagram
 
     Selector <|.. IdempotencyGateSelector : structurally satisfies
     Filter <|.. TimestampFilter : structurally satisfies
+    Filter <|.. CorrelationIdFilter : structurally satisfies
     Selector <|.. RuleEvaluationSelector : structurally satisfies
     Filter <|.. ApplyActionFilter : structurally satisfies
     Filter <|.. RecordEscalationFilter : structurally satisfies
@@ -966,20 +1044,22 @@ classDiagram
 
     RuleEvaluationSelector ..> evaluate : Tier 1 evaluation
     ApplyActionFilter --> ActionExecutor : delegates non-escalate actions to
+    RecordEscalationFilter --> PipelineObserver : alerts when action.alert_immediately
     IdempotencyGateSelector --> StateDB
     WriteAuditEntryFilter --> StateDB
     MarkProcessedFilter --> StateDB
 
     class build_default_pipeline {
         <<function>>
-        +build_default_pipeline(executor, state_db, now) Pipeline
+        +build_default_pipeline(executor, state_db, ops, now, new_correlation_id) Pipeline
     }
     class process_message {
         <<function>>
-        +process_message(message, rules, default_unmatched_action, executor, state_db, classifier, now) Optional~RuleVerdict~
+        +process_message(message, rules, default_unmatched_action, executor, state_db, ops, classifier, now, new_correlation_id) Optional~RuleVerdict~
     }
     build_default_pipeline ..> IdempotencyGateSelector : composes
     build_default_pipeline ..> TimestampFilter : composes
+    build_default_pipeline ..> CorrelationIdFilter : composes
     build_default_pipeline ..> RuleEvaluationSelector : composes
     build_default_pipeline ..> ApplyActionFilter : composes
     build_default_pipeline ..> RecordEscalationFilter : composes
@@ -1009,6 +1089,7 @@ classDiagram
     class DraftCreator { <<Protocol>> }
     class ActionExecutor
     class StateDB
+    class PipelineObserver
     class clean_body { <<function>> }
     class validate_verdict { <<function>> }
     class confidence_band { <<function>> }
@@ -1022,6 +1103,7 @@ classDiagram
         +thread_user_has_replied: bool
         +available_mailboxes: Sequence~str~
         +ts: Optional~str~
+        +correlation_id: Optional~str~
         +request: Optional~VerdictRequest~
         +verdict: Optional~Verdict~
         +band: Optional~ConfidenceBand~
@@ -1031,6 +1113,10 @@ classDiagram
 
     class TimestampFilter {
         -now: function
+        +apply(payload) Payload
+    }
+    class CorrelationIdFilter {
+        -new_id: function
         +apply(payload) Payload
     }
     class BudgetGateSelector {
@@ -1061,12 +1147,15 @@ classDiagram
     }
     class ApplyVerdictActionFilter {
         -executor: ActionExecutor
+        -ops: PipelineObserver
         +apply(payload) Payload
     }
     class RecordAlertOnlyFilter {
+        -ops: PipelineObserver
         +apply(payload) Payload
     }
     class RecordBudgetExhaustedFilter {
+        -ops: PipelineObserver
         +apply(payload) Payload
     }
     class CreateDraftIfWantedFilter {
@@ -1083,6 +1172,7 @@ classDiagram
     }
 
     Filter <|.. TimestampFilter : structurally satisfies
+    Filter <|.. CorrelationIdFilter : structurally satisfies
     Selector <|.. BudgetGateSelector : structurally satisfies
     Filter <|.. BuildVerdictRequestFilter : structurally satisfies
     Augment <|.. CallLLMAugment : structurally satisfies
@@ -1112,6 +1202,9 @@ classDiagram
     ConfidenceBandSelector ..> confidence_band : Tier 2 confidence gating
     BudgetGateSelector ..> has_budget_remaining : Tier 2 budget check
     ApplyVerdictActionFilter --> ActionExecutor : applies suggested_action via
+    ApplyVerdictActionFilter --> PipelineObserver : alerts when band==autoact_alert or urgency==high
+    RecordAlertOnlyFilter --> PipelineObserver : always alerts
+    RecordBudgetExhaustedFilter --> PipelineObserver : always alerts
     CreateDraftIfWantedFilter --> DraftCreator : creates via, when draft_reply set
     BudgetGateSelector --> StateDB
     RecordLLMUsageFilter --> StateDB
@@ -1120,13 +1213,14 @@ classDiagram
 
     class build_tier2_pipeline {
         <<function>>
-        +build_tier2_pipeline(llm_client, executor, draft_creator, state_db, allowed_categories, daily_call_budget, alert_threshold, autoact_threshold, max_body_chars, now) Pipeline
+        +build_tier2_pipeline(llm_client, executor, draft_creator, state_db, ops, allowed_categories, daily_call_budget, alert_threshold, autoact_threshold, max_body_chars, now, new_correlation_id) Pipeline
     }
     class process_tier2_message {
         <<function>>
-        +process_tier2_message(message, to_addresses, ..., now) Optional~Verdict~
+        +process_tier2_message(message, to_addresses, ..., ops, ..., now, new_correlation_id) Optional~Verdict~
     }
     build_tier2_pipeline ..> TimestampFilter : composes
+    build_tier2_pipeline ..> CorrelationIdFilter : composes
     build_tier2_pipeline ..> BudgetGateSelector : composes
     build_tier2_pipeline ..> BuildVerdictRequestFilter : composes
     build_tier2_pipeline ..> CallLLMAugment : composes
@@ -1372,7 +1466,7 @@ action = { type = "tag", mailbox = "Calendar" }
 id = "vip-senders"
 description = "Anything from these addresses always alerts, never auto-filed"
 when = { from_in = ["boss@example.com", "spouse@example.com"] }
-action = { type = "escalate", reason = "vip_sender" }
+action = { type = "escalate", reason = "vip_sender", alert_immediately = true }
 
 [[rule]]
 id = "default-escalate"
@@ -1393,6 +1487,14 @@ enabled = true
 `TextClassifier` backend (§9.1) once per message and checking its
 `category` — swapping `tiering.local_classifier` in `config.toml`
 changes what this condition sees without editing the rule.
+
+`action.alert_immediately` is what makes `vip-senders` actually alert
+at escalation time (§12.2), rather than the generic "just wait for
+Tier 2" treatment every other `escalate` action gets — deliberately a
+flag on `Action`, not a hardcoded check against `reason == "vip_sender"`
+or any other string convention: any escalation rule can opt into an
+immediate alert this way (a legal notice, a security alert from a
+known sender), not only ones about VIP identity specifically.
 
 `when` conditions are a closed, declarative set (sender/domain lists,
 subject/header regex, mailbox membership, list-unsubscribe header
@@ -2434,22 +2536,188 @@ without one; the scheduling half isn't faked here.
 
 ## 12. Alerting
 
-- Alert backends implement a small `Alerter` protocol
-  (`notify(title, body, url=None, urgency=...)`), so backends are
-  swappable via config without touching the daemon logic.
-- **v1 backend: desktop notifications** — since `sporkd` runs as a
-  systemd **user** service at login (same session as the user's
-  desktop), it can talk to the session's notification service
-  (`org.freedesktop.Notifications` over DBus, or `notify-send` as a
-  simpler subprocess fallback).
-- **Optional backend: webhook** — POST to a configured URL (ntfy,
-  Pushover, a Slack incoming webhook, etc.) for when the user isn't at
-  the machine. URL comes from a secretspec-managed secret, not plain
-  config, since webhook URLs are bearer credentials.
-- Alerts fire for: Tier 3 (below alert threshold), `urgency: high`
-  verdicts regardless of confidence band, VIP-sender escalations, and
-  daemon-health events (JMAP push disconnected > N minutes, LLM budget
-  exhausted, daemon crash-looping).
+Alerts fire for: Tier 3 (below `alert_threshold`), `urgency: high`
+verdicts regardless of confidence band, VIP-sender escalations, and
+daemon-health events (JMAP push disconnected > N minutes, LLM budget
+exhausted, daemon crash-looping). §12.1 settles the adapter every
+backend implements; §12.2 settles what actually triggers a `notify()`
+call.
+
+**v1 scope: Linux desktop notifications only** (docs/ROADMAP.md M4) —
+a webhook backend (ntfy/Pushover/Slack-incoming-webhook-style, URL
+from a secretspec-managed secret since it's a bearer credential, not
+plain config) is real and useful but deliberately deferred to
+post-v1: `Alerter` is built as an adapter specifically so adding one
+later is a config change plus a new backend class, never a redesign
+(same reasoning as §9.3's `Provider`/§10.1's `LLMClient`).
+
+### 12.1 The `Alerter` adapter
+
+```python
+AlertUrgency = Literal["low", "normal", "critical"]
+
+
+class Alerter(Protocol):
+    """Delivers one alert through some channel — swappable via config
+    without touching whatever decided an alert was needed."""
+
+    def notify(
+        self, title: str, body: str, *, url: str | None = None, urgency: AlertUrgency = "normal"
+    ) -> None: ...
+```
+
+`AlertUrgency`'s three levels match the [Desktop Notifications
+Specification](https://specifications.freedesktop.org/notification/1.2/urgency-levels.html)'s
+own urgency vocabulary exactly — confirmed against the spec (and
+`notify-send(1)`'s identical `-u low|normal|critical` flag) before
+settling this shape, not guessed: low/normal don't need to interrupt,
+critical notifications shouldn't auto-expire. A future desktop backend
+needs no translation layer; a future non-desktop backend maps its own
+scheme onto the same three rather than inventing a fourth.
+
+- **`spork.core.alerts.log.LoggingAlerter`** — the v1 backend. Logs
+  each alert (`logging.getLogger(__name__)`, urgency mapped to a log
+  level — `low`→`INFO`, `normal`→`WARNING`, `critical`→`ERROR`) rather
+  than showing a GUI popup. This is a real, working delivery channel
+  (structured, inspectable, greppable output), not a stub standing in
+  for one — the same "genuinely real, not fake" bar `FileProvider`
+  (§9.3) and `RecordedLLMClient` (§10.5) hold, just a different valid
+  channel, not a placeholder for the channel actually promised. A real
+  desktop-notification backend (`notify-send -u {urgency} title body`,
+  wrapping `org.freedesktop.Notifications` over the session D-Bus —
+  confirmed via `notify-send(1)`, no new DBus library dependency
+  needed) is a deliberate near-term follow-up behind the same
+  `Alerter` Protocol, not built this round; per Python logging best
+  practice, `LoggingAlerter` never configures handlers itself
+  (`logging.basicConfig()` etc.) — that's the application's job
+  (`docs/ROADMAP.md` M7's structured-logging item), library code only
+  emits.
+- **`spork.core.alerts.loader.load_alerter()`/`AlerterLoadError`** —
+  identical "module.path:ClassName" mechanics to
+  `providers.loader.load_provider()`/`llm.loader.load_llm_client()`,
+  so `[alerts] backend = "spork.core.alerts.log:LoggingAlerter"` in
+  `config.toml` is how a deployment picks one, not a hardcoded import
+  — and swapping in a real desktop backend later is the same one-line
+  config change, no code change anywhere that calls `notify()`.
+
+### 12.2 Alert triggers
+
+Four of the trigger dimensions listed at the top of §12 are visible to
+`spork.core.pipeline` — they're outcomes of running one message
+through Tier 1 or Tier 2 and can be wired in as pipeline modules.
+Daemon-health events (JMAP push disconnected, LLM budget exhausted at
+the *daemon* level, crash-looping) are **not** — they're about
+`sporkd`'s own lifecycle, not a `Payload`/`Pipeline.run()` for any one
+message, so they get no module here; they belong to the M5 daemon
+loop once it exists, tracked as their own M4 exit-criterion item, not
+invented in this section.
+
+**`spork.core.pipeline.observer.PipelineObserver`** is the "combine
+logging and alerting" object: every alert-worthy pipeline outcome
+below is *also* a trace-worthy one (an alert is never sent without an
+audit-log-adjacent record of why), so one call site handles both
+instead of every alerting module separately remembering to log and
+then alert.
+
+```python
+class PipelineObserver:
+    """Bundles per-message correlation-ID tracing with alert delegation.
+
+    Constructed once per build_default_pipeline()/build_tier2_pipeline()
+    call, the same way state_db is (§9.4/§10.7) — a service, injected
+    into whichever modules need it, never carried in
+    MessageMeta/Tier2Meta (data, not services).
+    """
+
+    def __init__(self, alerter: Alerter, logger: logging.Logger | None = None) -> None:
+        self._alerter = alerter
+        self._logger = logger or logging.getLogger("spork.pipeline")
+
+    def trace(self, correlation_id: str, event: str, **fields: object) -> None:
+        """Always logs — a logging.LoggerAdapter wrapping self._logger
+        with {"correlation_id": correlation_id} as its extra dict (the
+        Python Logging Cookbook's documented pattern for contextual
+        log data), so every trace() call for one message's pipeline
+        run shares one correlation ID in its log record, without a
+        module-global contextvars.ContextVar."""
+        ...
+
+    def alert(
+        self,
+        correlation_id: str,
+        title: str,
+        body: str,
+        *,
+        url: str | None = None,
+        urgency: AlertUrgency = "normal",
+    ) -> None:
+        """trace()s the same event, then delegates to Alerter.notify()
+        — the one call an alert-firing module makes, replacing the
+        "log this, and also remember to alert about it" duplicate call
+        pattern."""
+        ...
+```
+
+`trace`/`alert` take `correlation_id` as an explicit argument rather
+than reading module-global state — it comes from `meta.correlation_id`
+(new field on both `MessageMeta` and `Tier2Meta`), set by a new
+`CorrelationIdFilter` that runs first in each pipeline's main branch,
+mirroring `TimestampFilter`'s existing `now: Callable[[], str]` DI
+pattern with `new_id: Callable[[], str] = lambda: uuid.uuid4().hex`.
+Threading it through `meta` (not a `ContextVar`) keeps it consistent
+with this codebase's existing data-flows-through-`meta`,
+services-are-injected split, and avoids global mutable state that
+would misattribute log lines if the daemon ever processes messages
+concurrently.
+
+**Known limitation, stated rather than papered over:** a correlation
+ID is scoped to one pipeline *run*, not one message's full lifetime.
+`process_message()`'s Tier 1 run and a later `process_tier2_message()`
+run for the same (now-escalated) message each get their own — nothing
+today threads Tier 1's ID into `Tier2Meta` the way `to_addresses` or
+`thread_prior_subject` are threaded in, because nothing calls
+`process_tier2_message()` yet outside tests (§10.7: *"deciding which
+escalated message to call this on"* needs the M5 daemon scheduler,
+which doesn't exist). Stitching the two into one cross-tier trace is
+real, wanted work for whenever that scheduler exists — not invented
+here against a caller that doesn't exist yet. This partially satisfies
+`docs/ROADMAP.md` M7's "per-message tracing" item for the
+pipeline-internal portion (the correlation ID + `LoggerAdapter`
+mechanism); M7 still separately owns wiring `sporkd`'s overall
+structured logging setup (handlers, level, journal output) and
+audit-trail completeness beyond triage outcomes.
+
+`Verdict.urgency` (`"low" | "medium" | "high"`, `llm.base.Verdict`) and
+`AlertUrgency` (`"low" | "normal" | "critical"`, §12.1) are deliberately
+different `Literal`s — one is Claude's judgment about the message,
+the other is this alert's desktop-notification urgency — so firing an
+alert from a `Verdict` needs an explicit translation, never an assumed
+1:1:
+
+```python
+_ALERT_URGENCY_BY_VERDICT_URGENCY: dict[str, AlertUrgency] = {
+    "low": "low",
+    "medium": "normal",
+    "high": "critical",
+}
+```
+
+The four wiring points, each `PipelineObserver`-injected the same way
+`state_db` is:
+
+| Module | Tier | Fires when | Title/urgency |
+|---|---|---|---|
+| `RecordEscalationFilter` | 1 | `verdict.action.alert_immediately` is `True` | e.g. `"Escalated: {matched_rule_id}"`, `urgency="normal"` — VIP-style rules opt in explicitly (§7.5); the common `default-escalate` catch-all does not, so an ordinary unmatched message escalating to Tier 2 stays silent until Tier 2 has an opinion |
+| `RecordAlertOnlyFilter` | 2 | always (the `alert_only` band's entire purpose is "a human must decide") | `"Needs review: {verdict.category}"`, urgency via the table above |
+| `ApplyVerdictActionFilter` | 2 | `meta.band == "autoact_alert"` **or** `verdict.urgency == "high"` | the latter is the orthogonal dimension from §12's intro — a high-urgency verdict alerts even inside a plain `"autoact"` band, since this filter is the shared `act` `Pipeline` both bands route to (§10.7) |
+| `RecordBudgetExhaustedFilter` | 2 | always | `"Tier 2 skipped: daily budget exhausted"`, `urgency="critical"` — §10's documented policy: budget-exhausted mail goes straight to Needs-Review + alert, never silently dropped |
+
+None of this changes what any module *applies* (actions, drafts,
+audit entries are unchanged) — `PipelineObserver` is an additional
+side effect alongside the existing one, same shape as adding
+`WriteAuditEntryFilter` was to the M2 pipeline: composition, not a
+rewrite of `build_default_pipeline()`/`build_tier2_pipeline()`'s
+existing stages.
 
 ## 13. CLI command reference (v1 surface)
 

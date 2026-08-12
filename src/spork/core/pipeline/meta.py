@@ -33,6 +33,7 @@ class MessageMeta:
     classifier: TextClassifier | None = None
     verdict: RuleVerdict | None = None
     ts: str | None = None
+    correlation_id: str | None = None
     audit_event: str | None = None
     audit_detail_json: str | None = None
 

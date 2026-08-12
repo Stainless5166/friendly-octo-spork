@@ -62,7 +62,30 @@ Filter/Selector/Augment/Pipeline framework — proven end to end against
 `RecordedLLMClient` with zero live API calls. Still M3, still 7/7 (not
 a new checklist item); what's still open is deciding *which* escalated
 message needs a Tier 2 run, deliberately left to a future daemon loop
-that needs a live JMAP session anyway.
+that needs a live JMAP session anyway. Updated once more for M4's
+first item: `spork.core.alerts.base`/`log`/`loader` — an `Alerter`
+Protocol adapter (mirrors `Provider`/`LLMClient`), `LoggingAlerter` as
+a genuinely real v1 backend (not a stub for the desktop-notification
+backend the roadmap originally described — see M4's table below for
+why), and `load_alerter()` for config-driven backend selection.
+`AlertUrgency`'s vocabulary was checked against the actual Desktop
+Notifications Specification and `notify-send(1)` before being settled.
+**M4 is 1/3.** Updated once more for M4's second item's pipeline-visible
+portion: `Condition.from_in` (closes a real gap — docs/DESIGN.md
+§7.5's own `vip-senders` example predated the field existing);
+`Action.alert_immediately`; `spork.core.pipeline.observer.PipelineObserver`
+(bundles correlation-ID tracing with `Alerter` delegation, the
+"combine logging and alerting" design decision); `CorrelationIdFilter`
+on both pipelines; and alert-trigger wiring at all four
+pipeline-visible hook points (`RecordEscalationFilter` for VIP-style
+escalations, `RecordAlertOnlyFilter`, `ApplyVerdictActionFilter` for
+`autoact_alert` + the orthogonal `urgency=="high"` dimension,
+`RecordBudgetExhaustedFilter`). Daemon-health alerts (JMAP push
+disconnected, crash-looping) remain unbuilt — no `Payload`/
+`Pipeline.run()` exists for them, so they're explicitly deferred to
+the M5 daemon loop, not invented here. **M4 is 2/3** (its "graceful
+degrade" item stays moot until a real desktop backend exists, per the
+note already on M4's table).
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -316,13 +339,68 @@ duplicate that idempotency check; the scheduling decision needs a live
 JMAP session to know what's actually pending (M5, same blocker M1's
 daemon loop has), and isn't invented here.
 
-### M4–M7
+### M4 — Alerting — 2/3
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `Alerter` protocol + `LoggingAlerter` | ✅ | ✅ — tests 303–317 (15 tests), 100% line coverage |
+| Alert triggers wired to confidence bands + VIP rules + daemon health | ✅ pipeline-visible portion only — VIP escalation, alert_only, autoact_alert + urgency=="high", budget exhausted; ❌ daemon health (no `Payload`/`Pipeline.run()` for it — M5 daemon loop) | ✅ pipeline-visible portion — tests 318–346 (29 tests: `from_in` prerequisite 318–322, `PipelineObserver`/`CorrelationIdFilter`/wiring 323–346), 100% line coverage on the touched modules |
+| Graceful degrade when no DBus session bus is available | — | moot for now — see below |
+
+`spork.core.alerts.base`/`log`/`loader` mirror
+`spork.core.providers.base`/`loader` and `spork.core.llm.base`/`loader`
+exactly: an `Alerter` Protocol, a `LoggingAlerter` v1 backend, and
+`load_alerter()` for config-driven backend selection.
+`AlertUrgency`'s three levels (`low`/`normal`/`critical`) were checked
+against the actual [Desktop Notifications
+Specification](https://specifications.freedesktop.org/notification/1.2/urgency-levels.html)
+and `notify-send(1)`'s `-u` flag before being settled, not guessed —
+so a future real desktop backend needs no translation layer.
+`LoggingAlerter` is a genuine, working delivery channel (not a stub):
+each alert is logged via `logging.getLogger(__name__)`, urgency mapped
+to a log level, never configuring handlers itself (Python logging best
+practice — that's the application's job, M7). The "graceful degrade
+when no DBus session bus is available" checklist item doesn't apply to
+`LoggingAlerter` (no DBus dependency to degrade from) — it's really
+about the future desktop-notification backend, and gets its own
+checkbox once that backend exists.
+
+`spork.core.pipeline.observer.PipelineObserver` (`docs/DESIGN.md`
+§12.2) bundles per-message correlation-ID tracing with `Alerter`
+delegation — the "combine logging and alerting" design decision — and
+is injected into `build_default_pipeline()`/`build_tier2_pipeline()`
+the same way `state_db` is. `CorrelationIdFilter` (one per tier,
+mirroring `TimestampFilter`'s DI) sets `meta.correlation_id`, read by
+whichever module fires an alert. The four pipeline-visible trigger
+points are wired: `RecordEscalationFilter` alerts when a matched
+rule's `Action.alert_immediately` is `True` (the mechanism that
+finally makes docs/DESIGN.md's `vip-senders` example rule actually
+alert, once `from_in` closed the schema gap); `RecordAlertOnlyFilter`
+always alerts; `ApplyVerdictActionFilter` alerts on the
+`"autoact_alert"` band *or* `verdict.urgency == "high"` regardless of
+band (the orthogonal dimension, exercised even inside a plain
+`"autoact"` outcome since both bands share this filter);
+`RecordBudgetExhaustedFilter` always alerts at `"critical"` urgency.
+Daemon-health alerts (JMAP push disconnected, LLM budget exhausted at
+the daemon level, crash-looping) are **not** built here and can't be —
+they're about `sporkd`'s own lifecycle, not any one message's
+`Pipeline.run()`, so there's no `Payload` for a module to attach to;
+that's explicitly M5 daemon-loop work. `PipelineObserver`'s
+correlation-ID mechanism also partially satisfies M7's "per-message
+tracing" roadmap item for the pipeline-internal piece (a known,
+stated limitation: a correlation ID is scoped to one pipeline *run*,
+not one message's full cross-tier lifetime, since nothing calls
+`process_tier2_message()` outside tests until the M5 scheduler
+exists) — M7 still separately owns `sporkd`'s overall structured
+logging setup and audit-trail completeness beyond triage outcomes.
+
+### M5–M7
 
 No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (302 tests, all passing — 0 xfail)
+## Full test inventory (346 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -1763,3 +1841,214 @@ both were correct, neither had been verified until now.
     A loaded `AnthropicLLMClient`'s `get_verdict()` still raises
     `NotImplementedError` — the loader doesn't change a class's own
     behavior.
+
+### tests/core/alerts (the Alerter adapter, §12.1)
+
+`spork.core.alerts.log.LoggingAlerter` tested with pytest's built-in
+`caplog` fixture; `spork.core.alerts.loader.load_alerter()` tested the
+same way `providers.loader`/`llm.loader` are — a fixture stand-in
+class, self-referenced via `__name__`.
+
+303. **`test_log.py::test_notify_logs_the_title_and_body`**
+    Asserts both land in the captured log text.
+
+304. **`test_log.py::test_notify_defaults_to_normal_urgency_at_warning_level`**
+    Omitting `urgency=`. Asserts the record's level is `WARNING`.
+
+305. **`test_log.py::test_notify_logs_low_urgency_at_info_level`**
+    Asserts `INFO`.
+
+306. **`test_log.py::test_notify_logs_critical_urgency_at_error_level`**
+    Asserts `ERROR`.
+
+307. **`test_log.py::test_notify_appends_the_url_to_the_body_when_given`**
+    Asserts the URL appears in the logged text — appended, not
+    dropped (desktop notifications have no first-class link target).
+
+308. **`test_log_edge_cases.py::test_notify_falls_back_to_warning_for_an_unrecognized_urgency`**
+    A caller ignoring `AlertUrgency`'s `Literal` contract (reachable
+    only past mypy). Asserts `WARNING`, not a raw `KeyError` that
+    would lose the alert.
+
+309. **`test_log_edge_cases.py::test_notify_with_an_empty_title_and_body_still_logs`**
+    Degenerate but valid input. Asserts a record is still produced.
+
+310. **`test_log_edge_cases.py::test_each_notify_call_produces_its_own_log_record`**
+    Two `notify()` calls. Asserts two independent records, in order —
+    not deduplicated or batched.
+
+311. **`test_log_edge_cases.py::test_the_logger_name_follows_the_module_for_future_per_package_filtering`**
+    Asserts the logger name is `"spork.core.alerts.log"` — enables a
+    future per-package log-level config (M7).
+
+312. **`test_loader.py::test_load_alerter_imports_and_instantiates_by_spec`**
+    A well-formed `"module:ClassName"` spec. Asserts it resolves to an
+    instance of that class.
+
+313. **`test_loader.py::test_load_alerter_passes_through_constructor_kwargs`**
+    Asserts extra kwargs reach the alerter's constructor unmodified.
+
+314. **`test_loader.py::test_load_alerter_raises_for_malformed_spec`**
+    A spec with no `:` separator. Asserts `AlerterLoadError` before
+    any import is attempted.
+
+315. **`test_loader_edge_cases.py::test_load_alerter_raises_for_unimportable_module`**
+    A spec naming a nonexistent module. Asserts `AlerterLoadError`,
+    not a raw `ImportError`.
+
+316. **`test_loader_edge_cases.py::test_load_alerter_raises_for_missing_class_attribute`**
+    A spec naming a real module but an undefined class. Asserts
+    `AlerterLoadError`, not a raw `AttributeError`.
+
+317. **`test_loader_edge_cases.py::test_load_alerter_raises_when_construction_fails`**
+    An alerter whose constructor rejects the given kwargs. Asserts
+    `AlerterLoadError`, not a raw `TypeError`.
+
+### tests/core/rules (from_in condition kind — VIP-sender gap, §7.5)
+
+Closes a real gap found while reviewing M4's alert-trigger hook points:
+docs/DESIGN.md §7.5's own `vip-senders` example rule has used
+`from_in = [...]` since it was first written, but `Condition` never
+grew the field — `extra="forbid"` meant that example would be rejected
+by `load_rules()` today. `from_in` is an exact-sender-address match,
+deliberately distinct from `from_domain_in` (same-mailbox vs.
+same-domain). Numbered here rather than inlined into 27–35/90–97 per
+this file's own rule: numbers are stable once assigned, so later
+additions to an already-numbered section go at the end of the
+inventory, not renumbered into it.
+
+318. **`test_engine.py::test_from_in_condition_matches_exact_sender_address`**
+    A `from_in=["boss@example.com", "spouse@example.com"]` rule against
+    a matching and a non-matching sender. Confirms exact-address
+    matching, and that a message is correctly turned away too.
+
+319. **`test_engine.py::test_from_in_condition_does_not_match_on_domain_alone`**
+    A sender sharing a VIP's domain but not their exact address.
+    Asserts no match — guards the from_in/from_domain_in distinction.
+
+320. **`test_loader.py::test_load_rules_parses_from_in_condition`**
+    A real `rules.toml` using `from_in`. Asserts it round-trips through
+    `load_rules()` into `Condition.from_in` — the schema actually
+    accepts the shape docs/DESIGN.md's example has shown all along.
+
+321. **`test_engine_edge_cases.py::test_from_in_and_from_domain_in_together_use_and_semantics`**
+    A `Condition` setting both `from_in` and `from_domain_in`, against
+    a message matching one but not the other. Asserts no match — AND
+    across fields, not OR, same as every other multi-field `Condition`.
+    Passed against the existing implementation with no code change.
+
+322. **`test_engine_edge_cases.py::test_from_in_with_empty_list_never_matches`**
+    `from_in=[]` ahead of an `always=True` fallback. Asserts the
+    fallback wins — a set-but-empty list is a real constraint ("match
+    nothing"), not equivalent to the field being unset. Passed against
+    the existing implementation with no code change.
+
+### tests/core/rules (`Action.alert_immediately`, §12.2)
+
+323. **`test_loader.py::test_load_rules_parses_alert_immediately_on_an_action`**
+    A `vip-senders` rule setting `alert_immediately = true` alongside a
+    plain `default-escalate` rule that doesn't. Asserts the flag
+    round-trips per-rule and defaults to `False`.
+
+### tests/core/pipeline/observer (PipelineObserver, §12.2)
+
+The "combine logging and alerting" object — `trace()` always logs with
+a correlation ID on the record; `alert()` does that and delegates to
+an injected (fake) `Alerter`.
+
+324. **`test_observer.py::test_trace_logs_the_event_with_correlation_id_on_the_record`**
+    Asserts the event string lands in the log text and
+    `record.correlation_id` matches what was passed.
+
+325. **`test_observer.py::test_trace_includes_extra_fields_on_the_record`**
+    `trace(..., category="newsletter", band="autoact")`. Asserts both
+    keyword fields land on the record as attributes.
+
+326. **`test_observer.py::test_alert_logs_and_delegates_to_the_alerter`**
+    Asserts both a log record and exactly one `Alerter.notify()` call,
+    with `url=None`/`urgency="normal"` when omitted.
+
+327. **`test_observer.py::test_alert_passes_through_url_and_urgency`**
+    Non-default `url`/`urgency` reach the `Alerter` call unchanged.
+
+328. **`test_observer.py::test_two_correlation_ids_stay_distinguishable_in_the_log`**
+    Two `trace()` calls with two different ids. Asserts each record
+    keeps its own — no leakage between messages.
+
+329. **`test_observer_edge_cases.py::test_alert_with_empty_title_and_body_still_delegates`**
+    Degenerate but valid input. Asserts a record and an `Alerter` call
+    are still produced, never silently swallowed.
+
+330. **`test_observer_edge_cases.py::test_trace_field_colliding_with_a_reserved_logrecord_attribute_raises`**
+    A field named `message` (a real `LogRecord` attribute) raises
+    `KeyError` from stdlib `logging` — documents the constraint rather
+    than hiding it; acceptable since every field name passed today is
+    chosen by spork's own modules, never untrusted input.
+
+### tests/core/pipeline (CorrelationIdFilter + alert-trigger wiring, §12.2)
+
+`spork.core.pipeline.modules`/`tier2.modules` gain `CorrelationIdFilter`
+(mirrors `TimestampFilter`'s DI) and four alerting filters, each
+injected with a `PipelineObserver`.
+
+331. **`test_modules.py::test_correlation_id_filter_sets_correlation_id_from_the_injected_generator`** (Tier 1)
+    Mirrors the equivalent `TimestampFilter` test.
+
+332. **`test_modules.py::test_record_escalation_filter_does_not_alert_for_a_plain_escalation`**
+    An unmatched message escalating via `default_unmatched_action`
+    (no `alert_immediately`). Asserts zero `Alerter` calls.
+
+333. **`test_modules.py::test_record_escalation_filter_alerts_when_action_opts_in`**
+    A `vip-senders`-style rule (`alert_immediately=True`). Asserts one
+    alert fires, with the escalation reason in its title.
+
+334. **`test_modules_edge_cases.py::test_record_escalation_filter_raises_when_verdict_is_missing`** (Tier 1)
+    Run standalone, before `RuleEvaluationSelector`. Asserts `MissingMetaError`.
+
+335. **`test_modules_edge_cases.py::test_record_escalation_filter_raises_when_correlation_id_is_missing_and_alerting`**
+    `alert_immediately=True` but no `CorrelationIdFilter` has run.
+    Asserts `MissingMetaError` — only enforced on the alerting path.
+
+336. **`test_default.py::test_process_message_alerts_immediately_for_a_vip_sender_rule`** (Tier 1, end to end)
+    A `vip-senders` rule through the real `process_message()`. Asserts
+    one alert fires, with `"vip_sender"` in its title — no Tier 2
+    needed.
+
+337. **`tier2/test_modules.py::test_correlation_id_filter_sets_correlation_id_from_the_injected_generator`** (Tier 2)
+    Tier 2's own module — mirrors Tier 1's.
+
+338. **`tier2/test_modules.py::test_apply_verdict_action_filter_does_not_alert_for_plain_autoact`**
+    `band="autoact"`, `urgency="medium"`. Asserts zero `Alerter` calls
+    — the vanilla case stays silent.
+
+339. **`tier2/test_modules.py::test_apply_verdict_action_filter_alerts_for_autoact_alert_band`**
+    `band="autoact_alert"`, `urgency="medium"`. Asserts one alert —
+    the band alone is enough to trigger it.
+
+340. **`tier2/test_modules.py::test_apply_verdict_action_filter_alerts_for_high_urgency_even_in_plain_autoact`**
+    `band="autoact"`, `urgency="high"`. Asserts one alert at
+    `urgency="critical"` — the orthogonal dimension from §12's intro,
+    exercised even inside the plain-autoact band.
+
+341. **`tier2/test_modules.py::test_record_alert_only_filter_always_alerts`**
+    `urgency="low"`. Asserts one alert at `urgency="low"` —
+    `alert_only`'s whole purpose is "a human must decide."
+
+342. **`tier2/test_modules.py::test_record_budget_exhausted_filter_always_alerts_at_critical_urgency`**
+    Asserts one alert at `urgency="critical"` — §10's cost-control
+    policy, never silently dropped.
+
+343. **`tier2/test_modules_edge_cases.py::test_apply_verdict_action_filter_raises_when_correlation_id_is_missing_and_alerting`**
+    `band="autoact_alert"` (about to alert), no `CorrelationIdFilter`.
+    Asserts `MissingMetaError`.
+
+344. **`tier2/test_modules_edge_cases.py::test_record_alert_only_filter_raises_when_correlation_id_is_missing`**
+    Asserts `MissingMetaError` — this filter always alerts, so it
+    always needs a correlation id.
+
+345. **`tier2/test_modules_edge_cases.py::test_record_budget_exhausted_filter_raises_when_correlation_id_is_missing`**
+    Same reasoning as 344.
+
+346. **`tier2/test_default.py::test_process_tier2_message_alerts_for_a_low_confidence_verdict`** (Tier 2, end to end)
+    A low-confidence verdict through the real `process_tier2_message()`.
+    Asserts one alert fires.

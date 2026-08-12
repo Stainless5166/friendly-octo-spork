@@ -58,6 +58,11 @@ def _condition_matches(
         if message.from_domain not in condition.from_domain_in:
             return False
 
+    if condition.from_in is not None:
+        checked_any = True
+        if message.from_address not in condition.from_in:
+            return False
+
     if condition.local_classifier_category_in is not None:
         checked_any = True
         if classify().category not in condition.local_classifier_category_in:

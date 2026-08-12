@@ -12,12 +12,21 @@ from pathlib import Path
 import pytest
 
 from spork.core.actions.executor import ActionExecutor
+from spork.core.alerts.base import AlertUrgency
 from spork.core.llm.clients.recorded import RecordedLLMClient
 from spork.core.llm.validate import VerdictValidationError
 from spork.core.models import NormalizedMessage
+from spork.core.pipeline.observer import PipelineObserver
 from spork.core.pipeline.tier2 import process_tier2_message
 from spork.core.rules.schema import Action
 from spork.core.state.db import StateDB
+
+
+class _FakeAlerter:
+    def notify(
+        self, title: str, body: str, *, url: str | None = None, urgency: AlertUrgency = "normal"
+    ) -> None:
+        pass
 
 
 class _RecordingApplier:
@@ -63,6 +72,7 @@ def _default_kwargs(**overrides: object) -> dict[str, object]:
         "daily_call_budget": 200,
         "alert_threshold": 0.55,
         "autoact_threshold": 0.85,
+        "ops": PipelineObserver(_FakeAlerter()),
         "now": lambda: "2026-08-12T10:00:00Z",
     }
     defaults.update(overrides)

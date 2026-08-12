@@ -269,19 +269,53 @@ polling the CLI. **v1 scope: Linux desktop notifications only** — a
 webhook/ntfy/Pushover backend is real and useful but explicitly deferred
 (see Stretch / post-v1 below), not because it's hard, just because
 desktop-only covers the daily-driver use case this project targets.
+**v1 backend is a logging `Alerter`, not a real desktop popup** — a
+genuine, working delivery channel (structured, greppable log output),
+not a stub; a `notify-send`/D-Bus backend is a deliberate near-term
+follow-up behind the same `Alerter` protocol, not built this round.
 
-- [ ] `Alerter` protocol (mirrors the `Provider`/`LLMClient` adapter
-      pattern, §9.3/§10.1 — one Protocol, backends loaded the same
-      `"module:ClassName"` way) + a Linux desktop backend (DBus, via
-      `notify-send` or a DBus library) (M)
+- [x] `Alerter` protocol (mirrors the `Provider`/`LLMClient` adapter
+      pattern, §9.3/§10.1/§12.1 — one Protocol, backends loaded the
+      same `"module:ClassName"` way) + `LoggingAlerter` (M) —
+      `AlertUrgency`'s low/normal/critical vocabulary checked against
+      the real Desktop Notifications Specification and `notify-send(1)`
+      before being settled; `LoggingAlerter` is a genuinely real
+      backend (logs each alert via `logging.getLogger(__name__)`,
+      never configures handlers itself), not a stub for the future
+      desktop-notification backend.
 - [ ] Alert triggers wired to confidence bands + VIP rules + daemon health (M)
+      — the pipeline-visible half is done: `spork.core.pipeline.observer.PipelineObserver`
+      (§12.2, bundles correlation-ID tracing with `Alerter` delegation —
+      the "combine logging and alerting" decision) is injected into
+      both `build_*_pipeline()`s; `RecordEscalationFilter` alerts on
+      `Action.alert_immediately` (the flag a VIP-sender rule sets, now
+      that `Condition.from_in` closes the schema gap §7.5's
+      `vip-senders` example assumed all along —
+      `extra="forbid"` would've rejected it before); `RecordAlertOnlyFilter`
+      and `RecordBudgetExhaustedFilter` always alert;
+      `ApplyVerdictActionFilter` alerts on `autoact_alert` or
+      `verdict.urgency == "high"` regardless of band. **Daemon health
+      is NOT done and can't be yet** — JMAP push disconnected /
+      crash-looping are `sporkd` lifecycle events, not a
+      `Payload`/`Pipeline.run()` for any message, so there's nothing
+      for a pipeline module to attach to; needs the M5 daemon loop
+      first. See docs/TEST_COVERAGE.md tests 318–346.
 - [ ] Graceful degrade when no DBus session bus is available (e.g. no
       active desktop session — sporkd keeps running, alerts just don't
-      display, logged instead) (S)
+      display, logged instead) (S) — moot for now: `LoggingAlerter`
+      has no DBus dependency to degrade from; this item is really
+      "graceful degrade for the future desktop backend," revisit when
+      that backend actually exists.
 
 **Exit criteria:** a VIP-sender test email and a low-confidence test
 email both produce a visible desktop notification; killing network
 connectivity for 10+ minutes produces a "push disconnected" alert.
+The first half is proven at the pipeline level today (`process_message()`/
+`process_tier2_message()` called directly, `LoggingAlerter` standing in
+for the still-future desktop popup); nothing produces a *visible
+desktop* notification yet (that's the deferred `notify-send` backend),
+and neither half runs against a live, running `sporkd` yet — that
+needs M5's daemon loop.
 
 ## M5 — CLI + daemon control surface
 

@@ -35,6 +35,9 @@ class Condition(BaseModel):
 
     always: bool = False
     from_domain_in: list[str] | None = None
+    # Exact-address match, distinct from from_domain_in — the VIP-sender
+    # condition kind: "this specific mailbox," not "anyone at this domain."
+    from_in: list[str] | None = None
     # Resolved by calling the configured local classifier (§9.1) once
     # per message and checking whether its category is in this list —
     # this is the one condition kind whose result depends on which
@@ -58,6 +61,10 @@ class Action(BaseModel):
     type: Literal["move", "tag", "escalate", "ignore"]
     mailbox: str | None = None
     reason: str | None = None
+    # Opts an escalation into an immediate alert (docs/DESIGN.md §12.2)
+    # rather than waiting for Tier 2's verdict — a flag any escalation
+    # rule can set, not hardcoded to VIP-sender identity specifically.
+    alert_immediately: bool = False
 
 
 class Rule(BaseModel):
