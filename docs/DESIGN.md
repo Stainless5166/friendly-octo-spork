@@ -112,11 +112,12 @@ Two OS processes, one shared library:
 ### 6.1 Core library (`spork.core`)
 
 Solid boxes are built and tested today; dashed boxes are planned
-layout for a milestone that hasn't landed yet (M3's `llm/`, M4's
-`alerts/`, M5's `ipc/` + most of `cli/commands/`, and `config.py`,
-still needed by anything that reads `config.toml`). This is layout
-orientation only — see §6.4 for what each built module's classes
-actually look like.
+layout for a milestone that hasn't landed yet (M3's `llm/prompts.py`
+— the not-yet-built step that assembles a `VerdictRequest` from a
+message —, M4's `alerts/`, M5's `ipc/` + most of `cli/commands/`, and
+`config.py`, still needed by anything that reads `config.toml`). This
+is layout orientation only — see §6.4 for what each built module's
+classes actually look like.
 
 ```mermaid
 flowchart TD
@@ -176,9 +177,13 @@ flowchart TD
         end
 
         subgraph llm["llm/ (M3)"]
-            llm_client["client.py"]:::planned
-            llm_prompts["prompts.py"]:::planned
-            llm_verdict["verdict.py"]:::planned
+            llm_clean["clean.py<br/>clean_body()"]
+            llm_prompts["prompts.py<br/>VerdictRequest builder"]:::planned
+            llm_base["base.py<br/>LLMClient +<br/>VerdictRequest/Verdict"]
+            llm_loader["loader.py<br/>load_llm_client()"]
+            subgraph llm_clients["clients/"]
+                llm_anthropic["anthropic.py<br/>AnthropicLLMClient"]
+            end
         end
 
         subgraph actions["actions/"]
@@ -619,6 +624,80 @@ classDiagram
     PrimaryCombiner ..> CombineError : raises
     HighestConfidenceCombiner ..> CombineError : raises
 ```
+
+#### `spork.core.llm.base`
+
+```mermaid
+classDiagram
+    class Action { <<pydantic BaseModel>> }
+    class VerdictRequest {
+        <<dataclass, frozen>>
+        +subject: str
+        +from_address: str
+        +to_addresses: tuple
+        +cleaned_body: str
+        +thread_prior_subject: Optional~str~
+        +thread_user_has_replied: bool
+        +available_mailboxes: tuple
+    }
+    class Verdict {
+        <<pydantic BaseModel>>
+        +category: str
+        +urgency: Literal
+        +confidence: float
+        +suggested_action: Action
+        +summary: str
+        +draft_reply: Optional~str~
+        +reasoning: str
+    }
+    class LLMClient {
+        <<Protocol>>
+        +get_verdict(request: VerdictRequest) Verdict
+    }
+
+    Verdict *-- Action : suggested_action
+    LLMClient ..> VerdictRequest : reads
+    LLMClient ..> Verdict : returns
+```
+
+`Action` is fully defined in `spork.core.rules`'s own diagram — reused
+here, not redefined, so a Tier 2 verdict and a Tier 1 rule produce the
+exact same terminal-action shape.
+
+#### `spork.core.llm.loader`
+
+```mermaid
+classDiagram
+    class LLMClientLoadError { <<Exception>> }
+    class load_llm_client {
+        <<function>>
+        +load_llm_client(spec: str, kwargs: dict) LLMClient
+    }
+    class LLMClient { <<Protocol>> }
+
+    load_llm_client ..> LLMClient : constructs
+    load_llm_client ..> LLMClientLoadError : raises
+```
+
+#### `spork.core.llm.clients.anthropic`
+
+```mermaid
+classDiagram
+    class LLMClient { <<Protocol>> }
+    class AnthropicLLMClient {
+        -api_key: str
+        -model: str
+        -max_tokens: int
+        +get_verdict(request: VerdictRequest) Verdict
+    }
+
+    LLMClient <|.. AnthropicLLMClient : structurally satisfies
+    AnthropicLLMClient ..> NotImplementedError : raises (docs/ROADMAP.md M3)
+```
+
+`get_verdict()` requires a live Anthropic API call — same
+settled-shape-stub reasoning as `JmapClient` (§9.3): constructor args
+and the method signature are real, the call itself isn't yet.
 
 #### `spork.core.actions`
 
@@ -1594,6 +1673,90 @@ change to *what pipeline that route points at*, never a rewrite of
   - Prompt kept short (truncated body, no full quoted history) to bound
     tokens per call; `llm_usage` table makes actual spend visible via
     `spork status`.
+
+### 10.1 Modularity: the `LLMClient` adapter
+
+Claude is the only Tier 2 backend spork talks to today, but — same
+reasoning as §9.3's mail-backend `Provider` — it's built as one
+**client** behind a common adapter, not called directly from the
+pipeline, so a second backend (a different model provider entirely) is
+an addition, not a rewrite.
+
+```python
+@dataclass(frozen=True, slots=True)
+class VerdictRequest:
+    """Everything an LLMClient needs to produce one Verdict — already
+    assembled by the (not-yet-built) prompt-building step, so an
+    LLMClient implementation never touches NormalizedMessage or the
+    rule engine directly."""
+
+    subject: str
+    from_address: str
+    to_addresses: tuple[str, ...]
+    cleaned_body: str
+    thread_prior_subject: str | None
+    thread_user_has_replied: bool
+    available_mailboxes: tuple[str, ...]
+
+
+class Verdict(BaseModel):
+    """One Tier 2 verdict — the parsed, schema-validated form of this
+    section's JSON output. A pydantic model, not a dataclass (unlike
+    VerdictRequest): this is the one place spork parses untrusted
+    external structured output, same reasoning as `rules.schema`
+    validating a hand-edited rules.toml."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: str
+    urgency: Literal["low", "medium", "high"]
+    confidence: float  # Field(ge=0.0, le=1.0)
+    suggested_action: Action  # reuses rules.schema.Action
+    summary: str
+    draft_reply: str | None = None
+    reasoning: str
+
+
+class LLMClient(Protocol):
+    """What every Tier 2 backend adapts to: given one VerdictRequest,
+    return one schema-validated Verdict."""
+
+    def get_verdict(self, request: VerdictRequest) -> Verdict: ...
+```
+
+- **`Verdict` reuses `rules.schema.Action`** for `suggested_action` —
+  the same terminal-action shape a Tier 1 rule produces, so
+  `ActionExecutor` (M2) can consume either without knowing which tier
+  produced it. `extra="forbid"` plus a `field_validator` rejecting
+  `suggested_action.type == "escalate"` (a schema-level contradiction —
+  a verdict already *is* Tier 2's output, there's nowhere further to
+  escalate to) mean a malformed or hallucinated field is a validation
+  failure at the client boundary, not something that reaches the
+  executor. Validating `category`/`suggested_action.mailbox` against
+  *this deployment's* configured set is deliberately a separate, later
+  step (`docs/ROADMAP.md`'s "Verdict validation against configured
+  mailbox/category set") — `Verdict` only enforces shape, not
+  deployment-specific vocabulary.
+- **Package layout: `spork.core.llm.clients.<name>`** — mirrors
+  `spork.core.providers.<name>`. `AnthropicLLMClient` is the first (and
+  today, only) implementation.
+- **Loadable at runtime: `spork.core.llm.loader`** — a client is named
+  in config (e.g.
+  `[llm] client = "spork.core.llm.clients.anthropic:AnthropicLLMClient"`)
+  and resolved via `importlib` at startup, identical mechanics to
+  `spork.core.providers.loader.load_provider` (down to the error type's
+  shape, `LLMClientLoadError`) — spork never imports the `anthropic`
+  SDK unless an Anthropic client is the one actually configured.
+- **`AnthropicLLMClient` is a settled-shape stub, like `JmapClient`.**
+  `get_verdict()` requires a live Anthropic API call, which this
+  environment can't exercise honestly — constructor args (`api_key`,
+  `model`, `max_tokens`) and the method signature are settled now,
+  `get_verdict()` raises `NotImplementedError` pointing at
+  `docs/ROADMAP.md`'s M3 until a real call (and the recorded-response
+  CI fixtures M3's last item calls for) lands. No `anthropic` import
+  anywhere yet — same reason `jmapc` isn't imported by `JmapClient`
+  (§9.3): the SDK isn't a dependency until there's a real call to make
+  with it.
 
 ## 11. Safety & human-in-the-loop
 
