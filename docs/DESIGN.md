@@ -678,28 +678,37 @@ classDiagram
         <<Protocol>>
         +apply(payload: Payload~M~) Payload~M~
     }
+    class Augment~M~ {
+        <<Protocol>>
+        +augment(payload: Payload~M~) Payload~M~
+    }
     class Selector~M~ {
         <<Protocol>>
         +select(payload: Payload~M~) tuple
     }
     class UnknownBranchError { <<Exception>> }
     class Pipeline~M~ {
-        -filters: list
+        -stages: list
         -selector: Optional~Selector~
         -routes: dict
         +run(payload: Payload~M~) Payload~M~
     }
 
-    Pipeline --> Filter : runs each in order
+    Pipeline --> Filter : runs each in order (via .apply)
+    Pipeline --> Augment : runs each in order (via .augment)
     Pipeline --> Selector : follows its chosen branch
     Pipeline --> Pipeline : a route value is itself a Pipeline
     Pipeline ..> UnknownBranchError : raises
 ```
 
 `core.py` knows nothing about messages, rules, or the state DB —
-`Payload`/`Filter`/`Selector`/`Pipeline` are generic over a metadata
-type `M`, provably reusable for a differently-shaped pipeline, not
-just this one.
+`Payload`/`Filter`/`Selector`/`Augment`/`Pipeline` are generic over a
+metadata type `M`, provably reusable for a differently-shaped
+pipeline, not just this one. `Filter` and `Selector` are conventionally
+pure (no I/O); `Augment` is the type for a stage that reaches outside
+the payload it was given (a database search, a contact lookup) —
+`Pipeline.run` tells them apart by `isinstance`, dispatching to
+`.augment()` or `.apply()` accordingly.
 
 ```mermaid
 classDiagram
@@ -1373,15 +1382,18 @@ generic business logic that depends on it, not the reverse.
   building block for local dev/demo/CI work that wants a Provider
   without any network dependency.
 
-### 9.4 Modularity: Filter/Selector pipeline modules
+### 9.4 Modularity: Filter/Selector/Augment pipeline modules
 
 Message processing is a fixed sequence today, but M3 adds a real fork:
 an escalated verdict needs to go somewhere — a Tier 2 LLM call —
-before anything is applied. Rather than growing `process_message()`'s
-body with another `if verdict.action.type == "escalate":` branch (the
-pattern that would keep recurring at every future tier),
-`spork.core.pipeline` is built from two structural kinds of module,
-generic over a metadata type `M` (`spork.core.pipeline.core`):
+before anything is applied, and building that LLM call's prompt is
+going to need context a message doesn't carry on its own (a thread's
+prior messages, a sender's contact record). Rather than growing
+`process_message()`'s body with another
+`if verdict.action.type == "escalate":` branch (the pattern that would
+keep recurring at every future tier), `spork.core.pipeline` is built
+from three structural kinds of module, generic over a metadata type
+`M` (`spork.core.pipeline.core`):
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -1402,7 +1414,10 @@ class Payload(Generic[M]):
 
 class Filter(Protocol[M]):
     """A module that transforms one Payload into another. Always
-    produces exactly one output — no branching, no routing."""
+    produces exactly one output — no branching, no routing.
+    Conventionally *pure*: no I/O, deterministic given its input — see
+    `Augment` for the type that's expected to reach outside the
+    payload."""
 
     def apply(self, payload: Payload[M]) -> Payload[M]: ...
 
@@ -1411,31 +1426,73 @@ class Selector(Protocol[M]):
     """A module that reads one Payload and routes it to exactly one of
     its named branches, chosen per-payload — the sole place branching
     logic lives, so no Filter ever needs an if/else about what happens
-    next."""
+    next. Conventionally pure like `Filter` — routing decisions read
+    `meta`, they don't fetch anything to make one."""
 
     def select(self, payload: Payload[M]) -> tuple[str, Payload[M]]: ...
 
 
+class Augment(Protocol[M]):
+    """A module that enriches a Payload with additional context before
+    passing it on — the type for I/O: a database search for a
+    message's thread history, a contact-details lookup, anything that
+    reaches outside the payload it was given.
+
+    Same one-in-one-out shape as `Filter` and interchangeable with it
+    inside a `Pipeline`'s stage list — the split is not about output
+    shape, it's a signal to the reader (and to `Pipeline.run`, which
+    dispatches on it via `isinstance`) that this stage is expected to
+    talk to something external. Nothing in the type system stops a
+    `Filter` from doing I/O; the split exists so a module's declared
+    type alone tells a reader — and its own tests — whether to expect
+    a real dependency.
+    """
+
+    def augment(self, payload: Payload[M]) -> Payload[M]: ...
+
+
+Stage = Filter[M] | Augment[M]
+
+
 class Pipeline(Generic[M]):
-    """Composes modules: a straight-line chain of Filters, optionally
-    ending in a Selector whose branches are themselves Pipelines.
+    """Composes modules: a straight-line chain of Filters/Augments,
+    optionally ending in a Selector whose branches are themselves
+    Pipelines.
 
     Recursive by construction — a `routes` value is just another
     Pipeline, so an arbitrarily deep branching tree is built by nesting
     Pipeline(...) calls, never by teaching this class about a specific
-    branch's meaning. An empty Pipeline() (no filters, no selector) is
-    the identity — the natural "this branch stops here."
+    branch's meaning. An empty Pipeline() (no stages, no selector) is
+    the identity — the natural "this branch stops here." Filters and
+    Augments interleave freely in one `stages` list — dispatched via
+    `isinstance(stage, Augment)` (`.augment()`) or otherwise (`.apply()`)
+    — so an Augment (fetch contact) can sit between two Filters
+    (clean, then compose) with no separate list to keep in sync.
     """
 
     def __init__(
         self,
-        filters: Sequence[Filter[M]] = (),
+        stages: Sequence[Stage[M]] = (),
         *,
         selector: Selector[M] | None = None,
         routes: Mapping[str, "Pipeline[M]"] | None = None,
     ) -> None: ...
     def run(self, payload: Payload[M]) -> Payload[M]: ...
 ```
+
+`spork.core.pipeline`'s three existing state-DB-touching modules
+(`IdempotencyGateSelector`'s read, `WriteAuditEntryFilter`'s and
+`MarkProcessedFilter`'s writes) predate the Filter/Selector purity
+convention above and stay `Selector`/`Filter` rather than becoming
+`Augment` — they're the pipeline's own bookkeeping (idempotency,
+audit), not context fetched *for* a message, which is what `Augment`
+is for. No concrete `Augment` ships yet: there's no live thread-search
+or contact-lookup backend in this codebase to call (JMAP search is
+still behind `NotImplementedError` — see §8), and stubbing one against
+fake data would be exactly the thing CLAUDE.md's TDD rules forbid
+faking. This section adds the framework-level `Augment` Protocol and
+`Pipeline` support only; a concrete Augment lands when M3's
+prompt-building chain actually needs one and can call something real.
 
 `spork.core.pipeline.meta.MessageMeta` is the concrete metadata type
 the M2/M3 message pipeline uses — `message`, `rules`,
@@ -1476,23 +1533,28 @@ change to *what pipeline that route points at*, never a rewrite of
 `Pipeline`, `RuleEvaluationSelector`, or the `"terminal"` branch.
 
 - **Independently validated.** A module's acceptance tests construct a
-  bare `Payload` and assert what `.apply()`/`.select()` returns — no
-  `Pipeline`, no other module, no full `process_message()` call needed
-  to test that `WriteAuditEntryFilter` writes the right entry.
+  bare `Payload` and assert what `.apply()`/`.select()`/`.augment()`
+  returns — no `Pipeline`, no other module, no full `process_message()`
+  call needed to test that `WriteAuditEntryFilter` writes the right
+  entry, and (once one exists) a future `Augment`'s tests are free to
+  mock exactly the one dependency it calls, nothing else in the chain.
 - **Independently benchmarked.** `benchmarks/core/pipeline/` (outside
   `testpaths`, so it never runs as part of `uv run pytest` — a
   `pytest-benchmark` repeated-call timing run is a different kind of
   test than the correctness suite and shouldn't slow every push) times
   each module's `.apply()`/`.select()` in isolation via
   `pytest-benchmark`'s `benchmark` fixture. Run with
-  `uv run pytest benchmarks/`.
-- **Composed.** `Pipeline` and `Payload`/`Filter`/`Selector` know
-  nothing about messages, rules, or audit logs — `MessageMeta` and
+  `uv run pytest benchmarks/` — this is the seam that matters most for
+  a future `Augment`: an I/O-bound lookup is exactly the kind of stage
+  worth timing on its own, separate from the pure stages around it.
+- **Composed.** `Pipeline` and `Payload`/`Filter`/`Selector`/`Augment`
+  know nothing about messages, rules, or audit logs — `MessageMeta` and
   `spork.core.pipeline.modules` are one concrete use of a generic
   framework, provably reusable for a differently-shaped pipeline (M3's
-  Tier 2 prompt-building chain — clean the body, build the prompt, call
-  Claude, parse the verdict — is a straight-line `Filter` chain over
-  the same `Payload`/`Pipeline` machinery, not a new abstraction).
+  Tier 2 prompt-building chain — clean the body, look up thread/contact
+  context, build the prompt, call Claude, parse the verdict — is a
+  `Filter`/`Augment` chain over the same `Payload`/`Pipeline` machinery,
+  not a new abstraction).
 
 ## 10. LLM integration (Claude API)
 
