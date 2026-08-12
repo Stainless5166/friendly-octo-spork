@@ -1,9 +1,10 @@
 """process_message(): idempotency + rule evaluation + action + audit (§9),
-built from composable Filter/Selector modules (§9.4).
+built from composable Filter/Selector/Augment modules (§9.4).
 """
 
 from __future__ import annotations
 
+from spork.core.pipeline.core import Augment as Augment
 from spork.core.pipeline.core import Filter as Filter
 from spork.core.pipeline.core import Payload as Payload
 from spork.core.pipeline.core import Pipeline as Pipeline
