@@ -2,21 +2,28 @@
 
 A single-command Typer app (docs/DESIGN.md §6.3) — sporkd never has
 subcommands, just flags, unlike the `spork` CLI group. `--help`/
-`--version` work now; the actual event loop (JMAP session, push
-listener, rule engine, action executor, alerting, control socket —
-§6.2) lands incrementally across the roadmap milestones
-(docs/ROADMAP.md), each behind its own acceptance tests. `run()` (not
-`main` directly) is the registered console-script target because
-`main`'s `version` argument is a `typer.Option` marker object, not a
-real default — calling `main()` directly bypasses Typer's argument
-parsing entirely.
+`--version` work eagerly, before any config/loop work happens.
+`run()` (not `main` directly) is the registered console-script target
+because `main`'s `version` argument is a `typer.Option` marker object,
+not a real default — calling `main()` directly bypasses Typer's
+argument parsing entirely.
 """
 
 from __future__ import annotations
 
+import asyncio
+import signal
+
 import typer
 
 from spork import __version__
+from spork.core.alerts.loader import AlerterLoadError
+from spork.core.classify.registry import UnknownClassifierError
+from spork.core.config.loader import ConfigLoadError, load_config
+from spork.core.config.schema import SporkConfig
+from spork.core.providers.loader import ProviderLoadError
+from spork.core.rules.loader import RulesLoadError
+from spork.daemon.loop import run_daemon
 
 
 def main(
@@ -28,9 +35,36 @@ def main(
     if version:
         typer.echo(f"sporkd {__version__}")
         raise typer.Exit()
-    raise NotImplementedError(
-        "sporkd's daemon loop is not implemented yet — see docs/ROADMAP.md for milestone status."
-    )
+
+    try:
+        config = load_config()
+        asyncio.run(_run_until_signalled(config))
+    except (
+        ConfigLoadError,
+        RulesLoadError,
+        ProviderLoadError,
+        AlerterLoadError,
+        UnknownClassifierError,
+    ) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+async def _run_until_signalled(config: SporkConfig) -> None:
+    """Runs `run_daemon()` until SIGTERM/SIGINT, then stops it cleanly.
+
+    A `stop_event` set from a signal handler rather than relying on
+    `KeyboardInterrupt`/task cancellation propagating through
+    `asyncio.to_thread()` calls — those don't interrupt an in-flight
+    blocking call either way (docs/DESIGN.md §6.2.1), so this is the
+    same bounded-shutdown-latency tradeoff already documented there,
+    not a new one.
+    """
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop_event.set)
+    await run_daemon(config, stop_event=stop_event)
 
 
 def run() -> None:
