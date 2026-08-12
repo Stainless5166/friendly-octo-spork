@@ -12,20 +12,30 @@ from pathlib import Path
 import pytest
 
 from spork.core.actions.executor import ActionExecutor
+from spork.core.alerts.base import AlertUrgency
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline.core import Payload
 from spork.core.pipeline.meta import MessageMeta, MissingMetaError
 from spork.core.pipeline.modules import (
     ApplyActionFilter,
     MarkProcessedFilter,
+    RecordEscalationFilter,
     WriteAuditEntryFilter,
 )
+from spork.core.pipeline.observer import PipelineObserver
 from spork.core.rules.schema import Action
 from spork.core.state.db import StateDB
 
 
 class _RecordingApplier:
     def apply(self, message: NormalizedMessage, action: Action) -> None:
+        pass
+
+
+class _FakeAlerter:
+    def notify(
+        self, title: str, body: str, *, url: str | None = None, urgency: AlertUrgency = "normal"
+    ) -> None:
         pass
 
 
@@ -47,6 +57,29 @@ def test_apply_action_filter_raises_when_verdict_is_missing(make_message) -> Non
 
     with pytest.raises(MissingMetaError):
         ApplyActionFilter(executor).apply(_payload(make_message))
+
+
+def test_record_escalation_filter_raises_when_verdict_is_missing(make_message) -> None:
+    """No RuleEvaluationSelector has run — meta.verdict is still None."""
+    with pytest.raises(MissingMetaError):
+        RecordEscalationFilter(PipelineObserver(_FakeAlerter())).apply(_payload(make_message))
+
+
+def test_record_escalation_filter_raises_when_correlation_id_is_missing_and_alerting(
+    make_message,
+) -> None:
+    """action.alert_immediately is True (about to alert), but no
+    CorrelationIdFilter has run — meta.correlation_id is still None."""
+    from spork.core.rules.engine import RuleVerdict
+
+    verdict = RuleVerdict(
+        action=Action(type="escalate", alert_immediately=True), matched_rule_id="vip-senders"
+    )
+
+    with pytest.raises(MissingMetaError):
+        RecordEscalationFilter(PipelineObserver(_FakeAlerter())).apply(
+            _payload(make_message, verdict=verdict)
+        )
 
 
 def test_write_audit_entry_filter_raises_when_ts_is_missing(tmp_path: Path, make_message) -> None:

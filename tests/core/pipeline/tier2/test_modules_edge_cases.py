@@ -12,10 +12,12 @@ from pathlib import Path
 import pytest
 
 from spork.core.actions.executor import ActionExecutor
+from spork.core.alerts.base import AlertUrgency
 from spork.core.llm.base import Verdict
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline.core import Payload
 from spork.core.pipeline.meta import MissingMetaError
+from spork.core.pipeline.observer import PipelineObserver
 from spork.core.pipeline.tier2.meta import Tier2Meta
 from spork.core.pipeline.tier2.modules import (
     ApplyVerdictActionFilter,
@@ -25,6 +27,7 @@ from spork.core.pipeline.tier2.modules import (
     CreateDraftIfWantedFilter,
     MarkProcessedFilter,
     RecordAlertOnlyFilter,
+    RecordBudgetExhaustedFilter,
     RecordLLMUsageFilter,
     ValidateVerdictFilter,
     WriteAuditEntryFilter,
@@ -35,6 +38,13 @@ from spork.core.state.db import StateDB
 
 class _RecordingApplier:
     def apply(self, message: NormalizedMessage, action: Action) -> None:
+        pass
+
+
+class _FakeAlerter:
+    def notify(
+        self, title: str, body: str, *, url: str | None = None, urgency: AlertUrgency = "normal"
+    ) -> None:
         pass
 
 
@@ -112,13 +122,45 @@ def test_apply_verdict_action_filter_raises_when_verdict_is_missing(make_message
     executor = ActionExecutor(_RecordingApplier())
 
     with pytest.raises(MissingMetaError):
-        ApplyVerdictActionFilter(executor).apply(_payload(make_message))
+        ApplyVerdictActionFilter(executor, PipelineObserver(_FakeAlerter())).apply(
+            _payload(make_message)
+        )
+
+
+def test_apply_verdict_action_filter_raises_when_correlation_id_is_missing_and_alerting(
+    make_message,
+) -> None:
+    """band=autoact_alert (about to alert), but no CorrelationIdFilter
+    has run — meta.correlation_id is still None."""
+    executor = ActionExecutor(_RecordingApplier())
+    payload = _payload(make_message, verdict=_verdict(), band="autoact_alert")
+
+    with pytest.raises(MissingMetaError):
+        ApplyVerdictActionFilter(executor, PipelineObserver(_FakeAlerter())).apply(payload)
 
 
 def test_record_alert_only_filter_raises_when_verdict_is_missing(make_message) -> None:
     """No CallLLMAugment has run — meta.verdict is still None."""
     with pytest.raises(MissingMetaError):
-        RecordAlertOnlyFilter().apply(_payload(make_message))
+        RecordAlertOnlyFilter(PipelineObserver(_FakeAlerter())).apply(_payload(make_message))
+
+
+def test_record_alert_only_filter_raises_when_correlation_id_is_missing(make_message) -> None:
+    """No CorrelationIdFilter has run — meta.correlation_id is still
+    None, and this filter always alerts."""
+    payload = _payload(make_message, verdict=_verdict(), band="alert_only")
+
+    with pytest.raises(MissingMetaError):
+        RecordAlertOnlyFilter(PipelineObserver(_FakeAlerter())).apply(payload)
+
+
+def test_record_budget_exhausted_filter_raises_when_correlation_id_is_missing(
+    make_message,
+) -> None:
+    """No CorrelationIdFilter has run — meta.correlation_id is still
+    None, and this filter always alerts."""
+    with pytest.raises(MissingMetaError):
+        RecordBudgetExhaustedFilter(PipelineObserver(_FakeAlerter())).apply(_payload(make_message))
 
 
 def test_create_draft_if_wanted_filter_raises_when_verdict_is_missing(make_message) -> None:
