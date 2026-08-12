@@ -115,11 +115,10 @@ Solid boxes are built and tested today; dashed boxes are planned
 layout for a milestone that hasn't landed yet (M3's `llm/prompts.py`
 — the not-yet-built step that assembles a `VerdictRequest` from a
 message —, a future real desktop-notification `Alerter` backend
-alongside M4's `alerts/log.py`, M5's `ipc/` + most of `cli/commands/`,
-and `config/`, still needed by anything that reads `config.toml` —
-§7.2 settles its shape, M5 builds it). This is layout orientation
-only — see §6.4 for what each built module's classes actually look
-like.
+alongside M4's `alerts/log.py`, and M5's `ipc/` + most of
+`cli/commands/`). `config/` is real as of M5's first item — no longer
+a dashed box. This is layout orientation only — see §6.4 for what each
+built module's classes actually look like.
 
 ```mermaid
 flowchart TD
@@ -127,9 +126,9 @@ flowchart TD
 
     subgraph core["core/ (shared library)"]
         subgraph config_pkg["config/ (M5)"]
-            config_schema["schema.py<br/>SporkConfig/TieringConfig/<br/>BackendSpec"]:::planned
-            config_paths["paths.py<br/>XDG tier-path resolution"]:::planned
-            config_loader["loader.py<br/>load_config()"]:::planned
+            config_schema["schema.py<br/>SporkConfig/TieringConfig/<br/>BackendSpec"]
+            config_paths["paths.py<br/>XDG tier-path resolution"]
+            config_loader["loader.py<br/>load_config()"]
         end
         secrets_mod["secrets.py<br/>secretspec integration"]
         models_mod["models.py<br/>NormalizedMessage"]
@@ -374,9 +373,9 @@ merged dict against `SporkConfig` once. `ConfigLoadError` wraps every
 failure mode (malformed TOML in any tier, a merged dict that fails
 `SporkConfig` validation, an unreadable file) — one catchable type per
 module boundary, the same convention as `RulesLoadError`/
-`ProviderLoadError`/`AlerterLoadError`. Not built yet (M5) — this
-diagram, like `spork.core.alerts`' before it existed, settles the
-shape before any of it is implemented.
+`ProviderLoadError`/`AlerterLoadError`. Built as M5's first item, real
+and 100%-covered — this diagram settled the shape before any of it
+was implemented, same as `spork.core.alerts`' had.
 
 #### `spork.core.models`
 

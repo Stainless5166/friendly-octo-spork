@@ -85,7 +85,11 @@ disconnected, crash-looping) remain unbuilt — no `Payload`/
 `Pipeline.run()` exists for them, so they're explicitly deferred to
 the M5 daemon loop, not invented here. **M4 is 2/3** (its "graceful
 degrade" item stays moot until a real desktop backend exists, per the
-note already on M4's table).
+note already on M4's table). Updated once more for M5's first item:
+`spork.core.config` (`schema.py`/`paths.py`/`loader.py`) — a three-tier
+`config.toml` (system enforced/user/system default) settled against
+the real XDG Base Directory Specification v0.8, not invented; deep
+merge is per-key, not whole-file. **M5 is 1/9.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -394,13 +398,50 @@ not one message's full cross-tier lifetime, since nothing calls
 exists) — M7 still separately owns `sporkd`'s overall structured
 logging setup and audit-trail completeness beyond triage outcomes.
 
-### M5–M7
+### M5 — CLI + daemon control surface — 1/9
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `spork.core.config` | ✅ | ✅ — tests 347–374 (28 numbered entries, 51 actual test cases — see note below), 100% line coverage |
+| Daemon event loop assembly | ❌ | — |
+| IPC protocol + Unix socket server | ❌ | — |
+| `spork status` | ❌ | — |
+| `spork pause`/`resume` | ❌ | — |
+| `spork rules list/edit/enable/disable` w/ live reload | ❌ | — |
+| `spork config show/edit` | ❌ | — |
+| `spork logs` | ❌ | — |
+| `spork reclassify <id>` | ❌ | — |
+
+`spork.core.config` (`schema.py`/`paths.py`/`loader.py`) is the first
+of M5's two prerequisite items — settled and documented (§7.2/§6.4)
+against the real XDG Base Directory Specification v0.8 and comparable
+tools (`git`'s system/global scopes, Chromium/Firefox managed policy),
+not invented. Three-tier precedence (system enforced
+`/etc/spork/enforced.toml` > user `$XDG_CONFIG_HOME/spork/config.toml`
+> system default via `$XDG_CONFIG_DIRS`), deep-merged per-key rather
+than whole-file, validated once against `SporkConfig`. The concrete
+exit-criterion test — an enforced-tier value a user's own config.toml
+can't override — is real:
+`test_loader.py::test_load_config_enforced_tier_overrides_user_tier`.
+
+**Test-count note:** the 28 numbered entries below (347–374) represent
+**51 actual pytest test cases** — several are parametrized across a
+spread of realistic Linux path shapes (spaces, unicode, deep nesting,
+multi-entry `XDG_CONFIG_DIRS` strings) per instruction, and this
+file's own numbering convention counts one entry per test *function*,
+not per parametrize instance. The "Full test inventory" header count
+below is the true `pytest --collect-only` total (397); from here on,
+the highest numbered entry (374) and that true collected count no
+longer coincide — a real, intentional gap of 23 (the extra
+parametrize instances), not a numbering error.
+
+### M6–M7
 
 No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (346 tests, all passing — 0 xfail)
+## Full test inventory (397 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -2052,3 +2093,129 @@ injected with a `PipelineObserver`.
 346. **`tier2/test_default.py::test_process_tier2_message_alerts_for_a_low_confidence_verdict`** (Tier 2, end to end)
     A low-confidence verdict through the real `process_tier2_message()`.
     Asserts one alert fires.
+
+### tests/core/config (spork.core.config — three-tier config.toml, §7.2)
+
+One entry per test *function*; several are parametrized (noted inline)
+— see the test-count note under M5's table above for why the numbered
+range (347–374, 28 entries) undercounts the true 51 collected cases.
+
+347. **`test_paths.py::test_resolve_user_config_path_uses_xdg_config_home_when_set`** (parametrized, 8 cases)
+    `XDG_CONFIG_HOME` set to a spread of realistic paths (plain,
+    spaces, unicode, deep nesting, root-level, trailing slash,
+    dashes/underscores/digits). Asserts `.../spork/config.toml` for each.
+
+348. **`test_paths.py::test_resolve_user_config_path_falls_back_to_home_dot_config_when_unset`**
+    No `XDG_CONFIG_HOME`. Asserts `$HOME/.config/spork/config.toml` —
+    the spec's own documented default.
+
+349. **`test_paths.py::test_resolve_system_default_config_paths_uses_xdg_config_dirs_in_order`** (parametrized, 5 cases)
+    A spread of `XDG_CONFIG_DIRS` strings (single dir, multiple,
+    a dir with a space, unicode). Asserts one candidate per entry, in
+    the variable's own preference order.
+
+350. **`test_paths.py::test_resolve_system_default_config_paths_falls_back_to_etc_xdg_when_unset`**
+    No `XDG_CONFIG_DIRS`. Asserts `["/etc/xdg/spork/config.toml"]`.
+
+351. **`test_paths.py::test_resolve_enforced_config_path_is_always_etc_spork_enforced_toml`**
+    `XDG_CONFIG_HOME`/`XDG_CONFIG_DIRS` both set to attacker-controlled-
+    looking values. Asserts `/etc/spork/enforced.toml` regardless —
+    the enforced tier's whole point is that no env var relocates it.
+
+352. **`test_paths.py::test_resolve_socket_path_uses_xdg_runtime_dir_when_set`** (parametrized, 8 cases)
+    Same path spread as 347. Asserts `.../spork/sporkd.sock` for each.
+
+353. **`test_paths_edge_cases.py::test_resolve_user_config_path_treats_relative_or_empty_as_unset`** (parametrized, 3 cases)
+    A relative path, an empty string, and `"./here"`. Asserts all three
+    fall back to `$HOME/.config/...`, same as genuinely unset.
+
+354. **`test_paths_edge_cases.py::test_resolve_system_default_config_paths_drops_relative_entries`**
+    A relative entry mixed between two absolute ones in
+    `XDG_CONFIG_DIRS`. Asserts it's dropped; the absolute entries
+    survive in their original order.
+
+355. **`test_paths_edge_cases.py::test_resolve_system_default_config_paths_skips_empty_segments`** (parametrized, 3 cases)
+    `"/a::/b"`, `"/a:/b:"`, `":/a:/b"` — doubled/leading/trailing
+    colons. Asserts the empty segments are skipped, not treated as
+    `"."` or raising.
+
+356. **`test_paths_edge_cases.py::test_resolve_system_default_config_paths_falls_back_when_entirely_relative`**
+    Every `XDG_CONFIG_DIRS` entry relative. Asserts the spec's own
+    `/etc/xdg` default applies, as if unset.
+
+357. **`test_paths_edge_cases.py::test_resolve_socket_path_falls_back_and_warns_when_xdg_runtime_dir_unset`**
+    No `XDG_RUNTIME_DIR`. Asserts a fallback to `/tmp/spork-<uid>/sporkd.sock`
+    *and* a `UserWarning` mentioning `XDG_RUNTIME_DIR` — the spec's own
+    "fall back and print a warning" guidance for this specific variable.
+
+358. **`test_paths_edge_cases.py::test_resolve_socket_path_falls_back_for_relative_or_empty_too`** (parametrized, 2 cases)
+    A relative path and an empty string. Same fallback-and-warn
+    treatment as 357.
+
+359. **`test_schema.py::test_sporkconfig_constructs_with_all_required_fields`**
+    The five always-required fields (provider/llm/alerts specs,
+    rules_path, db_path) alone construct a valid `SporkConfig`.
+
+360. **`test_schema.py::test_sporkconfig_rejects_unknown_fields`**
+    A typo'd top-level key. Asserts `pydantic.ValidationError`
+    (`extra="forbid"`, same convention as `rules.schema.Condition`).
+
+361. **`test_schema.py::test_sporkconfig_socket_path_defaults_to_none`**
+    Omitting `socket_path`. Asserts `None` — `loader.py`'s job to fill
+    it in via `resolve_socket_path()`, not the schema's.
+
+362. **`test_schema.py::test_sporkconfig_tiering_defaults_when_omitted`**
+    Omitting `[tiering]` entirely. Asserts a full, default-valued
+    `TieringConfig`, not a missing-field error.
+
+363. **`test_schema.py::test_tieringconfig_defaults_match_documented_values`**
+    Asserts every `TieringConfig` default matches §7.2's example
+    config.toml exactly.
+
+364. **`test_schema.py::test_backendspec_kwargs_defaults_to_empty_dict`**
+    A `BackendSpec` with no `kwargs` table. Asserts `{}`.
+
+365. **`test_loader.py::test_load_config_reads_the_user_tier_alone`**
+    Only the user tier's file exists, fully specified. Asserts it
+    loads correctly with no system-default/enforced files present.
+
+366. **`test_loader.py::test_load_config_merges_three_tiers_per_key_not_whole_file`**
+    System-default sets `alert_threshold`+`daily_call_budget`+specs;
+    user overrides only `alert_threshold`. Asserts both the user's
+    override and the system-default's untouched values survive.
+
+367. **`test_loader.py::test_load_config_enforced_tier_overrides_user_tier`**
+    The concrete exit-criterion test: user sets `daily_call_budget=200`,
+    enforced sets `50`. Asserts `50` wins.
+
+368. **`test_loader.py::test_load_config_raises_configloaderror_for_malformed_toml`**
+    Broken TOML syntax. Asserts `ConfigLoadError`, not a raw
+    `tomllib.TOMLDecodeError`.
+
+369. **`test_loader.py::test_load_config_raises_configloaderror_when_required_fields_are_missing`**
+    No tier ever sets `provider`. Asserts `ConfigLoadError`, not a raw
+    `pydantic.ValidationError`.
+
+370. **`test_loader.py::test_load_config_resolves_socket_path_when_not_set_by_any_tier`**
+    `socket_path` omitted everywhere. Asserts it's filled in via
+    `paths.resolve_socket_path()`.
+
+371. **`test_loader_edge_cases.py::test_load_config_raises_configloaderror_for_an_unreadable_path`**
+    The user-tier path is a directory, not a file — deterministic
+    regardless of the running user's privilege level (unlike
+    chmod-based permission denial, meaningless when tests run as
+    root). Asserts `ConfigLoadError`, not a raw `OSError`.
+
+372. **`test_loader_edge_cases.py::test_load_config_treats_an_empty_but_present_tier_file_as_a_noop`**
+    A 0-byte enforced-tier file. Asserts it contributes zero
+    overrides, same as a missing file — not a parse error.
+
+373. **`test_loader_edge_cases.py::test_load_config_deep_merges_nested_backendspec_kwargs`**
+    System-default sets two `provider.kwargs` entries; user overrides
+    only one. Asserts both survive — the recursive merge goes deeper
+    than one level, not just `[tiering]`.
+
+374. **`test_loader_edge_cases.py::test_load_config_system_default_uses_first_existing_match_only`**
+    Three `system_default_config_paths` candidates, only the middle one
+    exists. Asserts it's the one read — later real candidates are
+    ignored, matching `XDG_CONFIG_DIRS`'s first-match-wins precedence.

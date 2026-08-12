@@ -336,7 +336,7 @@ network leaf calls stay `NotImplementedError`" pattern M1a/M1b/M3 used
 — not new scope invented for M5, just work that had nowhere else on
 the roadmap to live until M5 needed something to control.
 
-- [ ] `spork.core.config`: `SporkConfig`/`TieringConfig`/`BackendSpec`
+- [x] `spork.core.config`: `SporkConfig`/`TieringConfig`/`BackendSpec`
       pydantic schema + `load_config()` (M) — three-tier precedence
       (system enforced `/etc/spork/enforced.toml` > user
       `$XDG_CONFIG_HOME/spork/config.toml` > system default via
@@ -345,6 +345,8 @@ the roadmap to live until M5 needed something to control.
       tools (`git`'s system/global scopes, Chromium/Firefox managed
       policy), not invented. `ConfigLoadError` wraps every failure
       mode, same convention as `RulesLoadError`/`ProviderLoadError`.
+      Exit criterion's enforced-tier-wins test is real: see
+      `docs/TEST_COVERAGE.md`'s `test_load_config_enforced_tier_overrides_user_tier`.
 - [ ] Daemon event loop assembly: `daemon/main.py` composes
       `load_config()` → `Provider.build_source()` → Tier 1
       `process_message()` → Tier 2 escalation → `PipelineObserver`/
