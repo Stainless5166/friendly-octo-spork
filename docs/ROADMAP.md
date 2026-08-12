@@ -372,17 +372,29 @@ live until M5 needed something to control.
       `Provider` protocol, most likely) so an escalated message can
       flow straight into `process_tier2_message()` in the same poll
       cycle (S)
-- [ ] IPC protocol + Unix socket server in `sporkd` (M) — newline-
+- [x] IPC protocol + Unix socket server in `sporkd` (M) — newline-
       delimited JSON over the socket (§15's filesystem-permission
       model already rules out needing an auth scheme; no new
-      dependency, human-inspectable with `nc`/`socat` while debugging)
-- [ ] `spork status` (queue depth, push state, today's LLM spend) (M)
-- [ ] `spork pause`/`resume` (S)
+      dependency, human-inspectable with `nc`/`socat` while debugging).
+      `DaemonState`'s fields are touched only from coroutine code,
+      never from inside `to_thread()`, so no lock is needed — see
+      §6.2.2's note on the concurrent-`StateDB`-access bug this caught
+      before any code was written.
+- [x] `spork status` (M) — reports `paused`/`started_at` only; "queue
+      depth", "push state", and "LLM spend vs budget" are explicitly
+      deferred (§6.2.2), not fabricated with no backing data
+- [x] `spork pause`/`resume` (S) — honest caveat: also stops fetching
+      new mail, not just acting on it (`Source.poll()` fuses wait+fetch,
+      §9.2); a real push connection "staying live" while paused isn't
+      achievable without splitting that abstraction further, not done
+      here
 - [ ] `spork rules list/edit/enable/disable` with live reload (M)
 - [ ] `spork config show/edit` with validation on save (S) — `edit`
       only ever opens the *user* tier (§7.2); `show` flags any value
       the enforced tier is overriding
-- [ ] `spork logs` (tail, filter by message ID / time range) (S)
+- [x] `spork logs` (S) — reads `StateDB` directly, no socket/daemon
+      needed; `--tail`/`--since` filter client-side, `--message-id`
+      storage-side
 - [ ] `spork reclassify <id>` (S)
 
 **Exit criteria:** every command in §13 works end-to-end against a live

@@ -98,7 +98,16 @@ I/O dependency this daemon has is synchronous (confirmed against
 tracked as a new, separate roadmap item rather than faked.
 `StateDB` gained `check_same_thread=False` as a required companion
 fix. **M5 is 2/10** (a checklist item was added along with this work,
-not just checked off).
+not just checked off). Updated once more: `spork.core.ipc`
+(newline-delimited JSON, one request per connection, real Unix
+sockets throughout) plus `DaemonState` and `run_daemon()`'s
+`asyncio.TaskGroup()` now serving it alongside Tier 1 processing, and
+the `spork status`/`spork pause`/`spork resume`/`spork logs` CLI
+commands. A real concurrency bug (an IPC handler racing `StateDB`
+against a `to_thread(process_message, ...)` call) was found and
+designed out before any code was written — `spork status` defers its
+LLM-spend field as a direct, stated consequence rather than accepting
+the race. **M5 is 6/10.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -407,19 +416,19 @@ not one message's full cross-tier lifetime, since nothing calls
 exists) — M7 still separately owns `sporkd`'s overall structured
 logging setup and audit-trail completeness beyond triage outcomes.
 
-### M5 — CLI + daemon control surface — 2/10
+### M5 — CLI + daemon control surface — 6/10
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `spork.core.config` | ✅ | ✅ — tests 347–374 (28 numbered entries, 51 actual test cases — see note below), 100% line coverage |
 | Daemon event loop assembly | ✅ | ✅ — tests 375–383 (9 tests), 100% line coverage on `spork.daemon.loop` |
 | Wire Tier 2 into the daemon loop | ❌ | — |
-| IPC protocol + Unix socket server | ❌ | — |
-| `spork status` | ❌ | — |
-| `spork pause`/`resume` | ❌ | — |
+| IPC protocol + Unix socket server | ✅ | ✅ — tests 384–399 + 400–403 (20 tests), 99–100% line coverage on `spork.core.ipc` |
+| `spork status` | ✅ | ✅ — tests 404–407 (4 tests), including a full end-to-end test against a real `sporkd` subprocess |
+| `spork pause`/`resume` | ✅ | ✅ — tests 408–410 (3 tests), including a full pause→status→resume→status round trip |
 | `spork rules list/edit/enable/disable` w/ live reload | ❌ | — |
 | `spork config show/edit` | ❌ | — |
-| `spork logs` | ❌ | — |
+| `spork logs` | ✅ | ✅ — tests 411–417 (7 tests) |
 | `spork reclassify <id>` | ❌ | — |
 
 `spork.core.config` (`schema.py`/`paths.py`/`loader.py`) is the first
@@ -461,13 +470,45 @@ tracked as its own new roadmap item rather than faked with placeholder
 values. `StateDB` also gained `check_same_thread=False`, itself
 covered by a dedicated cross-thread test (test 375, `tests/core/state`).
 
+**`spork.core.ipc`** (`protocol.py`/`server.py`/`client.py`) is
+newline-delimited JSON, one request per connection, over the real Unix
+domain control socket — tested against real sockets throughout, never
+mocked. `IpcServer` never crashes or hangs on an unknown command, a
+malformed request line, or a handler that raises; the socket file gets
+0600 permissions (§15) and any stale leftover is removed before
+binding. `send_request()` (the CLI's plain synchronous side) raises
+one `IpcConnectionError` for every "nothing reached the daemon" case —
+no socket file, connection refused, or a listener that accepts and
+closes without responding.
+
+**`DaemonState`** carries only `paused`/`started_at`, deliberately
+never anything derived from `StateDB` — a real concurrency bug (an
+`IpcServer` handler reading `StateDB` from the event-loop thread while
+a `to_thread(process_message, ...)` call touches the same connection
+from a worker thread) was caught and designed out *before* any code
+was written, not found by a flaky test later. `spork status`'s
+LLM-spend field is deferred as a direct consequence — the data is real
+(`StateDB.get_llm_usage()`, since M3) but reporting it safely needs
+either Tier 2 wired into the loop or a `StateDB` synchronization
+mechanism this round doesn't add.
+
+`spork pause`/`spork resume`'s honest caveat is tested, not just
+documented: `test_run_message_loop_never_polls_while_paused` proves
+`Source.poll()` is never called while paused (a real behavioral skip),
+and the full CLI round trip is proven against a real `sporkd`
+subprocess, not simulated.
+
+`spork logs` needed no new `StateDB` query surface — `--tail`/`--since`
+filter the already-returned list client-side; `--message-id` reuses
+`get_audit_entries(jmap_id=...)`'s existing storage-side filter.
+
 ### M6–M7
 
 No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (406 tests, all passing — 0 xfail)
+## Full test inventory (440 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -2294,3 +2335,128 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
     `sporkd` run via subprocess with `XDG_CONFIG_HOME`/`XDG_CONFIG_DIRS`
     pointed at empty tmp dirs (no config anywhere). Asserts exit code 1,
     an `"Error:"` message, and no `"Traceback"` in stderr.
+
+### tests/core/ipc + tests/daemon + tests/cli/commands (the control socket, §6.2.2)
+
+384. **`ipc/test_protocol.py::test_ipc_request_defaults_params_to_empty_dict`**
+    A command needing no arguments. Asserts `params == {}`.
+
+385. **`ipc/test_protocol.py::test_ipc_response_defaults_data_and_error`**
+    A bare success response. Asserts `data == {}` and `error is None`.
+
+386. **`ipc/test_protocol.py::test_ipc_request_rejects_unknown_fields`**
+    A typo'd field. Asserts `pydantic.ValidationError` (`extra="forbid"`).
+
+387. **`ipc/test_protocol.py::test_encode_line_produces_one_newline_terminated_json_line`**
+    Asserts the framed bytes end in exactly one `\n` and round-trip
+    back through `IpcRequest.model_validate_json()`.
+
+388. **`ipc/test_protocol.py::test_encode_line_works_for_responses_too`**
+    Same round-trip, for `IpcResponse`.
+
+389. **`ipc/test_server.py::test_ipc_server_dispatches_to_the_registered_handler`**
+    A real connection, over a real Unix socket. Asserts the handler's
+    return value comes back as the response's `data`.
+
+390. **`ipc/test_server.py::test_ipc_server_returns_error_for_an_unknown_command`**
+    No handler registered. Asserts a clear error response, never a hang.
+
+391. **`ipc/test_server.py::test_ipc_server_returns_error_when_a_handler_raises`**
+    A handler that raises `ValueError`. Asserts an error response, not
+    a crashed connection or server.
+
+392. **`ipc/test_server.py::test_ipc_server_removes_a_stale_socket_file_before_binding`**
+    A leftover non-socket file at the target path. Asserts startup
+    still succeeds.
+
+393. **`ipc/test_server.py::test_ipc_server_socket_file_has_restrictive_permissions`**
+    Asserts the bound socket file is mode `0600` (§15).
+
+394. **`ipc/test_server.py::test_ipc_server_stops_promptly_after_stop_event_is_set`**
+    Asserts `serve()` actually returns once `stop_event` is set.
+
+395. **`ipc/test_server_edge_cases.py::test_ipc_server_returns_error_for_a_malformed_request_line`**
+    Garbage bytes (not valid `IpcRequest` JSON) on the wire. Asserts a
+    clear error response.
+
+396. **`ipc/test_client.py::test_send_request_returns_the_servers_response`**
+    A real round trip against a real `IpcServer`. Asserts the
+    handler's data comes back.
+
+397. **`ipc/test_client.py::test_send_request_defaults_params_to_empty_dict`**
+    Calling without `params`. Asserts an empty dict was sent.
+
+398. **`ipc/test_client.py::test_send_request_raises_ipcconnectionerror_when_nothing_is_listening`**
+    No socket file at all. Asserts `IpcConnectionError` — the "daemon
+    not running" signal every CLI command checks for.
+
+399. **`ipc/test_client_edge_cases.py::test_send_request_raises_when_server_closes_without_responding`**
+    A listener that accepts then closes without writing a response.
+    Asserts `IpcConnectionError` either way that failure surfaces.
+
+400. **`daemon/test_loop_ipc.py::test_run_daemon_serves_status_over_the_socket`**
+    A real status request against a real running `run_daemon()`.
+    Asserts `paused is False` and `started_at` is set.
+
+401. **`daemon/test_loop_ipc.py::test_run_daemon_pause_then_status_reports_paused`**
+    pause -> status -> resume -> status, over the real socket. Asserts
+    each step's `paused` value.
+
+402. **`daemon/test_loop_ipc.py::test_run_daemon_still_processes_messages_while_serving_ipc`**
+    A status request during a real Tier 1 run. Asserts the message
+    still gets processed — both `TaskGroup` tasks genuinely coexist.
+
+403. **`daemon/test_loop_ipc.py::test_run_message_loop_never_polls_while_paused`**
+    `daemon_state.paused = True` from the start, against a
+    call-counting fake `Source`. Asserts `poll()` is never called —
+    pause is a real behavioral skip, not just an unread flag.
+
+404. **`cli/commands/test_status.py::test_status_help_works`**
+    `spork status --help`. Asserts exit 0, usage text.
+
+405. **`cli/commands/test_status.py::test_status_with_no_config_produces_a_clean_error`**
+    No config anywhere. Asserts exit 1, a clear `ConfigLoadError`
+    message, no traceback.
+
+406. **`cli/commands/test_status.py::test_status_when_daemon_not_running_produces_a_clear_message`**
+    A valid config, nothing listening. Asserts "not running" messaging.
+
+407. **`cli/commands/test_status.py::test_status_reports_real_daemon_state`**
+    A real `sporkd` subprocess (started, polled for its socket file),
+    then a real `spork status` subprocess against it. Asserts exit 0
+    and `"paused"` in the output.
+
+408. **`cli/commands/test_pause.py::test_pause_and_resume_help_work`**
+    `--help` for both commands. Asserts exit 0, usage text.
+
+409. **`cli/commands/test_pause.py::test_pause_when_daemon_not_running_produces_a_clear_message`**
+    Same "not running" convention as `spork status`.
+
+410. **`cli/commands/test_pause.py::test_pause_then_resume_actually_toggles_daemon_state`**
+    A full end-to-end round trip against a real `sporkd` subprocess,
+    verified via `spork status`'s own output.
+
+411. **`cli/commands/test_logs.py::test_logs_help_works`**
+    Asserts exit 0, usage text.
+
+412. **`cli/commands/test_logs.py::test_logs_with_no_config_produces_a_clean_error`**
+    Asserts exit 1, clean error, no traceback.
+
+413. **`cli/commands/test_logs.py::test_logs_prints_nothing_for_a_fresh_never_run_daemon`**
+    A `StateDB` that's never had anything written to it. Asserts empty
+    output, not an error.
+
+414. **`cli/commands/test_logs.py::test_logs_prints_entries_oldest_first`**
+    Two entries written out of display order. Asserts oldest-first.
+
+415. **`cli/commands/test_logs.py::test_logs_filters_by_message_id`**
+    `--message-id` against two entries for different messages. Asserts
+    only the matching one prints.
+
+416. **`cli/commands/test_logs.py::test_logs_filters_by_since`**
+    `--since` against two entries either side of the cutoff. Asserts
+    only the later one prints.
+
+417. **`cli/commands/test_logs.py::test_logs_tail_shows_only_the_last_n_entries`**
+    `--tail 2` against five entries. Asserts only the last two print,
+    in order.
