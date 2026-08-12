@@ -53,3 +53,12 @@ class JmapClient:
             "JmapClient.apply_action() requires a live jmapc session — "
             "not implemented yet, see docs/ROADMAP.md M1"
         )
+
+    def create_draft(self, message: NormalizedMessage, body: str) -> None:
+        """Create a draft reply to `message` via `Email/set` into the
+        account's Drafts mailbox — never `EmailSubmission/set`
+        (docs/DESIGN.md §10.6, §11's "draft, never send" invariant)."""
+        raise NotImplementedError(
+            "JmapClient.create_draft() requires a live jmapc session — "
+            "not implemented yet, see docs/ROADMAP.md M3"
+        )

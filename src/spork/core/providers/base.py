@@ -20,17 +20,32 @@ class ActionApplier(Protocol):
     def apply(self, message: NormalizedMessage, action: Action) -> None: ...
 
 
+class DraftCreator(Protocol):
+    """Creates a draft reply in the account's Drafts mailbox.
+
+    A provider's second write side, alongside `ActionApplier` — the
+    M3 counterpart for `Verdict.draft_reply` (docs/DESIGN.md §10.1,
+    §10.6). Never sent: no `Provider`/`DraftCreator` implementation
+    anywhere in this codebase has a path to `EmailSubmission/set` —
+    §11's "draft, never send" invariant is enforced by omission.
+    """
+
+    def create_draft(self, in_reply_to: NormalizedMessage, body: str) -> None: ...
+
+
 class Provider(Protocol):
     """What every mail-backend integration (JMAP, IMAP, ...) adapts to.
 
     A provider is the daemon's *entire* relationship to one remote
-    source of truth: reading from it (`build_source`) and writing to
-    it (`build_action_applier`) are two operations against the same
+    source of truth: reading from it (`build_source`), writing an
+    action to it (`build_action_applier`), and writing a draft to it
+    (`build_draft_creator`) are three operations against the same
     backend, not separate concerns that happen to share one
     implementation. Anything else backend-specific (mailbox role
     resolution) is reached through whatever a provider hands back, not
-    through this Protocol — but read and write both belong here.
+    through this Protocol — but every kind of read/write belongs here.
     """
 
     def build_source(self) -> Source: ...
     def build_action_applier(self) -> ActionApplier: ...
+    def build_draft_creator(self) -> DraftCreator: ...
