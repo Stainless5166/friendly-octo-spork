@@ -35,7 +35,12 @@ framework for stages that enrich a Payload via I/O (a thread-history
 search, a contact-details lookup) — `Filter`/`Selector` stay
 conventionally pure, `Pipeline`'s stage list now dispatches each stage
 to `.apply()` or `.augment()` by type. No concrete Augment exists yet;
-this is the framework-level Protocol only.
+this is the framework-level Protocol only. Updated once more for M3's
+second item: `spork.core.llm.base`/`loader`/`clients.anthropic` — an
+`LLMClient` Protocol adapter for Tier 2 backends (mirroring
+`spork.core.providers`' `Provider` pattern), a pydantic `Verdict`
+schema, and `AnthropicLLMClient` as a settled-shape stub like
+`JmapClient`. **M3 is 2/7.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -229,12 +234,12 @@ lookup — keeping `Filter`/`Selector` conventionally pure. No concrete
 Augment exists yet (no live lookup backend to call); this is the
 Protocol-level seam M3's prompt-building chain is expected to use.
 
-### M3 — LLM escalation (Tier 2) — 1/7
+### M3 — LLM escalation (Tier 2) — 2/7
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | Body cleaning (HTML strip, quote-chain collapse, truncation) | ✅ | ✅ — tests 150–160 (11 tests), 100% line coverage |
-| Claude client wrapper + verdict schema | ❌ | — |
+| Claude client wrapper + verdict schema | ✅ | ✅ — tests 192–210 (19 tests), 100% line coverage |
 | Verdict validation against configured mailbox/category set | ❌ | — |
 | Confidence-band logic | ❌ | — |
 | `daily_call_budget` + `llm_usage` tracking | ❌ | — |
@@ -248,13 +253,26 @@ quoted-reply chains collapsed at the earliest of several marker
 patterns, truncated on a word boundary with an explicit marker, and
 excess blank lines normalized.
 
+`spork.core.llm.base`/`loader`/`clients.anthropic` ("Claude client
+wrapper + verdict schema") is "done" in the same sense `JmapProvider`
+was under M1: everything buildable without a live API session is real
+and tested (`LLMClient` Protocol, the `VerdictRequest`/`Verdict`
+schema — a pydantic model since it parses untrusted LLM output, same
+reasoning as `rules.schema` — and `load_llm_client()`'s dynamic
+"module:ClassName" loading, mirroring
+`spork.core.providers.loader.load_provider()` exactly), and the one
+piece that isn't — an actual Anthropic API call — is a settled-shape
+`NotImplementedError` on `AnthropicLLMClient.get_verdict()`, same
+treatment as `JmapClient`'s stubs (§9.3). No `anthropic` import
+anywhere, matching `jmapc`'s not-yet-a-dependency status.
+
 ### M4–M7
 
 No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (191 tests, all passing — 0 xfail)
+## Full test inventory (210 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -1216,3 +1234,90 @@ pipeline) tested against a bare `Payload[MessageMeta]` per module, no
     A stage satisfying neither `Filter` nor `Augment` (a wiring
     mistake). Asserts a clear `AttributeError` naming the missing
     method, not a silent no-op.
+
+### tests/core/llm (LLMClient adapter, §10.1)
+
+`spork.core.llm.base` (`VerdictRequest`/`Verdict`/`LLMClient`),
+`spork.core.llm.loader` (`load_llm_client()`, tested against a fixture
+class the same way `tests/core/providers/test_loader.py` tests
+`load_provider()`), and `spork.core.llm.clients.anthropic`
+(`AnthropicLLMClient`, tested the same way
+`tests/core/providers/jmap/test_client.py` tests `JmapClient`'s
+settled-shape `NotImplementedError` stubs).
+
+192. **`test_base.py::test_verdict_request_holds_the_assembled_prompt_inputs`**
+    Constructs a `VerdictRequest` and reads fields back. Asserts they
+    match what was passed in.
+
+193. **`test_base.py::test_verdict_parses_a_valid_llm_response`**
+    A well-formed response dict matching §10's JSON example. Asserts
+    it parses into a `Verdict` with a nested `Action`.
+
+194. **`test_base.py::test_verdict_draft_reply_defaults_to_none_when_omitted`**
+    A response with no `draft_reply` key. Asserts the field defaults
+    to `None` — it's optional per §10.
+
+195. **`test_base.py::test_verdict_accepts_an_explicit_draft_reply`**
+    Asserts a present `draft_reply` round-trips through validation.
+
+196. **`test_base.py::test_verdict_rejects_unknown_fields`**
+    A response with a field spork never asked for. Asserts
+    `ValidationError` — `extra="forbid"`, same rule as
+    `rules.schema.Condition`/`Action`.
+
+197. **`test_base.py::test_verdict_rejects_a_missing_required_field`**
+    A response missing `reasoning`. Asserts `ValidationError` rather
+    than a silently-defaulted field.
+
+198. **`test_base_edge_cases.py::test_verdict_rejects_a_suggested_action_of_escalate`**
+    A response whose `suggested_action.type` is `"escalate"`. Asserts
+    `ValidationError` — a verdict is already Tier 2's output, so
+    escalating again is a schema-level contradiction.
+
+199. **`test_base_edge_cases.py::test_verdict_rejects_confidence_above_one`**
+    `confidence: 1.5`. Asserts `ValidationError` — confidence is a
+    probability, not silently clamped.
+
+200. **`test_base_edge_cases.py::test_verdict_rejects_confidence_below_zero`**
+    `confidence: -0.1`. Asserts `ValidationError`.
+
+201. **`test_base_edge_cases.py::test_verdict_rejects_an_urgency_outside_the_closed_set`**
+    `urgency: "critical"`. Asserts `ValidationError` — `urgency` is a
+    closed `Literal`, not an open string.
+
+202. **`test_base_edge_cases.py::test_verdict_rejects_a_malformed_nested_suggested_action`**
+    A `suggested_action` with an extra field. Asserts `ValidationError`
+    — `Action`'s own validation applies transitively through `Verdict`.
+
+203. **`test_loader.py::test_load_llm_client_imports_and_instantiates_by_spec`**
+    A well-formed `"module:ClassName"` spec. Asserts it resolves to an
+    instance of that class.
+
+204. **`test_loader.py::test_load_llm_client_passes_through_constructor_kwargs`**
+    Asserts extra kwargs reach the client's constructor unmodified.
+
+205. **`test_loader.py::test_load_llm_client_raises_for_malformed_spec`**
+    A spec with no `:` separator. Asserts `LLMClientLoadError` before
+    any import is attempted.
+
+206. **`test_loader_edge_cases.py::test_load_llm_client_raises_for_unimportable_module`**
+    A spec naming a nonexistent module. Asserts `LLMClientLoadError`,
+    not a raw `ImportError`.
+
+207. **`test_loader_edge_cases.py::test_load_llm_client_raises_for_missing_class_attribute`**
+    A spec naming a real module but an undefined class. Asserts
+    `LLMClientLoadError`, not a raw `AttributeError`.
+
+208. **`test_loader_edge_cases.py::test_load_llm_client_raises_when_construction_fails`**
+    A client whose constructor rejects the given kwargs. Asserts
+    `LLMClientLoadError`, not a raw `TypeError`.
+
+209. **`clients/test_anthropic.py::test_get_verdict_raises_not_implemented`**
+    Asserts `AnthropicLLMClient.get_verdict()` raises
+    `NotImplementedError` — a live Anthropic API session isn't
+    something this environment can exercise honestly.
+
+210. **`clients/test_anthropic.py::test_constructor_accepts_configured_model_and_max_tokens`**
+    Constructs with non-default `model`/`max_tokens`. Asserts
+    construction itself doesn't raise — only `get_verdict()` is
+    unimplemented.

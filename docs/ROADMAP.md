@@ -193,7 +193,15 @@ drives an action.
       via a hand-rolled `HTMLParser` subclass (no new dependency),
       quote chains cut at the earliest of several marker patterns,
       word-boundary truncation with an explicit marker.
-- [ ] Claude client wrapper + structured verdict schema (§10) (M)
+- [x] Claude client wrapper + structured verdict schema (§10) (M) —
+      `LLMClient` Protocol adapter (§10.1, mirrors `Provider`'s
+      pattern for mail backends) + `spork.core.llm.loader` dynamic
+      `"module:ClassName"` loading + a pydantic `Verdict` schema
+      (reuses `rules.schema.Action` for `suggested_action`).
+      `AnthropicLLMClient` is a settled-shape stub like `JmapClient`:
+      real constructor/method signature, `get_verdict()` a clean
+      `NotImplementedError` until a live Anthropic API session is
+      possible — no `anthropic` import yet, same as `jmapc`.
 - [ ] Verdict validation against configured mailbox/category set (S)
 - [ ] Confidence-band logic: autoact / autoact+alert / alert-only (§9) (M)
 - [ ] `daily_call_budget` enforcement + `llm_usage` tracking (S)
