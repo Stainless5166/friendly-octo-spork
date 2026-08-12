@@ -371,6 +371,7 @@ class IpcRequest(BaseModel):
     command: str
     params: dict[str, Any] = {}
 
+
 class IpcResponse(BaseModel):
     ok: bool
     data: dict[str, Any] = {}
