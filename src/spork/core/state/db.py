@@ -213,7 +213,18 @@ class StateDB:
     def record_llm_call(self, date: str, *, tokens_in: int, tokens_out: int) -> None:
         """Record one Tier 2 call against `date` (accumulates onto any
         existing row for that date rather than overwriting it — a
-        day's second call adds to its first, it doesn't replace it)."""
+        day's second call adds to its first, it doesn't replace it).
+
+        Rejects negative token counts eagerly: SQLite has no opinion on
+        an INTEGER column's sign, so an unguarded caller bug (e.g. a
+        miscalculated token delta) could otherwise silently corrupt a
+        day's running total instead of failing where the bad value
+        originated.
+        """
+        if tokens_in < 0:
+            raise ValueError(f"tokens_in must not be negative, got {tokens_in}")
+        if tokens_out < 0:
+            raise ValueError(f"tokens_out must not be negative, got {tokens_out}")
         self._conn.execute(
             "INSERT INTO llm_usage (date, calls, tokens_in, tokens_out) "
             "VALUES (?, 1, ?, ?) "
