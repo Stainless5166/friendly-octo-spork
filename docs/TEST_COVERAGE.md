@@ -55,7 +55,14 @@ sense JmapProvider was" caveat that applies to every item touching a
 live account. Two real gaps were found and fixed along the way (not
 just documented): `StateDB.record_llm_call()` had no guard against
 negative token counts, and DESIGN.md's §7.4 "indicative, not final"
-framing was stale for tables built since M1.
+framing was stale for tables built since M1. Updated once more:
+`spork.core.pipeline.tier2` (§10.7) wires all seven M3 items into one
+runnable pipeline over a new `Tier2Meta`, reusing the generic
+Filter/Selector/Augment/Pipeline framework — proven end to end against
+`RecordedLLMClient` with zero live API calls. Still M3, still 7/7 (not
+a new checklist item); what's still open is deciding *which* escalated
+message needs a Tier 2 run, deliberately left to a future daemon loop
+that needs a live JMAP session anyway.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -289,11 +296,25 @@ needing one. **M3 is 7/7**, in the same sense M1's JMAP client is
 session is real and tested; the genuinely-blocked pieces
 (`JmapClient.connect()`/`fetch_new_messages()`/`apply_action()`/
 `create_draft()`, `AnthropicLLMClient.get_verdict()`) are settled-shape
-`NotImplementedError` stubs, not gaps. Wiring these seven pieces into
-one live Tier 2 pipeline branch (the `"escalate"` route,
-docs/DESIGN.md §9.4) is still open — that's integration work for a
-pipeline that has the pieces to be built from now, not a missing
-piece itself.
+`NotImplementedError` stubs, not gaps.
+
+**Also done (not a new checklist item — still M3, 7/7):**
+`spork.core.pipeline.tier2` (docs/DESIGN.md §10.7, tests 262–298)
+wires all seven items above into one runnable pipeline — budget gate,
+LLM call, usage recording, verdict validation, confidence gating,
+action application, draft creation, audit, idempotency — over a new
+`Tier2Meta`, reusing the generic Filter/Selector/Augment/Pipeline
+framework and `MissingMetaError`, never Tier 1's concrete modules
+(`RuleVerdict`/`llm.base.Verdict` are different shapes).
+`test_default.py` runs it end to end against `RecordedLLMClient` — a
+real escalated message gets a real (recorded) verdict, a real action
+applied, a real draft created, with zero live API calls anywhere in
+the suite. What's still open: deciding *which* escalated message to
+call `process_tier2_message()` on — Tier 1's escalate branch already
+marks a message processed, so this pipeline deliberately doesn't
+duplicate that idempotency check; the scheduling decision needs a live
+JMAP session to know what's actually pending (M5, same blocker M1's
+daemon loop has), and isn't invented here.
 
 ### M4–M7
 
@@ -301,7 +322,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (261 tests, all passing — 0 xfail)
+## Full test inventory (298 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -1586,3 +1607,129 @@ the existing action-applier tests for each.
     differently-shaped JSON entries land in the same file, in call
     order — documented, not guarded against (a dev/CI tool, not a
     production data store).
+
+### tests/core/pipeline/tier2 (the Tier 2 pipeline, §10.7)
+
+`spork.core.pipeline.tier2` composes every §10.1–§10.6 piece into one
+runnable pipeline over a new `Tier2Meta` — reuses the generic
+`Payload`/`Filter`/`Selector`/`Augment`/`Pipeline` framework and
+`MissingMetaError` verbatim, never Tier 1's `MessageMeta`/modules.
+Module tests construct a bare `Payload[Tier2Meta]`, same style as
+`tests/core/pipeline/test_modules.py`; `test_default.py`/
+`test_default_edge_cases.py` run `process_tier2_message()` end to end
+against `RecordedLLMClient` — zero live Anthropic API calls anywhere
+in this suite.
+
+262. **`test_modules.py::test_timestamp_filter_sets_ts_from_the_injected_clock`**
+    Asserts `meta.ts` is set from the given clock.
+
+263. **`test_modules.py::test_budget_gate_selector_routes_budget_ok_when_under_the_limit`**
+    Fewer calls today than the budget. Asserts `"budget_ok"`.
+
+264. **`test_modules.py::test_budget_gate_selector_routes_budget_exhausted_at_the_limit`**
+    Calls already at the budget for today. Asserts `"budget_exhausted"`.
+
+265. **`test_modules.py::test_build_verdict_request_filter_cleans_the_body_and_builds_the_request`**
+    An HTML body. Asserts `payload.text` is cleaned and `meta.request`
+    is built from the cleaned text plus meta's caller-supplied fields.
+
+266. **`test_modules.py::test_call_llm_augment_delegates_to_the_client_and_sets_the_verdict`**
+    A stub `LLMClient`. Asserts `.augment()` calls `get_verdict(meta.request)`
+    and stores the result in `meta.verdict` — the pipeline's one I/O
+    stage, proven without a live API.
+
+267. **`test_modules.py::test_record_llm_usage_filter_records_one_call`**
+    Asserts one call is recorded against `meta.ts`'s date.
+
+268. **`test_modules.py::test_validate_verdict_filter_passes_through_a_valid_verdict`**
+    A verdict whose category/mailbox are both configured. Asserts it
+    passes through unchanged.
+
+269. **`test_modules.py::test_confidence_band_selector_routes_autoact_for_high_confidence`**
+    Asserts branch `"autoact"` and `meta.band == "autoact"`.
+
+270. **`test_modules.py::test_confidence_band_selector_routes_alert_only_for_low_confidence`**
+    Asserts branch `"alert_only"` and `meta.band == "alert_only"`.
+
+271. **`test_modules.py::test_apply_verdict_action_filter_calls_the_executor_and_sets_audit_fields`**
+    Asserts the executor is called with `verdict.suggested_action` and
+    the audit detail names the band.
+
+272. **`test_modules.py::test_record_alert_only_filter_sets_the_audit_event`**
+    Asserts `meta.audit_event` is set — no executor dependency at all.
+
+273. **`test_modules.py::test_record_budget_exhausted_filter_sets_the_audit_event`**
+    Asserts `meta.audit_event` is set.
+
+274. **`test_modules.py::test_create_draft_if_wanted_filter_creates_a_draft_when_one_is_present`**
+    A verdict with `draft_reply` set. Asserts `DraftCreator.create_draft()`
+    is called with the message and the reply text.
+
+275. **`test_modules.py::test_create_draft_if_wanted_filter_is_a_noop_when_no_draft_reply`**
+    A verdict with `draft_reply=None`. Asserts no draft is created.
+
+276. **`test_modules.py::test_write_audit_entry_filter_writes_what_meta_describes`**
+    Asserts the written entry matches `meta.audit_event`/`audit_detail_json`.
+
+277. **`test_modules.py::test_mark_processed_filter_writes_the_processed_row_with_a_verdict`**
+    Asserts `has_processed()` becomes `True`.
+
+278. **`test_modules.py::test_mark_processed_filter_writes_the_processed_row_without_a_verdict`**
+    The budget-exhausted case (no verdict). Asserts `has_processed()`
+    still becomes `True` — unlike Tier 1's, this filter doesn't
+    require `meta.verdict`.
+
+279. **`test_modules_edge_cases.py::test_budget_gate_selector_raises_when_ts_is_missing`**
+280. **`test_modules_edge_cases.py::test_call_llm_augment_raises_when_request_is_missing`**
+281. **`test_modules_edge_cases.py::test_record_llm_usage_filter_raises_when_ts_is_missing`**
+282. **`test_modules_edge_cases.py::test_validate_verdict_filter_raises_when_verdict_is_missing`**
+283. **`test_modules_edge_cases.py::test_confidence_band_selector_raises_when_verdict_is_missing`**
+284. **`test_modules_edge_cases.py::test_apply_verdict_action_filter_raises_when_verdict_is_missing`**
+285. **`test_modules_edge_cases.py::test_record_alert_only_filter_raises_when_verdict_is_missing`**
+286. **`test_modules_edge_cases.py::test_create_draft_if_wanted_filter_raises_when_verdict_is_missing`**
+287. **`test_modules_edge_cases.py::test_write_audit_entry_filter_raises_when_ts_is_missing`**
+288. **`test_modules_edge_cases.py::test_write_audit_entry_filter_raises_when_audit_event_is_missing`**
+289. **`test_modules_edge_cases.py::test_mark_processed_filter_raises_when_ts_is_missing`**
+    (279–289) Each of the 10 `MissingMetaError` raise branches across
+    the 13 modules, run standalone before the module it depends on —
+    same pattern as Tier 1's `test_modules_edge_cases.py`.
+
+290. **`test_default.py::test_process_tier2_message_autoacts_on_a_high_confidence_verdict`**
+    A high-confidence recorded verdict. Asserts its `suggested_action`
+    is applied, the message is marked processed, and the verdict is
+    returned.
+
+291. **`test_default.py::test_process_tier2_message_does_not_act_on_a_low_confidence_verdict`**
+    A low-confidence recorded verdict. Asserts no action is applied,
+    but the message is still marked processed and the verdict returned.
+
+292. **`test_default.py::test_process_tier2_message_creates_a_draft_when_the_verdict_wants_one`**
+    A verdict with `draft_reply` set. Asserts a real draft is created.
+
+293. **`test_default.py::test_process_tier2_message_returns_none_when_budget_is_exhausted`**
+    `daily_call_budget` already reached. Asserts `None` is returned, no
+    action applied, and the `LLMClient` is never called at all (proven
+    with a client that fails the test if invoked).
+
+294. **`test_default.py::test_process_tier2_message_writes_an_audit_entry`**
+    Asserts one audit entry is written for the run.
+
+295. **`test_default_edge_cases.py::test_process_tier2_message_does_not_mark_processed_when_validation_fails`**
+    A verdict naming an unconfigured category. Asserts
+    `VerdictValidationError` propagates and the message is NOT marked
+    processed — the same accepted M2 tradeoff (a raise aborts the run,
+    retried next cycle), not a new one.
+
+296. **`test_default_edge_cases.py::test_process_tier2_message_applies_the_action_on_the_autoact_alert_band_too`**
+    A mid-confidence (`autoact_alert`) verdict. Asserts its action is
+    still applied — the shared `act` `Pipeline` object genuinely
+    handles both routes.
+
+297. **`test_default_edge_cases.py::test_process_tier2_message_does_not_record_llm_usage_when_budget_is_exhausted`**
+    Asserts today's call count is unchanged — `RecordLLMUsageFilter`
+    is skipped entirely on the budget-exhausted branch, not just its
+    result discarded.
+
+298. **`test_default_edge_cases.py::test_default_clock_produces_a_real_parseable_timestamp`**
+    Omitting `now=`. Asserts a genuine, parseable timestamp — mirrors
+    Tier 1's equivalent test.

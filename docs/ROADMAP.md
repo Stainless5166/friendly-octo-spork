@@ -231,18 +231,36 @@ drives an action.
       adapter with no `NotImplementedError` anywhere, replaying
       pre-recorded `Verdict`s from a JSON fixture keyed by subject.
 
+- [x] Tier 2 pipeline wired end to end (§10.7) —
+      `spork.core.pipeline.tier2` (`Tier2Meta` + 13 modules +
+      `build_tier2_pipeline()`/`process_tier2_message()`) composes all
+      seven items above into one runnable pipeline: budget gate → LLM
+      call → usage recording → verdict validation → confidence gating
+      → action application/draft creation → audit → idempotency.
+      `test_default.py` runs it end to end against `RecordedLLMClient`
+      — a real escalated message gets a real (recorded) verdict, a
+      real action applied, a real draft created, zero live API calls.
+      Not one of the original 7 checklist items; called out separately
+      since it's the integration work those items existed to enable.
+
 **Exit criteria:** an escalated test email gets a sane structured verdict,
 the corresponding action is applied, and a drafted reply lands in Drafts
 un-sent. Budget cutoff verified by lowering `daily_call_budget` to 1 in a
-test run. **All 7 items above are done in the same sense M1's JMAP work
-is "done"** — every piece buildable without a live account is real and
-tested; **not yet met** as an end-to-end exit criterion, still blocked
-on the same live Fastmail session M1 needs (`JmapClient.connect()`/
-`fetch_new_messages()`/`apply_action()`/`create_draft()`) plus a live
-Anthropic API session (`AnthropicLLMClient.get_verdict()`), and on
-wiring these seven pieces into one live pipeline branch (the
-`"escalate"` route, docs/DESIGN.md §9.4) — the composability seam
-exists (§9.4), but assembling it end to end is still open work.
+test run. **All 7 items above, plus the Tier 2 pipeline wiring, are done
+in the same sense M1's JMAP work is "done"** — every piece buildable
+without a live account is real and tested; **not yet met** as an
+end-to-end exit criterion, still blocked on the same live Fastmail
+session M1 needs (`JmapClient.connect()`/`fetch_new_messages()`/
+`apply_action()`/`create_draft()`) plus a live Anthropic API session
+(`AnthropicLLMClient.get_verdict()`) to swap in for `RecordedLLMClient`.
+One piece is deliberately still unbuilt even with those two live
+sessions: deciding *which* escalated message needs a Tier 2 run — Tier
+1's escalate branch already marks a message processed (the interim M2
+policy), so `process_tier2_message()` can't reuse that idempotency
+check to find pending work; that scheduling decision is real `sporkd`
+main-loop work (M5), needing a live JMAP session to know what's
+actually pending, not something invented here to appear more done than
+it is.
 
 ## M4 — Alerting
 
