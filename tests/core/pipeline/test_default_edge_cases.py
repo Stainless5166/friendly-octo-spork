@@ -114,3 +114,38 @@ def test_default_clock_produces_a_real_parseable_timestamp(tmp_path: Path, make_
 
     assert verdict is not None
     datetime.fromisoformat(entries[0].ts)  # raises ValueError if not parseable
+
+
+def test_process_message_with_force_on_a_never_processed_message_behaves_normally(
+    tmp_path: Path, make_message
+) -> None:
+    """force=True doesn't change behavior for the ordinary case — a
+    message that was never processed to begin with is evaluated and
+    acted on exactly as it would be without force, not double-applied
+    or treated specially."""
+    message = make_message(message_id="msg-1")
+    rules = [Rule(id="r1", when=Condition(always=True), action=Action(type="tag", mailbox="X"))]
+
+    class _RecordingApplier:
+        def __init__(self) -> None:
+            self.calls: list[tuple[NormalizedMessage, Action]] = []
+
+        def apply(self, message: NormalizedMessage, action: Action) -> None:
+            self.calls.append((message, action))
+
+    applier = _RecordingApplier()
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        verdict = process_message(
+            message,
+            rules,
+            default_unmatched_action=Action(type="escalate"),
+            executor=ActionExecutor(applier),
+            state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
+            force=True,
+        )
+
+        assert db.has_processed("msg-1") is True
+
+    assert verdict is not None
+    assert applier.calls == [(message, Action(type="tag", mailbox="X"))]

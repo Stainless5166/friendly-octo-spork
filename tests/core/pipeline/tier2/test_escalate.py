@@ -116,3 +116,31 @@ def test_escalate_message_wires_thread_history_and_mailbox_lister_into_tier2(
     assert thread_history_reader.calls == [message]
     assert mailbox_lister.calls == 1
     assert applier.calls == [(message, Action(type="tag", mailbox="Needs-Reply"))]
+
+
+def test_escalate_message_returns_none_when_the_daily_budget_is_exhausted(
+    tmp_path: Path, make_message
+) -> None:
+    """escalate_message() passes process_tier2_message()'s None-on-
+    budget-exhausted result straight through, rather than assuming a
+    Verdict always comes back."""
+    message = make_message(message_id="msg-1", subject="Urgent")
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text("{}")
+
+    with StateDB(tmp_path / "state.sqlite3") as state_db:
+        verdict = escalate_message(
+            message,
+            thread_history_reader=_RecordingThreadHistoryReader(
+                ThreadContext(prior_subject=None, user_has_replied=False)
+            ),
+            mailbox_lister=_RecordingMailboxLister([]),
+            llm_client=RecordedLLMClient(responses_path),
+            executor=ActionExecutor(_RecordingApplier()),
+            draft_creator=_RecordingDraftCreator(),
+            state_db=state_db,
+            ops=PipelineObserver(LoggingAlerter()),
+            tiering=TieringConfig(daily_call_budget=0),
+        )
+
+    assert verdict is None
