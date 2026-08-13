@@ -144,6 +144,7 @@ flowchart TD
                 tier2_meta["meta.py<br/>Tier2Meta"]
                 tier2_modules["modules.py<br/>13 concrete Filters/Selectors/Augment"]
                 tier2_default["default.py<br/>build_tier2_pipeline() +<br/>process_tier2_message()"]
+                tier2_escalate["escalate.py<br/>escalate_message() +<br/>parse_to_addresses() (M5)"]
             end
         end
 
@@ -239,6 +240,7 @@ flowchart TD
             cli_pause["pause.py<br/>spork pause/resume"]
             cli_logs["logs.py<br/>spork logs"]
             cli_config["config.py<br/>spork config show/edit"]
+            cli_reclassify["reclassify.py<br/>spork reclassify (M5)"]
         end
     end
 
@@ -657,6 +659,11 @@ classDiagram
         <<Protocol>>
         +list_mailboxes() Sequence
     }
+    class MessageNotFoundError { <<Exception>> }
+    class MessageLookup {
+        <<Protocol>>
+        +get_message(message_id: str) NormalizedMessage
+    }
     class Provider {
         <<Protocol>>
         +build_source() Source
@@ -664,6 +671,7 @@ classDiagram
         +build_draft_creator() DraftCreator
         +build_thread_history_reader() ThreadHistoryReader
         +build_mailbox_lister() MailboxLister
+        +build_message_lookup() MessageLookup
     }
     class Source { <<Protocol>> }
 
@@ -672,7 +680,9 @@ classDiagram
     Provider ..> DraftCreator : builds
     Provider ..> ThreadHistoryReader : builds
     Provider ..> MailboxLister : builds
+    Provider ..> MessageLookup : builds
     ThreadHistoryReader ..> ThreadContext : returns
+    MessageLookup ..> MessageNotFoundError : raises, unknown message_id
 ```
 
 `Source` is fully defined in `spork.core.sources`' own diagram below;
@@ -1479,11 +1489,11 @@ classDiagram
 
     class build_default_pipeline {
         <<function>>
-        +build_default_pipeline(executor, state_db, ops, now, new_correlation_id) Pipeline
+        +build_default_pipeline(executor, state_db, ops, now, new_correlation_id, force) Pipeline
     }
     class process_message {
         <<function>>
-        +process_message(message, rules, default_unmatched_action, executor, state_db, ops, classifier, now, new_correlation_id) Optional~RuleVerdict~
+        +process_message(message, rules, default_unmatched_action, executor, state_db, ops, classifier, now, new_correlation_id, force) Optional~RuleVerdict~
     }
     build_default_pipeline ..> IdempotencyGateSelector : composes
     build_default_pipeline ..> TimestampFilter : composes
@@ -1662,12 +1672,42 @@ classDiagram
     build_tier2_pipeline ..> WriteAuditEntryFilter : composes
     build_tier2_pipeline ..> MarkProcessedFilter : composes
     process_tier2_message ..> build_tier2_pipeline : builds, then runs
+
+    class NormalizedMessage { <<dataclass, frozen>> }
+    class ThreadHistoryReader { <<Protocol>> }
+    class MailboxLister { <<Protocol>> }
+    class TieringConfig { <<pydantic BaseModel>> }
+    class parse_to_addresses {
+        <<function>>
+        +parse_to_addresses(message) Sequence
+    }
+    class escalate_message {
+        <<function>>
+        +escalate_message(message, thread_history_reader, mailbox_lister, llm_client, executor, draft_creator, state_db, ops, tiering) Optional~Verdict~
+    }
+    escalate_message ..> parse_to_addresses : to_addresses
+    escalate_message ..> ThreadHistoryReader : get_thread_context()
+    escalate_message ..> MailboxLister : list_mailboxes()
+    escalate_message ..> TieringConfig : unpacks into process_tier2_message()'s kwargs
+    escalate_message ..> process_tier2_message : assembles the call, returns its result
+    parse_to_addresses ..> NormalizedMessage : reads .headers["To"]
 ```
 
 `"autoact"`/`"autoact_alert"` route to the same `act` `Pipeline`
 instance (not drawn as two separate branches above — see §10.7's
 prose for why one object under two route keys is the accurate
 picture, not a diagramming simplification).
+
+`escalate_message()`/`parse_to_addresses()` (`spork.core.pipeline.tier2.escalate`,
+M5) are the pieces `docs/ROADMAP.md`'s "wire Tier 2 into the daemon
+loop" item originally built inline in `spork.daemon.loop` as
+`_escalate_to_tier2()`/`_parse_to_addresses()` — extracted into a
+public, importable pair once `spork reclassify <id>` (§13) needed the
+exact same "resolve thread history + mailbox list, then run Tier 2"
+step outside the daemon loop entirely. `daemon/loop.py`'s
+`_run_message_loop()` now calls these instead of defining its own
+copies — one real implementation, two callers, not a daemon-only
+helper duplicated for the CLI.
 
 #### `spork.core.secrets`
 
@@ -1762,6 +1802,14 @@ classDiagram
         <<Typer command>>
         +doctor() None
     }
+    class reclassify {
+        <<Typer command>>
+        +reclassify(message_id: str) None
+    }
+    class load_provider { <<function>> }
+    class process_message { <<function>> }
+    class escalate_message { <<function>> }
+    class MessageNotFoundError { <<Exception>> }
 
     app --> rules_app : add_typer("rules")
     app --> config_app : add_typer("config")
@@ -1770,6 +1818,7 @@ classDiagram
     app --> pause : command("pause")
     app --> resume : command("resume")
     app --> logs : command("logs")
+    app --> reclassify : command("reclassify")
     rules_app --> test : command("test")
     rules_app --> list_rules : command("list")
     rules_app --> rules_edit : command("edit")
@@ -1799,6 +1848,11 @@ classDiagram
     resume ..> send_request : "resume"
     send_request ..> IpcConnectionError : "sporkd is not running"
     doctor ..> NotImplementedError : catches JMAP-connectivity stub, clean CLI error
+    reclassify ..> load_config : locates provider/rules/db
+    reclassify ..> load_provider : builds Provider, standalone (§7.4)
+    reclassify ..> MessageNotFoundError : catches, clean CLI error
+    reclassify ..> process_message : force=True, bypasses the idempotency gate
+    reclassify ..> escalate_message : when Tier 1 escalates
 ```
 
 #### `spork.daemon`
@@ -1815,15 +1869,15 @@ classDiagram
     }
     class Provider { <<Protocol>> }
     class Source { <<Protocol>> }
-    class ThreadHistoryReader { <<Protocol>> }
-    class MailboxLister { <<Protocol>> }
     class LLMClient { <<Protocol>> }
     class DraftCreator { <<Protocol>> }
+    class ThreadHistoryReader { <<Protocol>> }
+    class MailboxLister { <<Protocol>> }
     class ActionExecutor
     class StateDB
     class PipelineObserver
     class process_message { <<function>> }
-    class process_tier2_message { <<function>> }
+    class escalate_message { <<function>> }
     class IpcServer
 
     class DaemonState {
@@ -1868,10 +1922,10 @@ classDiagram
     _run_message_loop --> DaemonState : skips poll()+processing while paused
     _run_message_loop --> RulesState : reads .rules fresh every poll iteration (§6.2.2)
     _run_message_loop ..> process_message : Tier 1, via asyncio.to_thread
-    _run_message_loop ..> process_tier2_message : Tier 2, when Tier 1 escalates, a second sequential asyncio.to_thread (§6.2.1)
-    _run_message_loop --> ThreadHistoryReader : get_thread_context() for an escalated message
-    _run_message_loop --> MailboxLister : list_mailboxes() for an escalated message
-    _run_message_loop --> DraftCreator : passed through to process_tier2_message
+    _run_message_loop ..> escalate_message : Tier 2, when Tier 1 escalates, a second sequential asyncio.to_thread (§6.2.1) — spork.core.pipeline.tier2.escalate (M5), also used by spork reclassify
+    escalate_message ..> ThreadHistoryReader : get_thread_context()
+    escalate_message ..> MailboxLister : list_mailboxes()
+    escalate_message --> DraftCreator : passed through to process_tier2_message
     IpcServer ..> load_rules : reload handler re-reads rules_path
     load_rules ..> RulesLoadError : reload handler catches, returns ok=False, RulesState untouched
 ```
@@ -2118,6 +2172,26 @@ Single file, WAL mode, no external DB dependency. Built tables (final —
   primary key (one row per day, upserted via `record_llm_call()`);
   feeds the daily budget check (§10.4) and makes actual spend visible
   via `spork status` (§7.2, M5).
+
+**Why `spork reclassify <id>` (§13, M5) is a standalone CLI command,
+not daemon-mediated:** it opens its own `StateDB` connection directly,
+the same way `spork logs` already does, and runs whether or not
+`sporkd` is running — no new IPC command, no daemon-side "fetch by ID
+and reprocess" capability to build. This is safe *because* of WAL mode
+(stated above, not a new addition for this item): SQLite's WAL journal
+already lets one writer and multiple readers proceed without blocking
+each other, and even the one case that does contend — `sporkd` and a
+`spork reclassify` process both trying to write at the same instant —
+is a bounded wait, not a corruption risk: `sqlite3.connect()`'s default
+5-second busy timeout (never overridden in `StateDB.__init__`, so it's
+already in effect) means a losing writer retries briefly rather than
+failing outright, and SQLite's own single-writer-at-a-time lock is what
+actually prevents interleaved writes either way. `StateDB` was never
+designed to be safe for genuinely concurrent multi-thread use *within
+one process* (§6.2.1's `check_same_thread=False` note is explicit about
+that) — but two independent connections from two separate processes,
+each only ever writing sequentially on its own, is exactly what SQLite
+in WAL mode is built to support.
 
 Still indicative, not final — not built yet:
 
@@ -2538,12 +2612,13 @@ generic caller should know how to do itself.
 - **The Adapter: `JmapProvider`.** Wraps `JmapClient` +
   `JmapPushTrigger` (§8) into a `Source` via the existing
   `TriggeredSource` (§9.2) for `build_source()`, and wraps
-  `JmapClient.apply_action()` (one of six `NotImplementedError` stubs
+  `JmapClient.apply_action()` (one of seven `NotImplementedError` stubs
   alongside `connect()`/`fetch_new_messages()`/`create_draft()`/
-  `get_thread_context()`/`list_mailboxes()`, same reason — a live
-  session is real-network work) for `build_action_applier()`/
-  `build_draft_creator()`/`build_thread_history_reader()`/
-  `build_mailbox_lister()`. `JmapProvider` doesn't reimplement
+  `get_thread_context()`/`list_mailboxes()`/`get_message()`, same
+  reason — a live session is real-network work) for
+  `build_action_applier()`/`build_draft_creator()`/
+  `build_thread_history_reader()`/`build_mailbox_lister()`/
+  `build_message_lookup()`. `JmapProvider` doesn't reimplement
   fetch/push/mutate logic, it composes pieces that already exist into
   the shape `Provider` promises.
 - **Loadable at runtime: `spork.core.providers.loader`.** A provider is
@@ -2593,7 +2668,13 @@ generic caller should know how to do itself.
   `available_mailboxes` constructor argument when given, or falls back
   to the sorted union of every `mailbox_ids` value across the file —
   real, inspectable data derived from the same fixture, never invented
-  to fill the method out.
+  to fill the method out. `build_message_lookup()` (M5, for `spork
+  reclassify <id>`, §13) is real too: `get_message()` scans the same
+  fixture file for a matching `message_id`, raising `MessageNotFoundError`
+  (named subjects/ids the way `UnrecordedResponseError` does, §10.5) if
+  none matches — a real, if small, index over data that's already
+  there, not a stand-in for `JmapClient.get_message()`'s eventual
+  `Email/get` call.
 
 ### 9.4 Modularity: Filter/Selector/Augment pipeline modules
 
@@ -2716,7 +2797,17 @@ implements the seven concrete Filters/Selectors that reproduce M2's
 `process_message()` behavior exactly:
 
 - **`IdempotencyGateSelector`** — branches `"skip"` (already processed)
-  or `"continue"`.
+  or `"continue"`. `build_default_pipeline()`/`process_message()` both
+  take a `force: bool = False` (M5, for `spork reclassify <id>`, §13):
+  when `True`, the idempotency gate is skipped from the pipeline
+  entirely (`process` runs directly, no `IdempotencyGateSelector`
+  wrapping it) rather than being consulted and overridden — `has_processed()`
+  is never even called, so there's no risk of the gate's own logic
+  drifting out of sync with a bypass flag it would otherwise need to
+  know about. `MarkProcessedFilter`'s existing upsert (built with
+  exactly this in mind, per its own docstring) still runs at the end
+  either way, overwriting whatever `processed_messages` row already
+  existed with the fresh outcome.
 - **`TimestampFilter`** — calls the injected clock exactly once; every
   later module reads the shared `meta.ts` rather than each calling its
   own clock (a real M2 behavior gap this refactor closes: the old
@@ -3505,7 +3596,13 @@ spork config edit             # open the *user* tier's config.toml in $EDITOR,
 
 spork logs [--tail] [--since] [--message-id]  # reads StateDB directly,
                                                # works even if sporkd isn't running
-spork reclassify <message-id> # force a message back through the pipeline
+spork reclassify <message-id> # standalone, like spork logs — works whether
+                               # or not sporkd is running (§7.4's WAL-mode
+                               # reasoning). Looks the message up via
+                               # Provider.build_message_lookup(), forces it
+                               # through Tier 1 (force=True bypasses the
+                               # idempotency gate) and, if it escalates,
+                               # straight into Tier 2 as well
 
 spork doctor                  # secretspec check, JMAP auth check,
                                # systemd unit status, DB migration status
