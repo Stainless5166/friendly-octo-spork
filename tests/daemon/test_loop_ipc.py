@@ -24,7 +24,7 @@ from spork.core.providers.base import ThreadContext
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
 from spork.daemon.loop import _run_message_loop, run_daemon
-from spork.daemon.state import DaemonState
+from spork.daemon.state import DaemonState, RulesState
 
 
 class _UnusedLLMClient:
@@ -227,7 +227,7 @@ def test_run_message_loop_never_polls_while_paused(tmp_path: Path) -> None:
             await asyncio.gather(
                 _run_message_loop(
                     source=source,
-                    rules=rules,
+                    rules_state=RulesState(rules=rules),
                     default_unmatched_action=Action(type="escalate"),
                     executor=ActionExecutor(_NoopApplier()),
                     state_db=state_db,
@@ -253,3 +253,157 @@ def test_run_message_loop_never_polls_while_paused(tmp_path: Path) -> None:
 class _NoopApplier:
     def apply(self, message: NormalizedMessage, action: Action) -> None:
         pass
+
+
+def test_run_daemon_reload_with_a_valid_rewritten_rules_file_returns_ok(tmp_path: Path) -> None:
+    """A valid rules.toml, rewritten after sporkd started: the reload
+    command re-reads it and reports success."""
+    config = _config(tmp_path)
+
+    async def _body() -> None:
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            run_daemon(config, stop_event=stop_event, idle_delay_seconds=0.02)
+        )
+        await asyncio.sleep(0.1)
+
+        config.rules_path.write_text(
+            """
+            [[rule]]
+            id = "catch-all"
+            when = { always = true }
+            action = { type = "move", mailbox = "Archive" }
+            """
+        )
+        response = await asyncio.to_thread(send_request, config.socket_path, "reload")
+
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=2)
+
+        assert response.ok is True
+
+    asyncio.run(_body())
+
+
+def test_run_daemon_reload_with_invalid_rules_returns_ok_false_and_keeps_running(
+    tmp_path: Path,
+) -> None:
+    """A hand-edit that breaks rules.toml: reload reports failure
+    (ok=False, a real RulesLoadError message), but the daemon itself
+    keeps running rather than crashing — proven by a subsequent status
+    request over the same socket still succeeding."""
+    config = _config(tmp_path)
+
+    async def _body() -> None:
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            run_daemon(config, stop_event=stop_event, idle_delay_seconds=0.02)
+        )
+        await asyncio.sleep(0.1)
+
+        config.rules_path.write_text("this is not [ valid toml")
+        reload_response = await asyncio.to_thread(send_request, config.socket_path, "reload")
+        status_response = await asyncio.to_thread(send_request, config.socket_path, "status")
+
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=2)
+
+        assert reload_response.ok is False
+        assert reload_response.error
+        assert status_response.ok is True
+
+    asyncio.run(_body())
+
+
+class _MutatingSource:
+    """Test-only Source: its second poll() call mutates rules_state.rules
+    as a side effect, standing in for a `reload` IPC command landing
+    between two poll cycles without needing real async timing
+    coordination — the production reload path (an IpcServer handler on
+    the event-loop thread) is exercised for real by the two tests above;
+    this one isolates _run_message_loop()'s "read rules_state.rules
+    fresh every poll iteration" contract on its own."""
+
+    def __init__(
+        self,
+        batches: Sequence[Sequence[NormalizedMessage]],
+        *,
+        rules_state: RulesState,
+        new_rules: Sequence[Rule],
+    ) -> None:
+        self._batches = list(batches)
+        self._rules_state = rules_state
+        self._new_rules = new_rules
+        self.calls = 0
+
+    def poll(self) -> Sequence[NormalizedMessage]:
+        self.calls += 1
+        if self.calls == 2:
+            self._rules_state.rules = self._new_rules
+        if self._batches:
+            return self._batches.pop(0)
+        return []
+
+
+def test_run_message_loop_picks_up_a_reloaded_rules_list_on_the_next_poll_iteration(
+    tmp_path: Path,
+) -> None:
+    """The first batch's message is tagged Inbox (the old rule); the
+    second batch's message is moved to Archive (the new rule) — proof
+    that rules_state.rules is read fresh per poll iteration, not
+    captured once when _run_message_loop() started."""
+    old_rules = [
+        Rule(id="r1", when=Condition(always=True), action=Action(type="tag", mailbox="Inbox"))
+    ]
+    new_rules = [
+        Rule(id="r1", when=Condition(always=True), action=Action(type="move", mailbox="Archive"))
+    ]
+    rules_state = RulesState(rules=old_rules)
+    applier = _RecordingApplier()
+    source = _MutatingSource(
+        [[_message("first")], [_message("second")]], rules_state=rules_state, new_rules=new_rules
+    )
+
+    async def _body() -> None:
+        stop_event = asyncio.Event()
+
+        async def _stop_after(seconds: float) -> None:
+            await asyncio.sleep(seconds)
+            stop_event.set()
+
+        with StateDB(tmp_path / "state.sqlite3") as state_db:
+            await asyncio.gather(
+                _run_message_loop(
+                    source=source,
+                    rules_state=rules_state,
+                    default_unmatched_action=Action(type="escalate"),
+                    executor=ActionExecutor(applier),
+                    state_db=state_db,
+                    ops=PipelineObserver(LoggingAlerter()),
+                    classifier=None,
+                    llm_client=_UnusedLLMClient(),
+                    draft_creator=_UnusedDraftCreator(),
+                    thread_history_reader=_UnusedThreadHistoryReader(),
+                    mailbox_lister=_UnusedMailboxLister(),
+                    tiering=TieringConfig(),
+                    daemon_state=DaemonState(),
+                    stop_event=stop_event,
+                    idle_delay_seconds=0.02,
+                ),
+                _stop_after(0.15),
+            )
+
+        assert applier.applied == [
+            ("first", "tag", "Inbox"),
+            ("second", "move", "Archive"),
+        ]
+
+    asyncio.run(_body())
+
+
+class _RecordingApplier:
+    def __init__(self) -> None:
+        self.applied: list[tuple[str, str, str | None]] = []
+
+    def apply(self, message: NormalizedMessage, action: Action) -> None:
+        self.applied.append((message.message_id, action.type, action.mailbox))
