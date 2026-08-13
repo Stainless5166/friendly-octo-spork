@@ -225,7 +225,7 @@ flowchart TD
 
     subgraph daemon_pkg["daemon/"]
         daemon_main["main.py<br/>sporkd entrypoint"]
-        daemon_loop["loop.py<br/>run_daemon() (Tier 1 only, §6.2.1)"]
+        daemon_loop["loop.py<br/>run_daemon() (Tier 1+2, §6.2.1)"]
         daemon_state["state.py<br/>DaemonState"]
     end
 
@@ -334,26 +334,44 @@ Three consequences worth stating rather than discovering later:
   exactly under that condition; it does not change SQLite's own
   locking behavior.
 
-**Scope decision, found while designing this, not before:** the loop
-composes **Tier 1 only** this round. Chaining a freshly-escalated
-message straight into `process_tier2_message()` in the same poll cycle
-looked initially like free extra scope (no live-JMAP blocker prevents
-it — `RecordedLLMClient`/`LoggingAlerter` are both fully real), but
+**Scope history:** the loop composed **Tier 1 only** through the first
+part of M5. Chaining a freshly-escalated message straight into
+`process_tier2_message()` in the same poll cycle looked initially like
+free extra scope (no live-JMAP blocker prevents it —
+`RecordedLLMClient`/`LoggingAlerter` are both fully real), but
 `Tier2Meta`'s `to_addresses`/`thread_prior_subject`/
 `thread_user_has_replied`/`available_mailboxes` are caller-supplied by
-design (§10.7) and nothing resolves them today: `NormalizedMessage`
-has no `to` field, `Provider` exposes no thread-history or
-mailbox-listing method, and inventing placeholder values for them
-would be exactly the "fake data standing in for the real thing" this
-project has repeatedly refused to do elsewhere (§13's `spork rules
-test`, `FileProvider`'s own docstring). Tier 1 alone needs none of
-this — closes over `message`, `rules`, `executor`, `state_db`, and
-`ops` (so a `RecordEscalationFilter`-triggered VIP alert still fires
-for real) — and is fully provable against `FileProvider` today.
-Wiring Tier 2 into the daemon loop is real, tracked follow-up work,
-not silently dropped — it's blocked on a `Provider` capability this
-one doesn't have yet, which is a different kind of gap than "needs a
-live account."
+design (§10.7) and nothing resolved them at the time: `NormalizedMessage`
+has no `to` field, and `Provider` exposed no thread-history or
+mailbox-listing method — inventing placeholder values for either would
+be exactly the "fake data standing in for the real thing" this project
+has repeatedly refused to do elsewhere (§13's `spork rules test`,
+`FileProvider`'s own docstring). That gap is closed now: `Provider`
+gained `build_thread_history_reader()`/`build_mailbox_lister()` (§9.3),
+real against `FileProvider`, `NotImplementedError` against
+`JmapProvider` pending a live account, same split as every other JMAP
+leaf. `to_addresses` comes from parsing `NormalizedMessage.headers["To"]`
+(comma-split, whitespace-stripped — a real `To:` header, not invented).
+
+`_run_message_loop()` now escalates in the same poll cycle:
+`process_message()` (still its own `to_thread`-wrapped call, unchanged)
+returns a `RuleVerdict`; when `verdict.action.type == "escalate"`, the
+loop immediately `await`s a second, separate `asyncio.to_thread()` call
+wrapping `process_tier2_message()` — passing `to_addresses` (parsed
+from headers), the `ThreadContext` from
+`provider.build_thread_history_reader().get_thread_context(message)`,
+and `provider.build_mailbox_lister().list_mailboxes()`. Two `to_thread`
+calls, not one, but still strictly sequential — the loop fully awaits
+Tier 1's call (and every `StateDB` write inside it) before Tier 2's
+call ever starts, so `StateDB`'s sequential-access condition (above)
+still holds regardless of how many `to_thread` calls one message's
+processing takes: what matters is that two worker-thread calls are
+never in flight at once, not that they share one `to_thread` wrapper.
+`run_daemon()` now also constructs an `LLMClient` (`config.llm.spec`
+via `load_llm_client()`, same loader pattern as `provider`/`alerts`)
+and a `DraftCreator` (`provider.build_draft_creator()`) up front,
+threaded into `_run_message_loop()` alongside the Tier-1 dependencies
+it already had.
 
 #### 6.2.2 The IPC protocol
 
@@ -427,13 +445,19 @@ abstraction, not silently assumed away.
 **`spork status`'s fields are honest about what's actually tracked**:
 `paused` and `started_at`, both from `DaemonState`. "Push connection
 state" and "queue depth" from §13's original comment still aren't
-reported (nothing tracks either yet); **LLM spend vs. `daily_call_budget`
-is deferred too**, not because the data doesn't exist (`StateDB.get_llm_usage()`
-is real since M3) but because reporting it safely needs either Tier 2
-actually wired into this daemon loop (still Tier-1-only, §6.2.1 — so
-today's usage is always zero anyway) or a synchronization mechanism
-around `StateDB` this round doesn't add. Revisit both together once
-Tier 2 lands in the loop.
+reported (nothing tracks either yet). **LLM spend vs. `daily_call_budget`
+is still deferred**, now for a narrower reason: Tier 2 is wired into
+the loop (§6.2.1) and genuinely accumulates `llm_usage` rows, but
+nothing yet copies that into `DaemonState` for an `IpcServer` handler
+to read safely — an `IpcServer` handler calling `StateDB.get_llm_usage()`
+directly would still run on the event-loop thread concurrently with an
+in-flight `to_thread(process_tier2_message, ...)` on a worker thread,
+the same unsafe access §6.2.1's `check_same_thread=False` note warns
+against. The fix is mechanical once someone needs it — `_run_message_loop()`
+is back on the event-loop thread the instant its `to_thread()` call
+returns, a natural synchronization point, so it could copy that day's
+`LLMUsage` into a new `DaemonState` field there with no lock needed —
+just not built this round.
 
 **`spork logs`** doesn't touch the socket at all — `audit_log` is a
 `StateDB` table, readable directly whether or not `sporkd` is running,
@@ -593,17 +617,35 @@ classDiagram
         <<Protocol>>
         +create_draft(in_reply_to: NormalizedMessage, body: str) None
     }
+    class ThreadContext {
+        <<dataclass, frozen>>
+        +prior_subject: Optional~str~
+        +user_has_replied: bool
+    }
+    class ThreadHistoryReader {
+        <<Protocol>>
+        +get_thread_context(message: NormalizedMessage) ThreadContext
+    }
+    class MailboxLister {
+        <<Protocol>>
+        +list_mailboxes() Sequence
+    }
     class Provider {
         <<Protocol>>
         +build_source() Source
         +build_action_applier() ActionApplier
         +build_draft_creator() DraftCreator
+        +build_thread_history_reader() ThreadHistoryReader
+        +build_mailbox_lister() MailboxLister
     }
     class Source { <<Protocol>> }
 
     Provider ..> Source : builds
     Provider ..> ActionApplier : builds
     Provider ..> DraftCreator : builds
+    Provider ..> ThreadHistoryReader : builds
+    Provider ..> MailboxLister : builds
+    ThreadHistoryReader ..> ThreadContext : returns
 ```
 
 `Source` is fully defined in `spork.core.sources`' own diagram below;
@@ -635,6 +677,9 @@ classDiagram
     class Source { <<Protocol>> }
     class ActionApplier { <<Protocol>> }
     class DraftCreator { <<Protocol>> }
+    class ThreadHistoryReader { <<Protocol>> }
+    class MailboxLister { <<Protocol>> }
+    class ThreadContext { <<dataclass, frozen>> }
     class Provider { <<Protocol>> }
 
     class JmapClient {
@@ -644,6 +689,8 @@ classDiagram
         +fetch_new_messages(since_cursor: Optional~str~) Sequence
         +apply_action(message: NormalizedMessage, action: Action) None
         +create_draft(message: NormalizedMessage, body: str) None
+        +get_thread_context(message: NormalizedMessage) ThreadContext
+        +list_mailboxes() Sequence
     }
     class JmapPushTrigger {
         -client: JmapClient
@@ -673,6 +720,8 @@ classDiagram
         +build_source() Source
         +build_action_applier() ActionApplier
         +build_draft_creator() DraftCreator
+        +build_thread_history_reader() ThreadHistoryReader
+        +build_mailbox_lister() MailboxLister
     }
     class _JmapContentFetcher {
         -client: JmapClient
@@ -687,11 +736,21 @@ classDiagram
         -client: JmapClient
         +create_draft(in_reply_to: NormalizedMessage, body: str) None
     }
+    class _JmapThreadHistoryReader {
+        -client: JmapClient
+        +get_thread_context(message: NormalizedMessage) ThreadContext
+    }
+    class _JmapMailboxLister {
+        -client: JmapClient
+        +list_mailboxes() Sequence
+    }
 
     Trigger <|.. JmapPushTrigger : structurally satisfies
     ContentFetcher <|.. _JmapContentFetcher : structurally satisfies
     ActionApplier <|.. _JmapActionApplier : structurally satisfies
     DraftCreator <|.. _JmapDraftCreator : structurally satisfies
+    ThreadHistoryReader <|.. _JmapThreadHistoryReader : structurally satisfies
+    MailboxLister <|.. _JmapMailboxLister : structurally satisfies
     Provider <|.. JmapProvider : structurally satisfies
 
     JmapPushTrigger --> JmapClient : wraps
@@ -703,9 +762,13 @@ classDiagram
     JmapProvider ..> _JmapContentFetcher : builds
     JmapProvider ..> _JmapActionApplier : builds
     JmapProvider ..> _JmapDraftCreator : builds
+    JmapProvider ..> _JmapThreadHistoryReader : builds
+    JmapProvider ..> _JmapMailboxLister : builds
     _JmapContentFetcher --> JmapClient : delegates to
     _JmapActionApplier --> JmapClient : delegates to
     _JmapDraftCreator --> JmapClient : delegates to
+    _JmapThreadHistoryReader --> JmapClient : delegates to
+    _JmapMailboxLister --> JmapClient : delegates to
 ```
 
 `backoff.next_delay()` is a pure function of `(schedule, attempt)`
@@ -720,6 +783,8 @@ classDiagram
     class Provider { <<Protocol>> }
     class ActionApplier { <<Protocol>> }
     class DraftCreator { <<Protocol>> }
+    class ThreadHistoryReader { <<Protocol>> }
+    class MailboxLister { <<Protocol>> }
     class MessagesLoadError { <<Exception>> }
     class load_messages {
         <<function>>
@@ -733,22 +798,37 @@ classDiagram
         -log_path: Path
         +create_draft(in_reply_to: NormalizedMessage, body: str) None
     }
+    class _FileThreadHistoryReader {
+        -messages: Sequence
+        +get_thread_context(message: NormalizedMessage) ThreadContext
+    }
+    class _FileMailboxLister {
+        -mailboxes: Sequence
+        +list_mailboxes() Sequence
+    }
     class FileProvider {
         -messages_path: Path
         -actions_log_path: Path
         -drafts_log_path: Path
+        -available_mailboxes: Optional~Sequence~
         +build_source() Source
         +build_action_applier() ActionApplier
         +build_draft_creator() DraftCreator
+        +build_thread_history_reader() ThreadHistoryReader
+        +build_mailbox_lister() MailboxLister
     }
 
     Provider <|.. FileProvider : structurally satisfies
     ActionApplier <|.. _FileActionApplier : structurally satisfies
     DraftCreator <|.. _FileDraftCreator : structurally satisfies
+    ThreadHistoryReader <|.. _FileThreadHistoryReader : structurally satisfies
+    MailboxLister <|.. _FileMailboxLister : structurally satisfies
     load_messages ..> MessagesLoadError : raises
     FileProvider ..> load_messages : uses
     FileProvider ..> _FileActionApplier : builds
     FileProvider ..> _FileDraftCreator : builds
+    FileProvider ..> _FileThreadHistoryReader : builds
+    FileProvider ..> _FileMailboxLister : builds
 ```
 
 #### `spork.core.sources`
@@ -1623,10 +1703,15 @@ classDiagram
     }
     class Provider { <<Protocol>> }
     class Source { <<Protocol>> }
+    class ThreadHistoryReader { <<Protocol>> }
+    class MailboxLister { <<Protocol>> }
+    class LLMClient { <<Protocol>> }
+    class DraftCreator { <<Protocol>> }
     class ActionExecutor
     class StateDB
     class PipelineObserver
     class process_message { <<function>> }
+    class process_tier2_message { <<function>> }
     class IpcServer
 
     class DaemonState {
@@ -1641,7 +1726,7 @@ classDiagram
     }
     class _run_message_loop {
         <<function>>
-        +_run_message_loop(source, rules, executor, state_db, ops, classifier, daemon_state, stop_event) None
+        +_run_message_loop(source, rules, executor, state_db, ops, classifier, llm_client, draft_creator, thread_history_reader, mailbox_lister, daemon_state, stop_event) None
     }
     class _run_until_signalled {
         <<function>>
@@ -1651,7 +1736,8 @@ classDiagram
     run --> main : typer.run(main)
     main ..> _run_until_signalled : asyncio.run()
     _run_until_signalled ..> run_daemon : awaits, stop_event set by SIGTERM/SIGINT handlers
-    run_daemon ..> Provider : load_provider() -> build_source()/build_action_applier()
+    run_daemon ..> Provider : load_provider() -> build_source()/build_action_applier()/build_draft_creator()/build_thread_history_reader()/build_mailbox_lister()
+    run_daemon ..> LLMClient : load_llm_client()
     run_daemon --> ActionExecutor : constructs
     run_daemon --> StateDB : opens
     run_daemon --> PipelineObserver : constructs
@@ -1661,7 +1747,11 @@ classDiagram
     run_daemon ..> IpcServer : .serve(stop_event)
     _run_message_loop --> Source : polls, via asyncio.to_thread (§6.2.1)
     _run_message_loop --> DaemonState : skips poll()+processing while paused
-    _run_message_loop ..> process_message : Tier 1 only, via asyncio.to_thread
+    _run_message_loop ..> process_message : Tier 1, via asyncio.to_thread
+    _run_message_loop ..> process_tier2_message : Tier 2, when Tier 1 escalates, a second sequential asyncio.to_thread (§6.2.1)
+    _run_message_loop --> ThreadHistoryReader : get_thread_context() for an escalated message
+    _run_message_loop --> MailboxLister : list_mailboxes() for an escalated message
+    _run_message_loop --> DraftCreator : passed through to process_tier2_message
 ```
 
 `main.py` is the thin Typer entrypoint (config loading, signal
@@ -2192,22 +2282,57 @@ class DraftCreator(Protocol):
     def create_draft(self, in_reply_to: NormalizedMessage, body: str) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ThreadContext:
+    """Everything §10.7's `Tier2Meta` needs about a message's thread history.
+
+    Deliberately narrow — exactly the two facts
+    `process_tier2_message()` consults (`thread_prior_subject`,
+    `thread_user_has_replied`), not a general-purpose thread-search
+    result. Keeping it this small means a provider only has to answer
+    the specific question Tier 2 asks, not build a full thread-fetch
+    API this codebase doesn't otherwise need.
+    """
+
+    prior_subject: str | None
+    user_has_replied: bool
+
+
+class ThreadHistoryReader(Protocol):
+    """Resolves one message's `ThreadContext` — a provider's third read side,
+    alongside `Source` (new mail) and whatever `build_action_applier()`
+    reads to apply an action."""
+
+    def get_thread_context(self, message: NormalizedMessage) -> ThreadContext: ...
+
+
+class MailboxLister(Protocol):
+    """Lists the account's mailbox names, for Tier 2's `available_mailboxes`
+    (§10.1) and `validate_verdict()`'s closed-set check (§10.2)."""
+
+    def list_mailboxes(self) -> Sequence[str]: ...
+
+
 class Provider(Protocol):
     """What every mail-backend integration adapts to.
 
     A provider is the daemon's *entire* relationship to one remote
     source of truth — reading from it (`build_source`), writing an
-    action to it (`build_action_applier`), and writing a draft to it
-    (`build_draft_creator`) are three operations against the same
-    backend, not separate concerns that happen to share one. Mailbox
-    role resolution and anything else backend-specific is reached
-    through whatever a provider hands back, not through this Protocol
-    — but every kind of read/write belongs here.
+    action to it (`build_action_applier`), writing a draft to it
+    (`build_draft_creator`), and answering the two read-side questions
+    Tier 2 needs (`build_thread_history_reader`, `build_mailbox_lister`)
+    are five operations against the same backend, not separate concerns
+    that happen to share one. Mailbox role resolution and anything else
+    backend-specific is reached through whatever a provider hands back,
+    not through this Protocol — but every kind of read/write belongs
+    here.
     """
 
     def build_source(self) -> Source: ...
     def build_action_applier(self) -> ActionApplier: ...
     def build_draft_creator(self) -> DraftCreator: ...
+    def build_thread_history_reader(self) -> ThreadHistoryReader: ...
+    def build_mailbox_lister(self) -> MailboxLister: ...
 ```
 
 `spork.core.actions.executor.ActionExecutor` (M2) is the one consumer
@@ -2232,12 +2357,14 @@ generic caller should know how to do itself.
 - **The Adapter: `JmapProvider`.** Wraps `JmapClient` +
   `JmapPushTrigger` (§8) into a `Source` via the existing
   `TriggeredSource` (§9.2) for `build_source()`, and wraps
-  `JmapClient.apply_action()` (one of four `NotImplementedError` stubs
-  alongside `connect()`/`fetch_new_messages()`/`create_draft()`, same
-  reason — a live session is real-network work) for
-  `build_action_applier()`/`build_draft_creator()`. `JmapProvider`
-  doesn't reimplement fetch/push/mutate logic, it composes pieces that
-  already exist into the shape `Provider` promises.
+  `JmapClient.apply_action()` (one of six `NotImplementedError` stubs
+  alongside `connect()`/`fetch_new_messages()`/`create_draft()`/
+  `get_thread_context()`/`list_mailboxes()`, same reason — a live
+  session is real-network work) for `build_action_applier()`/
+  `build_draft_creator()`/`build_thread_history_reader()`/
+  `build_mailbox_lister()`. `JmapProvider` doesn't reimplement
+  fetch/push/mutate logic, it composes pieces that already exist into
+  the shape `Provider` promises.
 - **Loadable at runtime: `spork.core.providers.loader`.** A provider is
   named in config as a `"module.path:ClassName"` spec (e.g.
   `"spork.core.providers.jmap.provider:JmapProvider"`) and resolved via
@@ -2275,7 +2402,17 @@ generic caller should know how to do itself.
   useful: proving, with a real second implementation, that `Provider`'s
   read/write split actually holds for a backend other than JMAP — plus
   a genuinely handy building block for local dev/demo/CI work that
-  wants a Provider without any network dependency.
+  wants a Provider without any network dependency. `build_thread_history_reader()`/
+  `build_mailbox_lister()` are real here too, not stubs: thread context
+  is derived from the *other* messages already present in the same
+  `messages_path` file that share a `thread_id` — `prior_subject` is
+  the earliest such message's subject, `user_has_replied` is whether
+  any of them carries `"Sent"` in `mailbox_ids` (a message spork itself
+  sent into that thread). `list_mailboxes()` returns an explicit
+  `available_mailboxes` constructor argument when given, or falls back
+  to the sorted union of every `mailbox_ids` value across the file —
+  real, inspectable data derived from the same fixture, never invented
+  to fill the method out.
 
 ### 9.4 Modularity: Filter/Selector/Augment pipeline modules
 
