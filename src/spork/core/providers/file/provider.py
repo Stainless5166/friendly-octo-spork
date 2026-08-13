@@ -23,6 +23,8 @@ from spork.core.providers.base import (
     ActionApplier,
     DraftCreator,
     MailboxLister,
+    MessageLookup,
+    MessageNotFoundError,
     ThreadContext,
     ThreadHistoryReader,
 )
@@ -112,6 +114,26 @@ class _FileMailboxLister:
         return self._mailboxes
 
 
+class _FileMessageLookup:
+    """Scans the same fixture file `build_source()` replays from for a
+    matching `message_id` (docs/DESIGN.md §7.4/§13, for `spork
+    reclassify <id>`) — real, not a stand-in for `JmapClient.get_message()`'s
+    eventual `Email/get` call.
+    """
+
+    def __init__(self, messages: Sequence[NormalizedMessage]) -> None:
+        self._messages = messages
+
+    def get_message(self, message_id: str) -> NormalizedMessage:
+        for message in self._messages:
+            if message.message_id == message_id:
+                return message
+        raise MessageNotFoundError(
+            f"no message with id {message_id!r}; known ids: "
+            f"{sorted(m.message_id for m in self._messages)}"
+        )
+
+
 class FileProvider:
     """Adapts a local JSON messages file to the `Provider` contract.
 
@@ -130,7 +152,8 @@ class FileProvider:
     context comes from the other messages already in `messages_path`
     that share a `thread_id`; the mailbox list is `available_mailboxes`
     when given, or the sorted union of every message's `mailbox_ids`
-    otherwise.
+    otherwise. `build_message_lookup()` (§7.4/§13) scans the same file
+    for a matching `message_id`.
     """
 
     def __init__(
@@ -174,3 +197,6 @@ class FileProvider:
         messages = load_messages(self._messages_path)
         derived = sorted({mailbox_id for m in messages for mailbox_id in m.mailbox_ids})
         return _FileMailboxLister(derived)
+
+    def build_message_lookup(self) -> MessageLookup:
+        return _FileMessageLookup(load_messages(self._messages_path))

@@ -11,7 +11,6 @@ the message loop and the IPC control socket as two tasks in one
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -25,10 +24,9 @@ from spork.core.config.schema import SporkConfig, TieringConfig
 from spork.core.ipc.server import IpcServer
 from spork.core.llm.base import LLMClient
 from spork.core.llm.loader import load_llm_client
-from spork.core.models import NormalizedMessage
 from spork.core.pipeline import process_message
 from spork.core.pipeline.observer import PipelineObserver
-from spork.core.pipeline.tier2 import process_tier2_message
+from spork.core.pipeline.tier2.escalate import escalate_message
 from spork.core.providers.base import DraftCreator, MailboxLister, ThreadHistoryReader
 from spork.core.providers.loader import load_provider
 from spork.core.rules.loader import load_rules
@@ -229,13 +227,14 @@ async def _run_message_loop(
             # condition (§6.2.1) only needs "never concurrent", not
             # "one to_thread wrapper per message" (docs/DESIGN.md). The
             # whole thing (thread-history/mailbox-list reads included)
-            # runs inside one worker-thread call via _escalate_to_tier2
-            # — those reads may themselves be real I/O against a live
-            # backend, so they belong off the event-loop thread too,
-            # not called directly from this coroutine.
+            # runs inside one worker-thread call via escalate_message()
+            # (spork.core.pipeline.tier2.escalate, M5) — those reads
+            # may themselves be real I/O against a live backend, so
+            # they belong off the event-loop thread too, not called
+            # directly from this coroutine.
             if verdict is not None and verdict.action.type == "escalate":
                 await asyncio.to_thread(
-                    _escalate_to_tier2,
+                    escalate_message,
                     message,
                     thread_history_reader=thread_history_reader,
                     mailbox_lister=mailbox_lister,
@@ -246,49 +245,3 @@ async def _run_message_loop(
                     ops=ops,
                     tiering=tiering,
                 )
-
-
-def _escalate_to_tier2(
-    message: NormalizedMessage,
-    *,
-    thread_history_reader: ThreadHistoryReader,
-    mailbox_lister: MailboxLister,
-    llm_client: LLMClient,
-    executor: ActionExecutor,
-    draft_creator: DraftCreator,
-    state_db: StateDB,
-    ops: PipelineObserver,
-    tiering: TieringConfig,
-) -> None:
-    """Resolves the two Provider-supplied reads Tier 2 needs and runs
-    `process_tier2_message()` — synchronous end to end so the whole
-    thing is one `asyncio.to_thread()` call (see the caller above).
-    """
-    context = thread_history_reader.get_thread_context(message)
-    process_tier2_message(
-        message,
-        to_addresses=_parse_to_addresses(message),
-        thread_prior_subject=context.prior_subject,
-        thread_user_has_replied=context.user_has_replied,
-        available_mailboxes=mailbox_lister.list_mailboxes(),
-        llm_client=llm_client,
-        executor=executor,
-        draft_creator=draft_creator,
-        state_db=state_db,
-        ops=ops,
-        allowed_categories=tiering.allowed_categories,
-        daily_call_budget=tiering.daily_call_budget,
-        alert_threshold=tiering.alert_threshold,
-        autoact_threshold=tiering.autoact_threshold,
-        max_body_chars=tiering.max_body_chars,
-    )
-
-
-def _parse_to_addresses(message: NormalizedMessage) -> Sequence[str]:
-    """Real `to_addresses`, parsed from `NormalizedMessage.headers["To"]`
-    (docs/DESIGN.md §6.2.1) — comma-split, whitespace-stripped, empty
-    entries dropped. `()` when there's no `To:` header at all, never a
-    fabricated address.
-    """
-    to_header = message.headers.get("To", "")
-    return tuple(addr.strip() for addr in to_header.split(",") if addr.strip())

@@ -81,3 +81,12 @@ class JmapClient:
             "JmapClient.list_mailboxes() requires a live jmapc session — "
             "not implemented yet, see docs/ROADMAP.md M5"
         )
+
+    def get_message(self, message_id: str) -> NormalizedMessage:
+        """Fetch one message by id via `Email/get` (docs/DESIGN.md §7.4/§13,
+        for `spork reclassify <id>`) — the seventh `NotImplementedError`
+        stub, same reason as the other six."""
+        raise NotImplementedError(
+            "JmapClient.get_message() requires a live jmapc session — "
+            "not implemented yet, see docs/ROADMAP.md M5"
+        )

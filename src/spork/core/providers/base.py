@@ -66,19 +66,36 @@ class MailboxLister(Protocol):
     def list_mailboxes(self) -> Sequence[str]: ...
 
 
+class MessageNotFoundError(Exception):
+    """Raised by `MessageLookup.get_message()` when `message_id` has no
+    matching message — a real "not found," not a placeholder default.
+    """
+
+
+class MessageLookup(Protocol):
+    """Resolves one message by id — a provider's fourth read side, for
+    `spork reclassify <id>` (docs/DESIGN.md §7.4/§13), which needs to
+    look up an already-seen message again rather than poll for new
+    ones.
+    """
+
+    def get_message(self, message_id: str) -> NormalizedMessage: ...
+
+
 class Provider(Protocol):
     """What every mail-backend integration (JMAP, IMAP, ...) adapts to.
 
     A provider is the daemon's *entire* relationship to one remote
     source of truth: reading from it (`build_source`), writing an
     action to it (`build_action_applier`), writing a draft to it
-    (`build_draft_creator`), and answering the two read-side questions
-    Tier 2 needs (`build_thread_history_reader`, `build_mailbox_lister`)
-    are five operations against the same backend, not separate concerns
-    that happen to share one implementation. Anything else
-    backend-specific (mailbox role resolution) is reached through
-    whatever a provider hands back, not through this Protocol — but
-    every kind of read/write belongs here.
+    (`build_draft_creator`), and answering the three read-side
+    questions Tier 2/`spork reclassify` need
+    (`build_thread_history_reader`, `build_mailbox_lister`,
+    `build_message_lookup`) are six operations against the same
+    backend, not separate concerns that happen to share one
+    implementation. Anything else backend-specific (mailbox role
+    resolution) is reached through whatever a provider hands back, not
+    through this Protocol — but every kind of read/write belongs here.
     """
 
     def build_source(self) -> Source: ...
@@ -86,3 +103,4 @@ class Provider(Protocol):
     def build_draft_creator(self) -> DraftCreator: ...
     def build_thread_history_reader(self) -> ThreadHistoryReader: ...
     def build_mailbox_lister(self) -> MailboxLister: ...
+    def build_message_lookup(self) -> MessageLookup: ...

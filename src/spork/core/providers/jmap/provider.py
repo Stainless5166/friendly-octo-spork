@@ -15,6 +15,7 @@ from spork.core.providers.base import (
     ActionApplier,
     DraftCreator,
     MailboxLister,
+    MessageLookup,
     ThreadContext,
     ThreadHistoryReader,
 )
@@ -99,6 +100,18 @@ class _JmapMailboxLister:
         return self._client.list_mailboxes()
 
 
+class _JmapMessageLookup:
+    """Adapts `JmapClient.get_message()` to the `MessageLookup`
+    contract. A pure delegation, same shape as `_JmapActionApplier`.
+    """
+
+    def __init__(self, client: JmapClient) -> None:
+        self._client = client
+
+    def get_message(self, message_id: str) -> NormalizedMessage:
+        return self._client.get_message(message_id)
+
+
 class JmapProvider:
     """Adapts a JMAP account to the `Provider` contract.
 
@@ -130,3 +143,6 @@ class JmapProvider:
 
     def build_mailbox_lister(self) -> MailboxLister:
         return _JmapMailboxLister(self._client)
+
+    def build_message_lookup(self) -> MessageLookup:
+        return _JmapMessageLookup(self._client)

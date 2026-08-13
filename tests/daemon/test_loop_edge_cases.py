@@ -31,7 +31,7 @@ from spork.core.providers.base import ThreadContext
 from spork.core.rules.loader import RulesLoadError
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
-from spork.daemon.loop import _parse_to_addresses, _run_message_loop, run_daemon
+from spork.daemon.loop import _run_message_loop, run_daemon
 from spork.daemon.state import DaemonState, RulesState
 
 
@@ -224,22 +224,6 @@ def test_run_daemon_propagates_a_missing_rules_file_error(tmp_path: Path) -> Non
             await run_daemon(config, idle_delay_seconds=0.01)
 
     asyncio.run(_body())
-
-
-def test_parse_to_addresses_splits_and_strips_a_comma_separated_to_header(make_message) -> None:
-    """Real To: header parsing (docs/DESIGN.md §6.2.1) — comma-split,
-    whitespace stripped from each address."""
-    message = make_message(headers={"To": "a@example.com, b@example.com ,c@example.com"})
-
-    assert _parse_to_addresses(message) == ("a@example.com", "b@example.com", "c@example.com")
-
-
-def test_parse_to_addresses_returns_empty_tuple_when_no_to_header(make_message) -> None:
-    """No To: header at all — an empty tuple, not a fabricated address
-    or a KeyError."""
-    message = make_message(headers={})
-
-    assert _parse_to_addresses(message) == ()
 
 
 def test_run_daemon_propagates_an_unrecorded_tier2_response_error(tmp_path: Path) -> None:
