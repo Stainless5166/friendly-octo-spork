@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from spork.core.actions.executor import ActionExecutor
@@ -31,10 +32,10 @@ from spork.core.pipeline.tier2 import process_tier2_message
 from spork.core.providers.base import DraftCreator, MailboxLister, ThreadHistoryReader
 from spork.core.providers.loader import load_provider
 from spork.core.rules.loader import load_rules
-from spork.core.rules.schema import Action, Rule
+from spork.core.rules.schema import Action
 from spork.core.sources.base import Source
 from spork.core.state.db import StateDB
-from spork.daemon.state import DaemonState
+from spork.daemon.state import DaemonState, RulesState
 
 
 async def run_daemon(
@@ -70,7 +71,7 @@ async def run_daemon(
     # Tier 2 was wired in) — test_run_daemon_propagates_a_missing_rules_file_error
     # relies on a bad rules_path surfacing as RulesLoadError regardless
     # of what else in config is or isn't configured.
-    rules = load_rules(config.rules_path)
+    rules_state = RulesState(rules=load_rules(config.rules_path))
 
     llm_client = load_llm_client(config.llm.spec, **config.llm.kwargs)
 
@@ -90,14 +91,16 @@ async def run_daemon(
     # this), so it's resolved defensively here too rather than trusting
     # every caller went through load_config() first.
     socket_path = config.socket_path if config.socket_path is not None else resolve_socket_path()
-    ipc_server = IpcServer(socket_path, handlers=_build_ipc_handlers(daemon_state))
+    ipc_server = IpcServer(
+        socket_path, handlers=_build_ipc_handlers(daemon_state, rules_state, config.rules_path)
+    )
 
     with StateDB(config.db_path) as state_db:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(
                 _run_message_loop(
                     source=source,
-                    rules=rules,
+                    rules_state=rules_state,
                     default_unmatched_action=default_unmatched_action,
                     executor=executor,
                     state_db=state_db,
@@ -118,13 +121,20 @@ async def run_daemon(
 
 def _build_ipc_handlers(
     daemon_state: DaemonState,
+    rules_state: RulesState,
+    rules_path: Path,
 ) -> dict[str, Any]:
-    """The status/pause/resume handlers `IpcServer` dispatches to.
+    """The status/pause/resume/reload handlers `IpcServer` dispatches to.
 
-    Deliberately touch only `DaemonState` — never `StateDB` — since
-    these run as coroutines on the event-loop thread and could
-    otherwise race a `to_thread(process_message, ...)` call touching
-    the same connection from a worker thread (docs/DESIGN.md §6.2.2).
+    status/pause/resume deliberately touch only `DaemonState` — never
+    `StateDB` — since these run as coroutines on the event-loop thread
+    and could otherwise race a `to_thread(process_message, ...)` call
+    touching the same connection from a worker thread (docs/DESIGN.md
+    §6.2.2). `reload` touches `RulesState` the same safe way: it
+    reassigns `.rules` wholesale rather than mutating the existing list
+    in place (§6.2.2/§7.5) — a re-`load_rules()` failure is caught here
+    and reported as `IpcResponse(ok=False, ...)`, leaving `rules_state.rules`
+    at its last-known-good value instead of taking the daemon down.
     """
 
     def _status(params: dict[str, Any]) -> dict[str, Any]:
@@ -138,13 +148,22 @@ def _build_ipc_handlers(
         daemon_state.paused = False
         return {"paused": False}
 
-    return {"status": _status, "pause": _pause, "resume": _resume}
+    def _reload(params: dict[str, Any]) -> dict[str, Any]:
+        # RulesLoadError (a bad hand-edit) propagates to IpcServer's own
+        # generic handler-exception catch, which turns it into
+        # IpcResponse(ok=False, error=str(exc)) — rules_state.rules is
+        # only reassigned below, so a failed reload never touches it.
+        new_rules = load_rules(rules_path)
+        rules_state.rules = new_rules
+        return {"rule_count": len(new_rules)}
+
+    return {"status": _status, "pause": _pause, "resume": _resume, "reload": _reload}
 
 
 async def _run_message_loop(
     *,
     source: Source,
-    rules: Sequence[Rule],
+    rules_state: RulesState,
     default_unmatched_action: Action,
     executor: ActionExecutor,
     state_db: StateDB,
@@ -178,12 +197,17 @@ async def _run_message_loop(
     the underlying OS thread (§6.2.1). While `daemon_state.paused`,
     `poll()` isn't called at all (§6.2.2's honest caveat: this also
     stops fetching, not just acting on what's already fetched).
+    `rules_state.rules` is read fresh right after each `poll()` call
+    (not captured once at loop start), so a `reload` IPC command
+    (§6.2.2/§7.5) takes effect for the very next batch, not just a
+    future daemon restart.
     """
     while not stop_event.is_set():
         if daemon_state.paused:
             await asyncio.sleep(idle_delay_seconds)
             continue
         messages = await asyncio.to_thread(source.poll)
+        rules = rules_state.rules
         if not messages:
             await asyncio.sleep(idle_delay_seconds)
             continue

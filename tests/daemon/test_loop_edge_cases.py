@@ -32,7 +32,7 @@ from spork.core.rules.loader import RulesLoadError
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
 from spork.daemon.loop import _parse_to_addresses, _run_message_loop, run_daemon
-from spork.daemon.state import DaemonState
+from spork.daemon.state import DaemonState, RulesState
 
 
 class _UnusedLLMClient:
@@ -144,7 +144,7 @@ def test_run_message_loop_stops_mid_batch_without_processing_the_rest(
         with StateDB(tmp_path / "state.sqlite3") as state_db:
             await _run_message_loop(
                 source=source,
-                rules=rules,
+                rules_state=RulesState(rules=rules),
                 default_unmatched_action=Action(type="escalate"),
                 executor=ActionExecutor(applier),
                 state_db=state_db,
@@ -185,7 +185,7 @@ def test_run_message_loop_sleeps_rather_than_busy_looping_on_an_empty_source(
             await asyncio.gather(
                 _run_message_loop(
                     source=source,
-                    rules=[],
+                    rules_state=RulesState(rules=[]),
                     default_unmatched_action=Action(type="escalate"),
                     executor=ActionExecutor(_StoppingApplier(asyncio.Event())),
                     state_db=state_db,
