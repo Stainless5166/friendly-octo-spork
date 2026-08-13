@@ -365,13 +365,18 @@ live until M5 needed something to control.
       gains `check_same_thread=False` (§6.4's `spork.core.state` note)
       — safe under this loop's sequential (never concurrent)
       `to_thread` access pattern, not a general concurrency change.
-- [ ] Wire Tier 2 into the daemon loop: resolve `to_addresses` (real
-      data — parseable from `NormalizedMessage.headers`, not invented)
-      and add whatever `Provider` capability thread-history/
-      `available_mailboxes` actually needs (a new method on the
-      `Provider` protocol, most likely) so an escalated message can
-      flow straight into `process_tier2_message()` in the same poll
-      cycle (S)
+- [x] Wire Tier 2 into the daemon loop (S) — `to_addresses` parsed
+      from `NormalizedMessage.headers["To"]` (real data, not
+      invented); `Provider` gained `build_thread_history_reader()`/
+      `build_mailbox_lister()` (§9.3) for the two reads
+      `process_tier2_message()` needs, real against `FileProvider`,
+      the same settled-shape `NotImplementedError` as every other
+      `JmapProvider` leaf pending a live account. An escalated message
+      now flows straight into `process_tier2_message()` in the same
+      poll cycle, via a second, strictly-sequential `asyncio.to_thread()`
+      call (§6.2.1) — `spork status`'s LLM-spend field stays deferred
+      regardless (§6.2.2: no synchronization from `StateDB` into
+      `DaemonState` yet, a separate gap from "Tier 2 doesn't run").
 - [x] IPC protocol + Unix socket server in `sporkd` (M) — newline-
       delimited JSON over the socket (§15's filesystem-permission
       model already rules out needing an auth scheme; no new

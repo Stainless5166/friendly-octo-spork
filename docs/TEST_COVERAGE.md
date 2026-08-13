@@ -107,7 +107,15 @@ commands. A real concurrency bug (an IPC handler racing `StateDB`
 against a `to_thread(process_message, ...)` call) was found and
 designed out before any code was written — `spork status` defers its
 LLM-spend field as a direct, stated consequence rather than accepting
-the race. **M5 is 6/10.**
+the race. **M5 is 6/10.** Updated once more for "Wire Tier 2 into the
+daemon loop": `Provider` gained `build_thread_history_reader()`/
+`build_mailbox_lister()` (real against `FileProvider`, settled-shape
+`NotImplementedError` against `JmapProvider`, same split as every
+other JMAP leaf); `run_daemon()`/`_run_message_loop()` now carry an
+escalated message straight into `process_tier2_message()` in the same
+poll cycle via a second, strictly-sequential `asyncio.to_thread()`
+call. `to_addresses` is parsed from real `NormalizedMessage.headers`.
+**M5 is 7/10.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -416,13 +424,13 @@ not one message's full cross-tier lifetime, since nothing calls
 exists) — M7 still separately owns `sporkd`'s overall structured
 logging setup and audit-trail completeness beyond triage outcomes.
 
-### M5 — CLI + daemon control surface — 6/10
+### M5 — CLI + daemon control surface — 7/10
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `spork.core.config` | ✅ | ✅ — tests 347–374 (28 numbered entries, 51 actual test cases — see note below), 100% line coverage |
 | Daemon event loop assembly | ✅ | ✅ — tests 375–383 (9 tests), 100% line coverage on `spork.daemon.loop` |
-| Wire Tier 2 into the daemon loop | ❌ | — |
+| Wire Tier 2 into the daemon loop | ✅ | ✅ — tests 418–435 (18 tests), 100% line coverage on the touched `spork.core.providers.*`/`spork.daemon.loop` code |
 | IPC protocol + Unix socket server | ✅ | ✅ — tests 384–399 + 400–403 (20 tests), 99–100% line coverage on `spork.core.ipc` |
 | `spork status` | ✅ | ✅ — tests 404–407 (4 tests), including a full end-to-end test against a real `sporkd` subprocess |
 | `spork pause`/`resume` | ✅ | ✅ — tests 408–410 (3 tests), including a full pause→status→resume→status round trip |
@@ -508,7 +516,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (440 tests, all passing — 0 xfail)
+## Full test inventory (458 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -2460,3 +2468,78 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
 417. **`cli/commands/test_logs.py::test_logs_tail_shows_only_the_last_n_entries`**
     `--tail 2` against five entries. Asserts only the last two print,
     in order.
+
+418. **`core/providers/jmap/test_client.py::test_get_thread_context_raises_not_implemented`**
+    `JmapClient.get_thread_context()` is a settled-shape stub, same
+    pattern as `connect()`/`fetch_new_messages()`/etc.
+
+419. **`core/providers/jmap/test_client.py::test_list_mailboxes_raises_not_implemented`**
+    Same, for `JmapClient.list_mailboxes()`.
+
+420. **`core/providers/jmap/test_provider.py::test_build_thread_history_reader_returns_something_that_can_get_context`**
+    `JmapProvider.build_thread_history_reader()` returns an object
+    satisfying `ThreadHistoryReader`; calling it raises
+    `NotImplementedError`, propagated from `JmapClient`.
+
+421. **`core/providers/jmap/test_provider.py::test_thread_history_reader_delegates_to_the_client_directly`**
+    `_JmapThreadHistoryReader` is a real delegation to
+    `JmapClient.get_thread_context()`, not a second placeholder.
+
+422. **`core/providers/jmap/test_provider.py::test_build_mailbox_lister_returns_something_that_can_list_mailboxes`**
+    Same shape as 420, for `build_mailbox_lister()`.
+
+423. **`core/providers/jmap/test_provider.py::test_mailbox_lister_delegates_to_the_client_directly`**
+    Same shape as 421, for `_JmapMailboxLister`.
+
+424. **`core/providers/file/test_provider.py::test_build_thread_history_reader_returns_no_history_for_a_singleton_thread`**
+    A message alone in its thread: `prior_subject is None`,
+    `user_has_replied is False` — real absence, not a placeholder.
+
+425. **`core/providers/file/test_provider.py::test_thread_history_reader_finds_prior_subject_and_a_reply_already_sent`**
+    Two messages sharing a thread, one with `"Sent"` in `mailbox_ids`.
+    Asserts the later message's context resolves the earlier one's
+    subject and `user_has_replied is True`.
+
+426. **`core/providers/file/test_provider.py::test_build_mailbox_lister_returns_the_explicit_available_mailboxes_when_given`**
+    An explicit `available_mailboxes=` constructor argument wins over
+    anything derived from the messages file.
+
+427. **`core/providers/file/test_provider.py::test_mailbox_lister_derives_the_sorted_union_of_mailbox_ids_when_not_given`**
+    With no `available_mailboxes=`, the list is the sorted union of
+    every message's `mailbox_ids` in the file.
+
+428. **`daemon/test_loop.py::test_run_daemon_runs_an_escalated_message_through_tier2`**
+    End to end against `FileProvider` + `RecordedLLMClient`: the
+    VIP-sender rule's escalation lands `tier_reached="tier2"` with the
+    recorded verdict's action, not stuck at Tier 1's placeholder
+    `"escalate"` row.
+
+429. **`core/providers/file/test_provider_edge_cases.py::test_mailbox_lister_returns_empty_for_an_empty_messages_file`**
+    No `available_mailboxes=`, no messages to derive from — `[]`, not
+    an error.
+
+430. **`core/providers/file/test_provider_edge_cases.py::test_mailbox_lister_respects_an_explicit_empty_list`**
+    `available_mailboxes=[]` is respected as a deliberate empty answer
+    (`is not None`, not truthiness) rather than falling back to
+    derivation from a file that has real mailbox_ids in it.
+
+431. **`core/providers/file/test_provider_edge_cases.py::test_thread_history_reader_ignores_messages_in_other_threads`**
+    A same-subject message in an unrelated thread doesn't leak in as
+    "prior" history.
+
+432. **`core/providers/file/test_provider_edge_cases.py::test_thread_history_reader_raises_a_clean_error_for_a_missing_messages_file`**
+    Same `MessagesLoadError` `build_source()` already raises for a
+    missing file.
+
+433. **`daemon/test_loop_edge_cases.py::test_parse_to_addresses_splits_and_strips_a_comma_separated_to_header`**
+    `_parse_to_addresses()` unit test: comma-split, whitespace-stripped.
+
+434. **`daemon/test_loop_edge_cases.py::test_parse_to_addresses_returns_empty_tuple_when_no_to_header`**
+    No `To:` header at all — `()`, not a `KeyError` or a fabricated
+    address.
+
+435. **`daemon/test_loop_edge_cases.py::test_run_daemon_propagates_an_unrecorded_tier2_response_error`**
+    An escalated message with no recorded Tier 2 response:
+    `UnrecordedResponseError` propagates through `run_daemon()`'s
+    `asyncio.TaskGroup()` (as an `ExceptionGroup`) rather than being
+    swallowed or silently marking the message processed.
