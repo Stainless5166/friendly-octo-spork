@@ -114,10 +114,10 @@ Two OS processes, one shared library:
 Solid boxes are built and tested today; dashed boxes are planned
 layout for a milestone that hasn't landed yet (M3's `llm/prompts.py`
 — the not-yet-built step that assembles a `VerdictRequest` from a
-message —, a future real desktop-notification `Alerter` backend
-alongside M4's `alerts/log.py`, and `cli/commands/config.py`, still
-pending `spork config show/edit`). `config/` and `ipc/` are real as of
-M5's work on them — no longer dashed boxes. This is layout orientation
+message —, and a future real desktop-notification `Alerter` backend
+alongside M4's `alerts/log.py`). `config/`, `ipc/`, and
+`cli/commands/config.py` are all real as of M5's work on them — no
+longer dashed boxes. This is layout orientation
 only — see §6.4 for what each built module's classes actually look
 like.
 
@@ -238,7 +238,7 @@ flowchart TD
             cli_status["status.py<br/>spork status"]
             cli_pause["pause.py<br/>spork pause/resume"]
             cli_logs["logs.py<br/>spork logs"]
-            cli_config["config.py (M5)"]:::planned
+            cli_config["config.py<br/>spork config show/edit"]
         end
     end
 
@@ -580,12 +580,18 @@ classDiagram
         <<function>>
         +load_config(user_config_override) SporkConfig
     }
+    class enforced_override_paths {
+        <<function>>
+        +enforced_override_paths() set
+    }
     load_config ..> resolve_user_config_path : locates user tier
     load_config ..> resolve_system_default_config_paths : locates system-default tier
     load_config ..> resolve_enforced_config_path : locates enforced tier
     load_config ..> resolve_socket_path : default for tiering.socket_path
     load_config ..> SporkConfig : produces
     load_config ..> ConfigLoadError : raises
+    enforced_override_paths ..> resolve_enforced_config_path : locates enforced tier
+    enforced_override_paths ..> SporkConfig : dotted paths, for spork config show (§13) to flag
 ```
 
 `paths.py` (`resolve_user_config_path`/`resolve_system_default_config_paths`/
@@ -1688,7 +1694,13 @@ classDiagram
 ```mermaid
 classDiagram
     class RulesLoadError { <<Exception>> }
+    class ConfigLoadError { <<Exception>> }
     class load_rules { <<function>> }
+    class load_config { <<function>> }
+    class dump_rules { <<function>> }
+    class enforced_override_paths { <<function>> }
+    class send_request { <<function>> }
+    class IpcConnectionError { <<Exception>> }
 
     class app {
         <<Typer App>>
@@ -1698,9 +1710,53 @@ classDiagram
         <<Typer App>>
         rules
     }
+    class config_app {
+        <<Typer App>>
+        config
+    }
     class test {
         <<Typer command>>
         +test(rules_file: Path) None
+    }
+    class list_rules {
+        <<Typer command "list">>
+        +list_rules() None
+    }
+    class rules_edit {
+        <<Typer command "edit">>
+        +edit() None
+    }
+    class enable {
+        <<Typer command>>
+        +enable(rule_id: str) None
+    }
+    class disable {
+        <<Typer command>>
+        +disable(rule_id: str) None
+    }
+    class config_show {
+        <<Typer command "show">>
+        +show() None
+    }
+    class config_edit {
+        <<Typer command "edit">>
+        +edit() None
+    }
+    class status {
+        <<Typer command>>
+        +status() None
+    }
+    class pause {
+        <<Typer command>>
+        +pause() None
+    }
+    class resume {
+        <<Typer command>>
+        +resume() None
+    }
+    class logs {
+        <<Typer command>>
+        +logs(tail, since, message_id) None
     }
     class doctor {
         <<Typer command>>
@@ -1708,10 +1764,40 @@ classDiagram
     }
 
     app --> rules_app : add_typer("rules")
+    app --> config_app : add_typer("config")
     app --> doctor : command("doctor")
+    app --> status : command("status")
+    app --> pause : command("pause")
+    app --> resume : command("resume")
+    app --> logs : command("logs")
     rules_app --> test : command("test")
+    rules_app --> list_rules : command("list")
+    rules_app --> rules_edit : command("edit")
+    rules_app --> enable : command("enable")
+    rules_app --> disable : command("disable")
+    config_app --> config_show : command("show")
+    config_app --> config_edit : command("edit")
+
     test ..> load_rules : loads/validates rules.toml
     test ..> RulesLoadError : catches, clean CLI error
+    list_rules ..> load_config : locates rules_path
+    list_rules ..> load_rules : id/enabled/action per rule
+    rules_edit ..> load_rules : validates on save
+    rules_edit ..> send_request : pushes "reload" (best-effort)
+    enable ..> load_rules : reads current rules
+    enable ..> dump_rules : rewrites rules.toml
+    enable ..> send_request : pushes "reload" (best-effort)
+    disable ..> load_rules : reads current rules
+    disable ..> dump_rules : rewrites rules.toml
+    disable ..> send_request : pushes "reload" (best-effort)
+    config_show ..> load_config : the effective merged config
+    config_show ..> enforced_override_paths : flags enforced values
+    config_edit ..> load_config : validates the real merged result on save
+    config_edit ..> ConfigLoadError : catches, clean CLI error
+    status ..> send_request : "status"
+    pause ..> send_request : "pause"
+    resume ..> send_request : "resume"
+    send_request ..> IpcConnectionError : "sporkd is not running"
     doctor ..> NotImplementedError : catches JMAP-connectivity stub, clean CLI error
 ```
 
@@ -1877,6 +1963,49 @@ against by anything fancier). `spork config show` (§13) surfaces the
 fully-merged effective config with a note wherever the enforced tier
 silently overrode a user-tier value, so a confused user isn't left
 guessing why their own edit didn't take effect.
+
+**How `show` knows what's enforced:** `spork.core.config.loader.enforced_override_paths()`
+reads `/etc/spork/enforced.toml` on its own (independent of
+`load_config()`'s merge) and flattens it into dotted key paths — e.g.
+`{"tiering.daily_call_budget", "provider.kwargs.host"}` — every path
+literally present in that file, not just ones that differ from what
+the user set. Presence in the enforced tier is what makes a value
+unchangeable by the user, regardless of whether their own config
+happened to already agree with it. `spork config show` walks
+`SporkConfig`'s known (closed) field set, printing `(enforced)` next
+to any field whose dotted path is in that set.
+
+**Redaction, honestly scoped:** `provider`/`llm`/`alerts` `kwargs` are
+the one place a value resembling a credential could end up in
+`config.toml` (§7.3's secrets model says it shouldn't — `JmapProvider`'s
+`api_token` is meant to come from SecretSpec, not a config key — but
+`show` doesn't get to assume every config file was authored correctly).
+`spork config show` redacts any `kwargs` entry whose key
+case-insensitively contains `token`, `key`, `secret`, or `password` —
+a heuristic name-based check, stated as exactly that, not a guarantee
+against every way a secret could be spelled.
+
+**`spork config edit`, and why it doesn't push a live reload:** opens
+the *user* tier's `config.toml` in `$EDITOR`, then validates by calling
+`load_config()` for real (no path overrides) — the actual merged
+config a running `sporkd` would use, not just "is the user's file
+syntactically valid TOML" — since a user-tier edit can break validation
+in ways that only show up merged (deleting a key only the user tier
+ever set, with no default and nothing else supplying it). A validation
+failure is reported cleanly and nothing is pushed anywhere. Unlike
+`spork rules edit`/`enable`/`disable` (§6.2.2), a successful save
+**does not** push anything to a running daemon — it prints "restart
+sporkd to apply" instead. Rules and config aren't the same kind of
+change: reloading rules only ever swaps `RulesState.rules`, a plain
+list `_run_message_loop()` already re-reads every cycle; config
+controls the `Provider`/`LLMClient`/`Alerter` themselves, objects
+`run_daemon()` constructs once at startup and hands out to both tasks
+in its `TaskGroup()` — swapping those live means tearing down and
+rebuilding a `Source` (and, for `JmapProvider`, a live JMAP session)
+out from under an `asyncio.to_thread()` call that might be using it at
+that exact instant, a different and harder problem than reassigning
+one list reference. Not solved here — "restart to apply" is the
+honest answer until (if ever) that problem gets its own design.
 
 ```toml
 # ~/.config/spork/config.toml (user tier) — every key below can also
@@ -3363,13 +3492,16 @@ spork rules enable/disable <id>  # flip one rule's enabled field,
                                # tradeoff: this rewrite doesn't preserve
                                # hand-written comments/formatting (§7.5)
 
-spork config show             # effective (merged) config, secrets redacted;
-                               # flags any value the enforced tier overrode
+spork config show             # effective (merged) config; kwargs entries whose
+                               # key looks like a credential are redacted
+                               # (heuristic, not a guarantee — §7.2); flags every
+                               # value present in the enforced tier
 spork config edit             # open the *user* tier's config.toml in $EDITOR,
-                               # validate on save, push a reload if sporkd is
-                               # running — never touches the system-default or
-                               # enforced tiers (§7.2); those are edited
-                               # directly with real filesystem permissions
+                               # validate the real merged result on save — never
+                               # pushes a reload (§7.2's "why not," unlike rules):
+                               # restart sporkd to apply. Never touches the
+                               # system-default or enforced tiers; those are
+                               # edited directly with real filesystem permissions
 
 spork logs [--tail] [--since] [--message-id]  # reads StateDB directly,
                                                # works even if sporkd isn't running
