@@ -412,9 +412,20 @@ live until M5 needed something to control.
       actually report LLM spend yet, and `spork rules list` doesn't
       have per-rule match stats to show (that's `rule_stats`, a
       separate, still-unbuilt table behind a different command).
-- [ ] `spork config show/edit` with validation on save (S) — `edit`
-      only ever opens the *user* tier (§7.2); `show` flags any value
-      the enforced tier is overriding
+- [x] `spork config show/edit` with validation on save (S) — `show`
+      flags every value the enforced tier sets via a new
+      `spork.core.config.loader.enforced_override_paths()` (flattens
+      the enforced tier's raw TOML into dotted paths, independent of
+      `load_config()`'s merge) and redacts any `kwargs` entry whose key
+      looks like a credential (`token`/`key`/`secret`/`password`
+      substring match — a stated heuristic, not a guarantee). `edit`
+      only ever opens the *user* tier (§7.2), validates the real
+      merged `load_config()` result on save, and — deliberately unlike
+      `spork rules edit`/`enable`/`disable` — never pushes a live
+      reload: config controls the `Provider`/`LLMClient`/`Alerter`
+      objects `run_daemon()` only ever builds once at startup, not a
+      plain list re-read every poll cycle, so "restart sporkd to
+      apply" is the honest answer here.
 - [x] `spork logs` (S) — reads `StateDB` directly, no socket/daemon
       needed; `--tail`/`--since` filter client-side, `--message-id`
       storage-side

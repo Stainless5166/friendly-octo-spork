@@ -128,7 +128,18 @@ serializer (no new dependency) `enable`/`disable` use to rewrite
 comments/formatting. Two stale `docs/DESIGN.md` §13 claims were found
 and corrected along the way (`spork status`'s LLM-spend claim, `spork
 rules list`'s "match stats" claim — neither has real backing data).
-**M5 is 8/10.**
+**M5 is 8/10.** Updated once more for `spork config show/edit`:
+`spork.core.config.loader.enforced_override_paths()` flattens the
+enforced tier's raw TOML into dotted paths (independent of
+`load_config()`'s merge) so `show` can flag every value the enforced
+tier sets, plus a stated-heuristic credential redaction
+(`token`/`key`/`secret`/`password` substring match) for `kwargs`
+entries. `edit` validates the real merged `load_config()` result on
+save and — deliberately, unlike rules — never pushes a live reload:
+config controls objects `run_daemon()` only builds once at startup.
+Also rebuilt the `spork.cli` §6.4 UML diagram, stale since
+status/pause/resume/logs/rules-list/edit/enable/disable landed and
+were never added to it. **M5 is 9/10.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -437,7 +448,7 @@ not one message's full cross-tier lifetime, since nothing calls
 exists) — M7 still separately owns `sporkd`'s overall structured
 logging setup and audit-trail completeness beyond triage outcomes.
 
-### M5 — CLI + daemon control surface — 8/10
+### M5 — CLI + daemon control surface — 9/10
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
@@ -448,7 +459,7 @@ logging setup and audit-trail completeness beyond triage outcomes.
 | `spork status` | ✅ | ✅ — tests 404–407 (4 tests), including a full end-to-end test against a real `sporkd` subprocess |
 | `spork pause`/`resume` | ✅ | ✅ — tests 408–410 (3 tests), including a full pause→status→resume→status round trip |
 | `spork rules list/edit/enable/disable` w/ live reload | ✅ | ✅ — tests 436–454 (19 tests), 100% line coverage on `spork.core.rules.writer`/`spork.daemon.state`/`spork.cli.commands.rules`, no gaps on the touched part of `spork.daemon.loop` |
-| `spork config show/edit` | ❌ | — |
+| `spork config show/edit` | ✅ | ✅ — tests 455–478 (24 tests), 100% line coverage on `spork.core.config.*`/`spork.cli.commands.config` |
 | `spork logs` | ✅ | ✅ — tests 411–417 (7 tests) |
 | `spork reclassify <id>` | ❌ | — |
 
@@ -529,7 +540,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (477 tests, all passing — 0 xfail)
+## Full test inventory (501 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -2634,3 +2645,91 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
 454. **`cli/commands/test_rules_list_edit_enable_disable_edge_cases.py::test_push_reload_with_no_socket_path_falls_back_to_resolve_socket_path`**
     `_push_reload(None)` resolves a socket path itself (same defensive
     pattern `run_daemon()` uses) rather than crashing on `None`.
+
+455. **`core/config/test_enforced_override_paths.py::test_enforced_override_paths_with_no_enforced_file_is_empty`**
+    No `enforced.toml` at all: an empty set, not an error.
+
+456. **`core/config/test_enforced_override_paths.py::test_enforced_override_paths_includes_flat_top_level_keys`**
+    A flat key (`rules_path`) at the enforced tier's top level appears
+    in the result unqualified.
+
+457. **`core/config/test_enforced_override_paths.py::test_enforced_override_paths_flattens_nested_tables_with_dotted_names`**
+    `[tiering] daily_call_budget = 200` becomes `"tiering.daily_call_budget"`.
+
+458. **`core/config/test_enforced_override_paths.py::test_enforced_override_paths_flattens_doubly_nested_kwargs_tables`**
+    `[provider.kwargs] host = "..."` becomes `"provider.kwargs.host"`.
+
+459. **`core/config/test_enforced_override_paths.py::test_enforced_override_paths_raises_configloaderror_for_malformed_toml`**
+    Invalid TOML in the enforced file: `ConfigLoadError`, same as
+    `load_config()` itself.
+
+460. **`cli/commands/test_config.py::test_config_show_prints_effective_values`**
+    A real merged config: `provider.spec` and a non-secret `kwargs`
+    value both appear in the output.
+
+461. **`cli/commands/test_config.py::test_config_show_redacts_a_token_like_kwarg`**
+    `provider.kwargs.api_token`'s real value never appears in the
+    output; the key itself does.
+
+462. **`cli/commands/test_config.py::test_config_show_with_no_config_produces_a_clean_error`**
+    No `config.toml` anywhere: exit 1, clean `Error:`, no traceback.
+
+463. **`cli/commands/test_config.py::test_config_edit_with_a_noop_editor_saves_and_says_restart`**
+    A no-op `$EDITOR`: exit 0, "restart" appears in the output — never
+    a reload push.
+
+464. **`cli/commands/test_config.py::test_config_edit_rejects_an_invalid_save`**
+    `$EDITOR` that corrupts the user tier's file: exit 1, clean
+    `Error:`, no traceback.
+
+465. **`cli/commands/test_config.py::test_config_group_appears_in_top_level_help`**
+    `spork --help` lists the `config` subcommand group.
+
+466. **`cli/commands/test_config.py::test_format_show_lines_flags_a_path_present_in_the_enforced_set`**
+    `_format_show_lines()` directly: a path in the given enforced set
+    gets exactly one `(enforced)`-suffixed line.
+
+467. **`cli/commands/test_config.py::test_format_show_lines_does_not_flag_paths_outside_the_enforced_set`**
+    An empty enforced set: no line is ever flagged.
+
+468. **`cli/commands/test_config.py::test_format_show_lines_redacts_provider_kwargs_api_token`**
+    `_format_show_lines()` directly: `provider.kwargs.api_token`'s
+    value is redacted regardless of the enforced set.
+
+469. **`cli/commands/test_config.py::test_looks_like_secret_matches_common_credential_key_names`**
+    `_looks_like_secret()` on `api_token`/`API_KEY`/`client_secret`/
+    `password` (all `True`) vs. `host`/an ordinary tiering-style key
+    (both `False`).
+
+470. **`core/config/test_enforced_override_paths_edge_cases.py::test_enforced_override_paths_treats_a_list_value_as_one_leaf_not_recursed_into`**
+    A TOML array (`allowed_categories`) is one leaf path, not something
+    recursed into just because it's a compound type.
+
+471. **`core/config/test_enforced_override_paths_edge_cases.py::test_enforced_override_paths_combines_flat_and_nested_keys_in_one_file`**
+    A flat key and a nested table in the same file both appear
+    correctly in the result.
+
+472. **`core/config/test_enforced_override_paths_edge_cases.py::test_enforced_override_paths_of_an_empty_file_is_empty`**
+    An empty (zero-byte) enforced file: an empty set.
+
+473. **`cli/commands/test_config_edge_cases.py::test_config_show_help_works`**
+    Asserts exit 0, usage text.
+
+474. **`cli/commands/test_config_edge_cases.py::test_config_edit_help_works`**
+    Asserts exit 0, usage text.
+
+475. **`cli/commands/test_config_edge_cases.py::test_config_edit_with_no_config_at_all_never_invokes_the_editor`**
+    No config in any tier: the precondition check fails (exit 1) before
+    `$EDITOR` ever runs — proven by a marker file it would have created
+    never appearing.
+
+476. **`cli/commands/test_config_edge_cases.py::test_format_show_lines_handles_a_none_socket_path_without_crashing`**
+    `socket_path=None` (before `load_config()` would normally resolve
+    it) prints `"socket_path = None"` rather than raising.
+
+477. **`cli/commands/test_config_edge_cases.py::test_format_show_lines_prints_no_kwargs_lines_when_kwargs_is_empty`**
+    An empty `kwargs` dict: no `.kwargs.` lines for that section.
+
+478. **`cli/commands/test_config_edge_cases.py::test_format_show_lines_redacts_across_every_backend_section_independently`**
+    `llm.kwargs.api_key` is redacted too, not just `provider.kwargs.*`
+    — the heuristic applies per-entry, not per-section.
