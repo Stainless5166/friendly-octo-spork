@@ -24,13 +24,14 @@ from spork.core.actions.executor import ActionExecutor
 from spork.core.alerts.log import LoggingAlerter
 from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
 from spork.core.llm.base import Verdict, VerdictRequest
+from spork.core.llm.clients.recorded import UnrecordedResponseError
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline.observer import PipelineObserver
 from spork.core.providers.base import ThreadContext
 from spork.core.rules.loader import RulesLoadError
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
-from spork.daemon.loop import _run_message_loop, run_daemon
+from spork.daemon.loop import _parse_to_addresses, _run_message_loop, run_daemon
 from spork.daemon.state import DaemonState
 
 
@@ -221,5 +222,81 @@ def test_run_daemon_propagates_a_missing_rules_file_error(tmp_path: Path) -> Non
     async def _body() -> None:
         with pytest.raises(RulesLoadError):
             await run_daemon(config, idle_delay_seconds=0.01)
+
+    asyncio.run(_body())
+
+
+def test_parse_to_addresses_splits_and_strips_a_comma_separated_to_header(make_message) -> None:
+    """Real To: header parsing (docs/DESIGN.md §6.2.1) — comma-split,
+    whitespace stripped from each address."""
+    message = make_message(headers={"To": "a@example.com, b@example.com ,c@example.com"})
+
+    assert _parse_to_addresses(message) == ("a@example.com", "b@example.com", "c@example.com")
+
+
+def test_parse_to_addresses_returns_empty_tuple_when_no_to_header(make_message) -> None:
+    """No To: header at all — an empty tuple, not a fabricated address
+    or a KeyError."""
+    message = make_message(headers={})
+
+    assert _parse_to_addresses(message) == ()
+
+
+def test_run_daemon_propagates_an_unrecorded_tier2_response_error(tmp_path: Path) -> None:
+    """A message escalates, but RecordedLLMClient has no recorded
+    response for its subject — UnrecordedResponseError propagates (as
+    asyncio.TaskGroup's ExceptionGroup) rather than being swallowed,
+    same fail-loud posture as the missing-rules-file case above: a
+    raise here means the message is retried next cycle (docs/DESIGN.md
+    §10.7), not silently marked processed with no real outcome."""
+    messages_path = tmp_path / "messages.json"
+    messages_path.write_text(
+        json.dumps(
+            [
+                {
+                    "message_id": "msg-1",
+                    "thread_id": "thread-1",
+                    "from_address": "a@example.com",
+                    "from_domain": "example.com",
+                    "subject": "No recorded response for this",
+                    "body_text": "b",
+                }
+            ]
+        )
+    )
+    rules_path = tmp_path / "rules.toml"
+    rules_path.write_text(
+        """
+        [[rule]]
+        id = "always-escalate"
+        when = { always = true }
+        action = { type = "escalate" }
+        """
+    )
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text("{}")  # nothing recorded
+
+    config = SporkConfig(
+        provider=BackendSpec(
+            spec="spork.core.providers.file.provider:FileProvider",
+            kwargs={
+                "messages_path": str(messages_path),
+                "actions_log_path": str(tmp_path / "actions.jsonl"),
+            },
+        ),
+        llm=BackendSpec(
+            spec="spork.core.llm.clients.recorded:RecordedLLMClient",
+            kwargs={"responses_path": str(responses_path)},
+        ),
+        alerts=BackendSpec(spec="spork.core.alerts.log:LoggingAlerter"),
+        rules_path=rules_path,
+        db_path=tmp_path / "state.sqlite3",
+        socket_path=tmp_path / "sporkd.sock",
+    )
+
+    async def _body() -> None:
+        with pytest.raises(ExceptionGroup) as exc_info:
+            await run_daemon(config, idle_delay_seconds=0.01)
+        assert any(isinstance(exc, UnrecordedResponseError) for exc in exc_info.value.exceptions)
 
     asyncio.run(_body())
