@@ -429,7 +429,23 @@ live until M5 needed something to control.
 - [x] `spork logs` (S) — reads `StateDB` directly, no socket/daemon
       needed; `--tail`/`--since` filter client-side, `--message-id`
       storage-side
-- [ ] `spork reclassify <id>` (S)
+- [x] `spork reclassify <id>` (S) — standalone, like `spork logs`: opens
+      its own `Provider`/`StateDB` directly, works whether or not
+      `sporkd` is running, no new IPC command needed. Safe under
+      SQLite's WAL mode (already on, §7.4) plus `sqlite3.connect()`'s
+      unmodified 5-second default busy timeout — a rare write
+      collision with a running daemon is a bounded retry, not a
+      correctness risk. `Provider` gained a sixth capability,
+      `build_message_lookup()` (real against `FileProvider`,
+      settled-shape `NotImplementedError` against `JmapProvider`, same
+      split as the others); `process_message()`/`build_default_pipeline()`
+      gained `force: bool = False`, which omits `IdempotencyGateSelector`
+      from the composed pipeline entirely rather than consulting and
+      overriding it. `spork.core.pipeline.tier2.escalate.{escalate_message,
+      parse_to_addresses}` were extracted out of what was
+      `spork.daemon.loop`'s private helpers, so the daemon loop and
+      `spork reclassify` share one real Tier 2 escalation
+      implementation instead of duplicating it.
 
 **Exit criteria:** every command in §13 works end-to-end against a live
 daemon; editing `rules.toml` via `spork rules edit` takes effect without

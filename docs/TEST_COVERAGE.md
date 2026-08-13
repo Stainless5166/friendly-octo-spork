@@ -139,7 +139,23 @@ save and — deliberately, unlike rules — never pushes a live reload:
 config controls objects `run_daemon()` only builds once at startup.
 Also rebuilt the `spork.cli` §6.4 UML diagram, stale since
 status/pause/resume/logs/rules-list/edit/enable/disable landed and
-were never added to it. **M5 is 9/10.**
+were never added to it. **M5 is 9/10.** Updated once more, and last,
+for `spork reclassify <id>`: standalone like `spork logs` (no daemon
+required — safe under SQLite's already-on WAL mode plus
+`sqlite3.connect()`'s unmodified 5-second default busy timeout, a
+bounded retry rather than a correctness risk on the rare write
+collision with a running daemon). `Provider` gained a sixth
+capability, `build_message_lookup()` (real against `FileProvider`,
+settled-shape `NotImplementedError` against `JmapProvider`);
+`process_message()`/`build_default_pipeline()` gained
+`force: bool = False`, omitting `IdempotencyGateSelector` from the
+composed pipeline entirely rather than consulting and overriding it.
+`spork.core.pipeline.tier2.escalate.{escalate_message,
+parse_to_addresses}` were extracted out of what was
+`spork.daemon.loop`'s private helpers — one real implementation, two
+callers (the daemon loop, and `spork reclassify`), not a daemon-only
+helper duplicated for the CLI. **M5 is 10/10 — the milestone is
+complete.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -448,7 +464,7 @@ not one message's full cross-tier lifetime, since nothing calls
 exists) — M7 still separately owns `sporkd`'s overall structured
 logging setup and audit-trail completeness beyond triage outcomes.
 
-### M5 — CLI + daemon control surface — 9/10
+### M5 — CLI + daemon control surface — 10/10 (complete)
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
@@ -461,7 +477,7 @@ logging setup and audit-trail completeness beyond triage outcomes.
 | `spork rules list/edit/enable/disable` w/ live reload | ✅ | ✅ — tests 436–454 (19 tests), 100% line coverage on `spork.core.rules.writer`/`spork.daemon.state`/`spork.cli.commands.rules`, no gaps on the touched part of `spork.daemon.loop` |
 | `spork config show/edit` | ✅ | ✅ — tests 455–478 (24 tests), 100% line coverage on `spork.core.config.*`/`spork.cli.commands.config` |
 | `spork logs` | ✅ | ✅ — tests 411–417 (7 tests) |
-| `spork reclassify <id>` | ❌ | — |
+| `spork reclassify <id>` | ✅ | ✅ — tests 479–498 (20 tests), 100% line coverage on `spork.core.providers.*`/`spork.core.pipeline.*`/`spork.daemon.loop`/`spork.cli.commands.reclassify` |
 
 `spork.core.config` (`schema.py`/`paths.py`/`loader.py`) is the first
 of M5's two prerequisite items — settled and documented (§7.2/§6.4)
@@ -540,7 +556,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (501 tests, all passing — 0 xfail)
+## Full test inventory (521 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -2555,12 +2571,16 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
     Same `MessagesLoadError` `build_source()` already raises for a
     missing file.
 
-433. **`daemon/test_loop_edge_cases.py::test_parse_to_addresses_splits_and_strips_a_comma_separated_to_header`**
-    `_parse_to_addresses()` unit test: comma-split, whitespace-stripped.
+433. **`core/pipeline/tier2/test_escalate.py::test_parse_to_addresses_splits_and_strips_a_comma_separated_to_header`**
+    `parse_to_addresses()` unit test: comma-split, whitespace-stripped.
+    Relocated from `daemon/test_loop_edge_cases.py`'s
+    `_parse_to_addresses()` (same assertion) once `spork reclassify
+    <id>` (M5) needed the same function outside the daemon loop —
+    number kept stable, path/name updated to match the real move.
 
-434. **`daemon/test_loop_edge_cases.py::test_parse_to_addresses_returns_empty_tuple_when_no_to_header`**
+434. **`core/pipeline/tier2/test_escalate.py::test_parse_to_addresses_returns_empty_tuple_when_no_to_header`**
     No `To:` header at all — `()`, not a `KeyError` or a fabricated
-    address.
+    address. Relocated alongside entry 433, same reason.
 
 435. **`daemon/test_loop_edge_cases.py::test_run_daemon_propagates_an_unrecorded_tier2_response_error`**
     An escalated message with no recorded Tier 2 response:
@@ -2733,3 +2753,84 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
 478. **`cli/commands/test_config_edge_cases.py::test_format_show_lines_redacts_across_every_backend_section_independently`**
     `llm.kwargs.api_key` is redacted too, not just `provider.kwargs.*`
     — the heuristic applies per-entry, not per-section.
+
+479. **`core/providers/jmap/test_client.py::test_get_message_raises_not_implemented`**
+    `JmapClient.get_message()` is a settled-shape stub, same pattern as
+    its other six methods.
+
+480. **`core/providers/jmap/test_provider.py::test_build_message_lookup_returns_something_that_can_get_a_message`**
+    `JmapProvider.build_message_lookup()` returns an object satisfying
+    `MessageLookup`; calling it raises `NotImplementedError`,
+    propagated from `JmapClient`.
+
+481. **`core/providers/jmap/test_provider.py::test_message_lookup_delegates_to_the_client_directly`**
+    `_JmapMessageLookup` is a real delegation to
+    `JmapClient.get_message()`, not a second placeholder.
+
+482. **`core/providers/file/test_provider.py::test_build_message_lookup_finds_a_message_by_id`**
+    `get_message()` scans the same fixture file `build_source()`
+    replays from and returns the matching `NormalizedMessage`.
+
+483. **`core/providers/file/test_provider.py::test_message_lookup_raises_a_clean_error_for_an_unknown_id`**
+    An unknown `message_id`: `MessageNotFoundError`, not a silent
+    `None` or an unhandled exception.
+
+484. **`core/pipeline/test_default.py::test_process_message_with_force_reprocesses_an_already_processed_message`**
+    `force=True` bypasses `IdempotencyGateSelector` entirely — an
+    already-processed message is evaluated and acted on again, its
+    `processed_messages` row overwritten.
+
+485. **`core/pipeline/tier2/test_escalate.py::test_escalate_message_wires_thread_history_and_mailbox_lister_into_tier2`**
+    `escalate_message()` calls both Provider-supplied reads with the
+    escalated message, and the resulting `Verdict`'s action is
+    actually applied — a real end-to-end call into
+    `process_tier2_message()`, not a passthrough.
+
+486. **`cli/commands/test_reclassify.py::test_reclassify_help_works`**
+    Asserts exit 0, usage text.
+
+487. **`cli/commands/test_reclassify.py::test_reclassify_with_no_config_produces_a_clean_error`**
+    Asserts exit 1, clean error, no traceback.
+
+488. **`cli/commands/test_reclassify.py::test_reclassify_with_an_unknown_message_id_reports_a_clean_error`**
+    Asserts exit 1, the unknown id named in the error, no traceback.
+
+489. **`cli/commands/test_reclassify.py::test_reclassify_reruns_tier1_and_records_the_new_outcome`**
+    A message matching a terminal rule: the new action appears in the
+    output and `processed_messages` (`tier_reached="tier1"`).
+
+490. **`cli/commands/test_reclassify.py::test_reclassify_escalates_through_tier2_when_the_rule_says_so`**
+    A message matching an escalating rule: `processed_messages` ends
+    up `tier_reached="tier2"` with the recorded verdict's action.
+
+491. **`cli/commands/test_reclassify.py::test_reclassify_reprocesses_a_message_already_marked_processed`**
+    The whole point: running `reclassify` twice on the same message
+    both succeed and both record the outcome.
+
+492. **`core/pipeline/test_default_edge_cases.py::test_process_message_with_force_on_a_never_processed_message_behaves_normally`**
+    `force=True` on a message that was never processed to begin with
+    behaves exactly like `force=False` — not double-applied or treated
+    specially.
+
+493. **`core/pipeline/tier2/test_escalate.py::test_escalate_message_returns_none_when_the_daily_budget_is_exhausted`**
+    `escalate_message()` passes `process_tier2_message()`'s
+    None-on-budget-exhausted result straight through.
+
+494. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_help_lists_the_message_id_argument`**
+    `--help` mentions the `message_id` argument.
+
+495. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_reports_budget_exhausted_rather_than_crashing`**
+    A rule that escalates, but the daily call budget is already zero:
+    a clear message, exit 0, not an unhandled exception.
+
+496. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_with_no_message_id_argument_is_a_usage_error`**
+    Omitting the required argument entirely is Typer's own usage error
+    (exit 2), never our own error handling.
+
+497. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_appears_in_top_level_help`**
+    `spork --help` lists the `reclassify` subcommand.
+
+498. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_works_while_a_real_sporkd_is_running`**
+    The real point of being standalone: `reclassify` against the same
+    `StateDB` a running `sporkd` is using, concurrently, without either
+    side failing (docs/DESIGN.md §7.4's WAL-mode reasoning).
