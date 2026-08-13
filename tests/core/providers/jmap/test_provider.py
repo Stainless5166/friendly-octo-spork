@@ -17,6 +17,8 @@ from spork.core.providers.jmap.provider import (
     _JmapActionApplier,
     _JmapContentFetcher,
     _JmapDraftCreator,
+    _JmapMailboxLister,
+    _JmapThreadHistoryReader,
 )
 from spork.core.rules.schema import Action
 from spork.core.sources.triggered import TriggeredSource
@@ -100,3 +102,50 @@ def test_draft_creator_delegates_to_the_client_directly(make_message) -> None:
 
     with pytest.raises(NotImplementedError):
         draft_creator.create_draft(make_message(), "Friday 2pm works for me.")
+
+
+def test_build_thread_history_reader_returns_something_that_can_get_context(
+    make_message,
+) -> None:
+    """build_thread_history_reader() returns an object satisfying
+    ThreadHistoryReader — the fourth leg of the Provider contract per
+    docs/DESIGN.md §9.3, needed to wire Tier 2 into the daemon loop."""
+    provider = JmapProvider(host="api.fastmail.com", api_token="fake-token")
+
+    reader = provider.build_thread_history_reader()
+
+    with pytest.raises(NotImplementedError):
+        reader.get_thread_context(make_message())
+
+
+def test_thread_history_reader_delegates_to_the_client_directly(make_message) -> None:
+    """The thread history reader is a real delegation to
+    JmapClient.get_thread_context(), not a second placeholder — mirrors
+    test_action_applier_delegates_to_the_client_directly."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+    reader = _JmapThreadHistoryReader(client)
+
+    with pytest.raises(NotImplementedError):
+        reader.get_thread_context(make_message())
+
+
+def test_build_mailbox_lister_returns_something_that_can_list_mailboxes() -> None:
+    """build_mailbox_lister() returns an object satisfying MailboxLister
+    — the fifth leg of the Provider contract per docs/DESIGN.md §9.3."""
+    provider = JmapProvider(host="api.fastmail.com", api_token="fake-token")
+
+    lister = provider.build_mailbox_lister()
+
+    with pytest.raises(NotImplementedError):
+        lister.list_mailboxes()
+
+
+def test_mailbox_lister_delegates_to_the_client_directly() -> None:
+    """The mailbox lister is a real delegation to
+    JmapClient.list_mailboxes(), not a second placeholder — mirrors
+    test_action_applier_delegates_to_the_client_directly."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+    lister = _JmapMailboxLister(client)
+
+    with pytest.raises(NotImplementedError):
+        lister.list_mailboxes()

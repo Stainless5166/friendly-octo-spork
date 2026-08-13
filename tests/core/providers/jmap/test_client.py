@@ -53,3 +53,21 @@ def test_create_draft_raises_not_implemented(make_message) -> None:
 
     with pytest.raises(NotImplementedError):
         client.create_draft(make_message(), "Friday 2pm works for me.")
+
+
+def test_get_thread_context_raises_not_implemented(make_message) -> None:
+    """get_thread_context() would search a live session's thread history
+    via Email/query (docs/DESIGN.md §9.3) — not built yet."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+
+    with pytest.raises(NotImplementedError):
+        client.get_thread_context(make_message())
+
+
+def test_list_mailboxes_raises_not_implemented() -> None:
+    """list_mailboxes() would fetch Mailbox/get against a live session
+    (docs/DESIGN.md §9.3) — not built yet."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+
+    with pytest.raises(NotImplementedError):
+        client.list_mailboxes()

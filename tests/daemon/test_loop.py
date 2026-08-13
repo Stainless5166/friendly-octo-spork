@@ -1,10 +1,12 @@
 """Acceptance tests for spork.daemon.loop.run_daemon() (docs/DESIGN.md §6.2.1).
 
-Exercised end to end against FileProvider + LoggingAlerter — a real
-Provider/Alerter, no live JMAP session needed (docs/DESIGN.md §9.3),
+Exercised end to end against FileProvider + LoggingAlerter +
+RecordedLLMClient — real Provider/Alerter/LLMClient backends, no live
+JMAP or Anthropic session needed (docs/DESIGN.md §9.3, §10.5),
 proving the loop's own composition/threading logic works, not any
-particular backend. Tier 1 only this round (§6.2.1's scope decision);
-Tier 2 chaining is separate, tracked follow-up work.
+particular backend. Tier 1+2: §6.2.1's "Tier 1 only" scope decision is
+resolved — an escalating message now flows straight into
+process_tier2_message() in the same poll cycle.
 
 Plain `asyncio.run()` inside ordinary sync test functions rather than
 `pytest-asyncio` — stdlib is enough here, and this project has been
@@ -17,11 +19,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 from pathlib import Path
 
 import pytest
 
-from spork.core.config.schema import BackendSpec, SporkConfig
+from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
 from spork.core.state.db import StateDB
 from spork.daemon.loop import run_daemon
 
@@ -67,11 +70,37 @@ def _write_rules(path: Path) -> None:
     )
 
 
+def _write_responses(path: Path) -> None:
+    """One recorded verdict, keyed by the VIP message's subject ("Urgent")
+    — the only message either test rules.toml file escalates, so this
+    is the only response Tier 2 ever needs to look up. `suggested_action`
+    is "ignore" (mailbox=None) specifically to sidestep §10.2's
+    available_mailboxes validation — this test suite is about the loop's
+    own wiring, not verdict-validation edge cases (those live in
+    tests/core/llm/)."""
+    path.write_text(
+        json.dumps(
+            {
+                "Urgent": {
+                    "category": "needs_reply",
+                    "urgency": "high",
+                    "confidence": 0.95,
+                    "suggested_action": {"type": "ignore"},
+                    "summary": "Needs a reply today.",
+                    "reasoning": "Sender is a VIP and the tone is urgent.",
+                }
+            }
+        )
+    )
+
+
 def _config(tmp_path: Path) -> SporkConfig:
     messages_path = tmp_path / "messages.json"
     _write_messages(messages_path)
     rules_path = tmp_path / "rules.toml"
     _write_rules(rules_path)
+    responses_path = tmp_path / "responses.json"
+    _write_responses(responses_path)
 
     return SporkConfig(
         provider=BackendSpec(
@@ -81,11 +110,15 @@ def _config(tmp_path: Path) -> SporkConfig:
                 "actions_log_path": str(tmp_path / "actions.jsonl"),
             },
         ),
-        llm=BackendSpec(spec="unused:Unused"),  # never loaded — Tier 1 only this round
+        llm=BackendSpec(
+            spec="spork.core.llm.clients.recorded:RecordedLLMClient",
+            kwargs={"responses_path": str(responses_path)},
+        ),
         alerts=BackendSpec(spec="spork.core.alerts.log:LoggingAlerter"),
         rules_path=rules_path,
         db_path=tmp_path / "state.sqlite3",
         socket_path=tmp_path / "sporkd.sock",  # unused this round, still required by callers
+        tiering=TieringConfig(allowed_categories=["needs_reply"]),
     )
 
 
@@ -137,6 +170,27 @@ def test_run_daemon_fires_a_vip_alert_through_pipeline_observer(
     asyncio.run(_run_briefly(config))
 
     assert "vip_sender" in caplog.text
+
+
+def test_run_daemon_runs_an_escalated_message_through_tier2(tmp_path: Path) -> None:
+    """The VIP-sender rule escalates msg-vip; the loop now carries it
+    straight into process_tier2_message() in the same poll cycle
+    (docs/DESIGN.md §6.2.1) — proven by the row ending up tier_reached
+    == "tier2" with the recorded verdict's action, not stuck at Tier
+    1's placeholder "escalate" row. Raw sqlite3 introspection, same
+    pattern as tests/core/pipeline/tier2/test_integration_with_tier1.py's
+    _row() helper — StateDB itself has no public "get one row" accessor."""
+    config = _config(tmp_path)
+
+    asyncio.run(_run_briefly(config))
+
+    conn = sqlite3.connect(str(config.db_path))
+    row = conn.execute(
+        "SELECT tier_reached, action_taken FROM processed_messages WHERE jmap_id = ?",
+        ("msg-vip",),
+    ).fetchone()
+    conn.close()
+    assert row == ("tier2", "ignore")
 
 
 def test_run_daemon_stops_promptly_after_stop_event_is_set(tmp_path: Path) -> None:
