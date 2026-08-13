@@ -175,6 +175,7 @@ flowchart TD
             rules_schema["schema.py<br/>Condition/Action/Rule"]
             rules_engine["engine.py<br/>Tier 1 evaluate()"]
             rules_loader["loader.py<br/>rules.toml parsing"]
+            rules_writer["writer.py<br/>dump_rules() (M5)"]
         end
 
         subgraph classify["classify/"]
@@ -226,13 +227,13 @@ flowchart TD
     subgraph daemon_pkg["daemon/"]
         daemon_main["main.py<br/>sporkd entrypoint"]
         daemon_loop["loop.py<br/>run_daemon() (Tier 1+2, §6.2.1)"]
-        daemon_state["state.py<br/>DaemonState"]
+        daemon_state["state.py<br/>DaemonState + RulesState"]
     end
 
     subgraph cli_pkg["cli/"]
         cli_main["main.py<br/>spork entrypoint"]
         subgraph cli_commands["commands/"]
-            cli_rules["rules.py<br/>spork rules test"]
+            cli_rules["rules.py<br/>spork rules test/list/edit/<br/>enable/disable"]
             cli_doctor["doctor.py<br/>spork doctor (stub)"]
             cli_status["status.py<br/>spork status"]
             cli_pause["pause.py<br/>spork pause/resume"]
@@ -428,6 +429,26 @@ a worker thread — exactly the concurrent access §6.2.1's
 `check_same_thread=False` note says is unsafe. Caught before writing
 any code, not after: `spork status` doesn't report LLM spend this
 round (see below) rather than accepting that risk.
+
+**`RulesState`** (`spork.daemon.state`, alongside `DaemonState`) is
+the same pattern applied to a different problem: `spork rules edit`/
+`enable`/`disable` (§7.5, §13) write a new `rules.toml`, and a running
+`sporkd` needs to notice without a restart. A new `reload` `IpcServer`
+handler re-runs `load_rules(rules_path)` and, on success, assigns the
+result to `rules_state.rules` — a single reference reassignment, not
+an in-place mutation of the list `_run_message_loop()` is reading. That
+distinction is what makes it safe without a lock: `_run_message_loop()`
+reads `rules_state.rules` fresh at the top of every poll iteration
+(never captured once at loop start), and CPython's GIL makes one
+attribute assignment atomic — a `to_thread(process_message, ...)` call
+already in flight received its own list reference as an ordinary
+argument before the reassignment, so it finishes against the rules it
+started with; the *next* iteration picks up the new list. No
+`RulesLoadError` from a bad hand-edit ever reaches the daemon's own
+control flow — the `reload` handler catches it and returns
+`IpcResponse(ok=False, error=...)`, leaving `rules_state.rules`
+untouched, so a running daemon keeps evaluating its last-known-good
+rules rather than crashing or silently going ruleless.
 
 Pause semantics, stated honestly rather than glossed over:
 `Source.poll()` fuses "wait" and "fetch" into one call (§9.2), so
@@ -924,6 +945,10 @@ classDiagram
         <<function>>
         +load_rules(path) list
     }
+    class dump_rules {
+        <<function>>
+        +dump_rules(rules) str
+    }
 
     Rule *-- Condition
     Rule *-- Action
@@ -933,6 +958,7 @@ classDiagram
     evaluate ..> TextClassifier : classify(), lazily, at most once
     load_rules ..> Rule : produces
     load_rules ..> RulesLoadError : raises
+    dump_rules ..> Rule : serializes (round-trips through load_rules)
 ```
 
 #### `spork.core.classify`
@@ -1719,6 +1745,12 @@ classDiagram
         +paused: bool
         +started_at: str
     }
+    class RulesState {
+        <<dataclass>>
+        +rules: Sequence
+    }
+    class load_rules { <<function>> }
+    class RulesLoadError { <<Exception>> }
 
     class run_daemon {
         <<function>>
@@ -1726,7 +1758,7 @@ classDiagram
     }
     class _run_message_loop {
         <<function>>
-        +_run_message_loop(source, rules, executor, state_db, ops, classifier, llm_client, draft_creator, thread_history_reader, mailbox_lister, daemon_state, stop_event) None
+        +_run_message_loop(source, rules_state, executor, state_db, ops, classifier, llm_client, draft_creator, thread_history_reader, mailbox_lister, daemon_state, stop_event) None
     }
     class _run_until_signalled {
         <<function>>
@@ -1742,16 +1774,20 @@ classDiagram
     run_daemon --> StateDB : opens
     run_daemon --> PipelineObserver : constructs
     run_daemon --> DaemonState : constructs, shared with IpcServer's handlers
-    run_daemon --> IpcServer : constructs, registers status/pause/resume handlers
+    run_daemon --> RulesState : constructs from load_rules(), shared with IpcServer's reload handler
+    run_daemon --> IpcServer : constructs, registers status/pause/resume/reload handlers
     run_daemon ..> _run_message_loop : both run inside one asyncio.TaskGroup (§6.2.2)
     run_daemon ..> IpcServer : .serve(stop_event)
     _run_message_loop --> Source : polls, via asyncio.to_thread (§6.2.1)
     _run_message_loop --> DaemonState : skips poll()+processing while paused
+    _run_message_loop --> RulesState : reads .rules fresh every poll iteration (§6.2.2)
     _run_message_loop ..> process_message : Tier 1, via asyncio.to_thread
     _run_message_loop ..> process_tier2_message : Tier 2, when Tier 1 escalates, a second sequential asyncio.to_thread (§6.2.1)
     _run_message_loop --> ThreadHistoryReader : get_thread_context() for an escalated message
     _run_message_loop --> MailboxLister : list_mailboxes() for an escalated message
     _run_message_loop --> DraftCreator : passed through to process_tier2_message
+    IpcServer ..> load_rules : reload handler re-reads rules_path
+    load_rules ..> RulesLoadError : reload handler catches, returns ok=False, RulesState untouched
 ```
 
 `main.py` is the thin Typer entrypoint (config loading, signal
@@ -2023,6 +2059,22 @@ conditions that don't fit the schema are a signal to write a Sieve rule
 
 `action.type = "escalate"` is what hands a message to Tier 2; everything
 else is a terminal Tier 1 action and never invokes the LLM.
+
+**`spork rules enable/disable <id>`** flips one rule's `enabled` field
+and rewrites the whole file via `spork.core.rules.writer.dump_rules()`
+— a small, purpose-built serializer for this exact closed schema
+(`[[rule]]` blocks, inline `when`/`action` tables), not a general TOML
+library: nothing else in this codebase writes TOML, and the schema is
+simple enough (strings, bools, string lists) that hand-rolling the
+handful of lines it takes is cheaper and more auditable than a new
+dependency. The real, stated tradeoff: `dump_rules()` regenerates the
+file from the validated `Rule` models, so **comments and formatting in
+a hand-edited `rules.toml` don't survive an `enable`/`disable` call** —
+`spork rules edit` (which just opens `$EDITOR` and otherwise leaves the
+file alone) is unaffected. Every write is followed by a best-effort
+`reload` request to a running `sporkd` (§6.2.2) — "sporkd is not
+running, changes will apply on next start" if there's no socket to
+reach, never an error, since the file write itself already succeeded.
 
 ## 8. JMAP integration
 
@@ -3286,22 +3338,30 @@ existing stages.
 ## 13. CLI command reference (v1 surface)
 
 ```
-spork status                  # daemon up/down, paused/running, today's
-                               # LLM spend vs budget (§6.2.2 — push
-                               # connection state/queue depth aren't
-                               # tracked anywhere yet, so not reported)
+spork status                  # daemon up/down, paused/started_at only —
+                               # push connection state/queue depth/LLM
+                               # spend vs budget aren't reported yet
+                               # (§6.2.2, honest gaps, not fabricated)
 spork pause / resume          # stop/start Tier 1+2 processing without
                                # killing the daemon (§6.2.2's honest
                                # caveat: today this also stops polling,
                                # not just acting on what's already
                                # fetched — see the design note)
 
-spork rules list              # show rules.toml, with per-rule match stats
+spork rules list              # show rules.toml: id/enabled/description/
+                               # action per rule. Per-rule match counts
+                               # aren't tracked (§7.4's rule_stats is a
+                               # separate, still-unbuilt item behind a
+                               # different command, spork rules stats)
 spork rules test <file>       # dry-run a candidate rules.toml against
                                # recent mail, no side effects
 spork rules edit              # open rules.toml in $EDITOR, validate on save,
                                # push a reload to sporkd if it's running
-spork rules enable/disable <id>
+                               # (§6.2.2/§7.5)
+spork rules enable/disable <id>  # flip one rule's enabled field,
+                               # rewrite the file, push a reload — real
+                               # tradeoff: this rewrite doesn't preserve
+                               # hand-written comments/formatting (§7.5)
 
 spork config show             # effective (merged) config, secrets redacted;
                                # flags any value the enforced tier overrode
