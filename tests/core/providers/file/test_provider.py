@@ -13,6 +13,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from spork.core.providers.base import MessageNotFoundError
 from spork.core.providers.file.provider import FileProvider
 from spork.core.rules.schema import Action
 from spork.core.sources.triggered import TriggeredSource
@@ -249,6 +252,31 @@ def test_mailbox_lister_derives_the_sorted_union_of_mailbox_ids_when_not_given(
     lister = provider.build_mailbox_lister()
 
     assert lister.list_mailboxes() == ["Archive", "Inbox", "Sent"]
+
+
+def test_build_message_lookup_finds_a_message_by_id(tmp_path: Path) -> None:
+    """get_message() (docs/DESIGN.md §13, for spork reclassify) scans
+    the same fixture file build_source() replays from and returns the
+    matching NormalizedMessage."""
+    messages_path = tmp_path / "messages.json"
+    _write_messages(messages_path)
+    provider = FileProvider(messages_path, tmp_path / "actions.jsonl")
+    lookup = provider.build_message_lookup()
+
+    message = lookup.get_message("msg-2")
+
+    assert message.message_id == "msg-2"
+    assert message.subject == "Hi again"
+
+
+def test_message_lookup_raises_a_clean_error_for_an_unknown_id(tmp_path: Path) -> None:
+    messages_path = tmp_path / "messages.json"
+    _write_messages(messages_path)
+    provider = FileProvider(messages_path, tmp_path / "actions.jsonl")
+    lookup = provider.build_message_lookup()
+
+    with pytest.raises(MessageNotFoundError):
+        lookup.get_message("no-such-message")
 
 
 def test_drafts_log_defaults_next_to_the_actions_log(tmp_path: Path, make_message) -> None:

@@ -71,3 +71,13 @@ def test_list_mailboxes_raises_not_implemented() -> None:
 
     with pytest.raises(NotImplementedError):
         client.list_mailboxes()
+
+
+def test_get_message_raises_not_implemented() -> None:
+    """get_message() would fetch one message by id via Email/get
+    against a live session (docs/DESIGN.md §9.3, for spork reclassify)
+    — not built yet."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+
+    with pytest.raises(NotImplementedError):
+        client.get_message("msg-1")

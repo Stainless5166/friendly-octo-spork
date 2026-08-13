@@ -59,6 +59,42 @@ def test_process_message_skips_already_processed_messages(tmp_path: Path, make_m
     assert applier.calls == []
 
 
+def test_process_message_with_force_reprocesses_an_already_processed_message(
+    tmp_path: Path, make_message
+) -> None:
+    """force=True (docs/DESIGN.md §9.4, for spork reclassify) bypasses
+    IdempotencyGateSelector entirely — an already-processed message is
+    evaluated and acted on again, and its processed_messages row is
+    overwritten (MarkProcessedFilter's existing upsert), not left as
+    a duplicate or an error."""
+    applier = _RecordingApplier()
+    message = make_message(message_id="msg-1", from_domain="newsletter.example.com")
+    rules = [
+        Rule(
+            id="file-newsletter",
+            when=Condition(from_domain_in=["newsletter.example.com"]),
+            action=Action(type="move", mailbox="Reading"),
+        )
+    ]
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        db.mark_processed(message.message_id, thread_id=message.thread_id, processed_at="t0")
+
+        verdict = process_message(
+            message,
+            rules,
+            default_unmatched_action=Action(type="escalate"),
+            executor=ActionExecutor(applier),
+            state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
+            now=lambda: "t1",
+            force=True,
+        )
+
+    assert verdict is not None
+    assert verdict.action.type == "move"
+    assert applier.calls == [(message, Action(type="move", mailbox="Reading"))]
+
+
 def test_process_message_applies_matched_rule_action_and_marks_processed(
     tmp_path: Path, make_message
 ) -> None:

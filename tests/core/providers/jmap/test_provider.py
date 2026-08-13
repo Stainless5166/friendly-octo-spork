@@ -18,6 +18,7 @@ from spork.core.providers.jmap.provider import (
     _JmapContentFetcher,
     _JmapDraftCreator,
     _JmapMailboxLister,
+    _JmapMessageLookup,
     _JmapThreadHistoryReader,
 )
 from spork.core.rules.schema import Action
@@ -149,3 +150,26 @@ def test_mailbox_lister_delegates_to_the_client_directly() -> None:
 
     with pytest.raises(NotImplementedError):
         lister.list_mailboxes()
+
+
+def test_build_message_lookup_returns_something_that_can_get_a_message() -> None:
+    """build_message_lookup() returns an object satisfying MessageLookup
+    — the sixth leg of the Provider contract, for docs/DESIGN.md §13's
+    spork reclassify <id>."""
+    provider = JmapProvider(host="api.fastmail.com", api_token="fake-token")
+
+    lookup = provider.build_message_lookup()
+
+    with pytest.raises(NotImplementedError):
+        lookup.get_message("msg-1")
+
+
+def test_message_lookup_delegates_to_the_client_directly() -> None:
+    """The message lookup is a real delegation to
+    JmapClient.get_message(), not a second placeholder — mirrors
+    test_action_applier_delegates_to_the_client_directly."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+    lookup = _JmapMessageLookup(client)
+
+    with pytest.raises(NotImplementedError):
+        lookup.get_message("msg-1")
