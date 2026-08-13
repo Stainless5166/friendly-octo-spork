@@ -11,7 +11,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from spork.core.models import NormalizedMessage
-from spork.core.providers.base import ActionApplier, DraftCreator
+from spork.core.providers.base import (
+    ActionApplier,
+    DraftCreator,
+    MailboxLister,
+    ThreadContext,
+    ThreadHistoryReader,
+)
 from spork.core.providers.jmap.client import JmapClient
 from spork.core.providers.jmap.push import JmapPushTrigger
 from spork.core.rules.schema import Action
@@ -69,6 +75,30 @@ class _JmapDraftCreator:
         self._client.create_draft(in_reply_to, body)
 
 
+class _JmapThreadHistoryReader:
+    """Adapts `JmapClient.get_thread_context()` to the `ThreadHistoryReader`
+    contract. A pure delegation, same shape as `_JmapActionApplier`.
+    """
+
+    def __init__(self, client: JmapClient) -> None:
+        self._client = client
+
+    def get_thread_context(self, message: NormalizedMessage) -> ThreadContext:
+        return self._client.get_thread_context(message)
+
+
+class _JmapMailboxLister:
+    """Adapts `JmapClient.list_mailboxes()` to the `MailboxLister`
+    contract. A pure delegation, same shape as `_JmapActionApplier`.
+    """
+
+    def __init__(self, client: JmapClient) -> None:
+        self._client = client
+
+    def list_mailboxes(self) -> Sequence[str]:
+        return self._client.list_mailboxes()
+
+
 class JmapProvider:
     """Adapts a JMAP account to the `Provider` contract.
 
@@ -94,3 +124,9 @@ class JmapProvider:
 
     def build_draft_creator(self) -> DraftCreator:
         return _JmapDraftCreator(self._client)
+
+    def build_thread_history_reader(self) -> ThreadHistoryReader:
+        return _JmapThreadHistoryReader(self._client)
+
+    def build_mailbox_lister(self) -> MailboxLister:
+        return _JmapMailboxLister(self._client)

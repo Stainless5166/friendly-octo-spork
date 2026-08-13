@@ -213,9 +213,7 @@ def test_thread_history_reader_finds_prior_subject_and_a_reply_already_sent(
     provider = FileProvider(messages_path, tmp_path / "actions.jsonl")
     reader = provider.build_thread_history_reader()
 
-    context = reader.get_thread_context(
-        make_message(message_id="msg-reply", thread_id="thread-2")
-    )
+    context = reader.get_thread_context(make_message(message_id="msg-reply", thread_id="thread-2"))
 
     assert context.prior_subject == "Re: Thursday call"
     assert context.user_has_replied is True

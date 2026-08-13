@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from spork.core.models import NormalizedMessage
+from spork.core.providers.base import ThreadContext
 from spork.core.rules.schema import Action
 
 
@@ -61,4 +62,22 @@ class JmapClient:
         raise NotImplementedError(
             "JmapClient.create_draft() requires a live jmapc session — "
             "not implemented yet, see docs/ROADMAP.md M3"
+        )
+
+    def get_thread_context(self, message: NormalizedMessage) -> ThreadContext:
+        """Resolve `message`'s thread history via `Email/query` against
+        `message.thread_id` (docs/DESIGN.md §9.3) — the fifth
+        `NotImplementedError` stub, same reason as the other four."""
+        raise NotImplementedError(
+            "JmapClient.get_thread_context() requires a live jmapc session — "
+            "not implemented yet, see docs/ROADMAP.md M5"
+        )
+
+    def list_mailboxes(self) -> Sequence[str]:
+        """Fetch the account's mailbox names via `Mailbox/get`
+        (docs/DESIGN.md §9.3) — the sixth `NotImplementedError` stub,
+        same reason as the other five."""
+        raise NotImplementedError(
+            "JmapClient.list_mailboxes() requires a live jmapc session — "
+            "not implemented yet, see docs/ROADMAP.md M5"
         )

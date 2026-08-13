@@ -29,6 +29,12 @@ def _write_config(config_dir: Path, tmp_path: Path) -> None:
     messages_path.write_text("[]")
     rules_path = tmp_path / "rules.toml"
     rules_path.write_text("")
+    # RecordedLLMClient with no recorded responses — real and
+    # constructible (run_daemon() always constructs an LLMClient at
+    # startup now), never actually called since messages_path is
+    # empty.
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text("{}")
     (config_dir / "config.toml").write_text(
         f"""
         rules_path = "{rules_path}"
@@ -42,7 +48,9 @@ def _write_config(config_dir: Path, tmp_path: Path) -> None:
         actions_log_path = "{tmp_path / "actions.jsonl"}"
 
         [llm]
-        spec = "unused:Unused"
+        spec = "spork.core.llm.clients.recorded:RecordedLLMClient"
+        [llm.kwargs]
+        responses_path = "{responses_path}"
 
         [alerts]
         spec = "spork.core.alerts.log:LoggingAlerter"

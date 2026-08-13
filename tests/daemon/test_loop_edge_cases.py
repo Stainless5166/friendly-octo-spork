@@ -22,14 +22,40 @@ import pytest
 
 from spork.core.actions.executor import ActionExecutor
 from spork.core.alerts.log import LoggingAlerter
-from spork.core.config.schema import BackendSpec, SporkConfig
+from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
+from spork.core.llm.base import Verdict, VerdictRequest
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline.observer import PipelineObserver
+from spork.core.providers.base import ThreadContext
 from spork.core.rules.loader import RulesLoadError
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
 from spork.daemon.loop import _run_message_loop, run_daemon
 from spork.daemon.state import DaemonState
+
+
+class _UnusedLLMClient:
+    """Fails loudly if called — every test that constructs this uses
+    rules that only ever produce a terminal action, never "escalate",
+    so Tier 2 should never be reached."""
+
+    def get_verdict(self, request: VerdictRequest) -> Verdict:
+        raise AssertionError("get_verdict() should not be called in this test")
+
+
+class _UnusedDraftCreator:
+    def create_draft(self, in_reply_to: NormalizedMessage, body: str) -> None:
+        raise AssertionError("create_draft() should not be called in this test")
+
+
+class _UnusedThreadHistoryReader:
+    def get_thread_context(self, message: NormalizedMessage) -> ThreadContext:
+        raise AssertionError("get_thread_context() should not be called in this test")
+
+
+class _UnusedMailboxLister:
+    def list_mailboxes(self) -> Sequence[str]:
+        raise AssertionError("list_mailboxes() should not be called in this test")
 
 
 def _minimal_config(tmp_path: Path, *, rules_path: Path) -> SporkConfig:
@@ -123,6 +149,11 @@ def test_run_message_loop_stops_mid_batch_without_processing_the_rest(
                 state_db=state_db,
                 ops=PipelineObserver(LoggingAlerter()),
                 classifier=None,
+                llm_client=_UnusedLLMClient(),
+                draft_creator=_UnusedDraftCreator(),
+                thread_history_reader=_UnusedThreadHistoryReader(),
+                mailbox_lister=_UnusedMailboxLister(),
+                tiering=TieringConfig(),
                 daemon_state=DaemonState(),
                 stop_event=stop_event,
                 idle_delay_seconds=0.01,
@@ -159,6 +190,11 @@ def test_run_message_loop_sleeps_rather_than_busy_looping_on_an_empty_source(
                     state_db=state_db,
                     ops=PipelineObserver(LoggingAlerter()),
                     classifier=None,
+                    llm_client=_UnusedLLMClient(),
+                    draft_creator=_UnusedDraftCreator(),
+                    thread_history_reader=_UnusedThreadHistoryReader(),
+                    mailbox_lister=_UnusedMailboxLister(),
+                    tiering=TieringConfig(),
                     daemon_state=DaemonState(),
                     stop_event=stop_event,
                     idle_delay_seconds=0.05,

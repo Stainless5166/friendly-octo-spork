@@ -15,14 +15,38 @@ from pathlib import Path
 
 from spork.core.actions.executor import ActionExecutor
 from spork.core.alerts.log import LoggingAlerter
-from spork.core.config.schema import BackendSpec, SporkConfig
+from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
 from spork.core.ipc.client import send_request
+from spork.core.llm.base import Verdict, VerdictRequest
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline.observer import PipelineObserver
+from spork.core.providers.base import ThreadContext
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
 from spork.daemon.loop import _run_message_loop, run_daemon
 from spork.daemon.state import DaemonState
+
+
+class _UnusedLLMClient:
+    """Fails loudly if called — none of this file's rules escalate."""
+
+    def get_verdict(self, request: VerdictRequest) -> Verdict:
+        raise AssertionError("get_verdict() should not be called in this test")
+
+
+class _UnusedDraftCreator:
+    def create_draft(self, in_reply_to: NormalizedMessage, body: str) -> None:
+        raise AssertionError("create_draft() should not be called in this test")
+
+
+class _UnusedThreadHistoryReader:
+    def get_thread_context(self, message: NormalizedMessage) -> ThreadContext:
+        raise AssertionError("get_thread_context() should not be called in this test")
+
+
+class _UnusedMailboxLister:
+    def list_mailboxes(self) -> Sequence[str]:
+        raise AssertionError("list_mailboxes() should not be called in this test")
 
 
 def _write_messages(path: Path) -> None:
@@ -58,6 +82,13 @@ def _config(tmp_path: Path) -> SporkConfig:
     _write_messages(messages_path)
     rules_path = tmp_path / "rules.toml"
     _write_rules(rules_path)
+    # RecordedLLMClient with no recorded responses — real and
+    # constructible (unlike the old "unused:Unused" placeholder,
+    # run_daemon() now always constructs an LLMClient), but never
+    # actually called since this file's catch-all rule always tags,
+    # never escalates.
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text("{}")
 
     return SporkConfig(
         provider=BackendSpec(
@@ -67,7 +98,10 @@ def _config(tmp_path: Path) -> SporkConfig:
                 "actions_log_path": str(tmp_path / "actions.jsonl"),
             },
         ),
-        llm=BackendSpec(spec="unused:Unused"),
+        llm=BackendSpec(
+            spec="spork.core.llm.clients.recorded:RecordedLLMClient",
+            kwargs={"responses_path": str(responses_path)},
+        ),
         alerts=BackendSpec(spec="spork.core.alerts.log:LoggingAlerter"),
         rules_path=rules_path,
         db_path=tmp_path / "state.sqlite3",
@@ -199,6 +233,11 @@ def test_run_message_loop_never_polls_while_paused(tmp_path: Path) -> None:
                     state_db=state_db,
                     ops=PipelineObserver(LoggingAlerter()),
                     classifier=None,
+                    llm_client=_UnusedLLMClient(),
+                    draft_creator=_UnusedDraftCreator(),
+                    thread_history_reader=_UnusedThreadHistoryReader(),
+                    mailbox_lister=_UnusedMailboxLister(),
+                    tiering=TieringConfig(),
                     daemon_state=daemon_state,
                     stop_event=stop_event,
                     idle_delay_seconds=0.02,

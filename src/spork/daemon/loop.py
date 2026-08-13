@@ -1,13 +1,11 @@
 """run_daemon(): the asyncio daemon loop, composed (docs/DESIGN.md §6.2.1/§6.2.2).
 
-Bridges every synchronous piece this daemon has (`Source.poll()`, and
-the entire `process_message()` call — which may itself block on a live
-`ActionApplier`'s network write) into the asyncio loop via
-`asyncio.to_thread()`. Tier 1 only — see §6.2.1 for why chaining a
-freshly-escalated message into Tier 2 needs a `Provider` capability
-this round doesn't have yet. Runs the message loop and the IPC control
-socket as two tasks in one `asyncio.TaskGroup()`, sharing `DaemonState`
-(§6.2.2).
+Bridges every synchronous piece this daemon has (`Source.poll()`, the
+entire `process_message()` call, and — when Tier 1 escalates —
+`process_tier2_message()`, each of which may itself block on a live
+network call) into the asyncio loop via `asyncio.to_thread()`. Runs
+the message loop and the IPC control socket as two tasks in one
+`asyncio.TaskGroup()`, sharing `DaemonState` (§6.2.2).
 """
 
 from __future__ import annotations
@@ -22,10 +20,15 @@ from spork.core.alerts.loader import load_alerter
 from spork.core.classify import registry as classify_registry
 from spork.core.classify.base import TextClassifier
 from spork.core.config.paths import resolve_socket_path
-from spork.core.config.schema import SporkConfig
+from spork.core.config.schema import SporkConfig, TieringConfig
 from spork.core.ipc.server import IpcServer
+from spork.core.llm.base import LLMClient
+from spork.core.llm.loader import load_llm_client
+from spork.core.models import NormalizedMessage
 from spork.core.pipeline import process_message
 from spork.core.pipeline.observer import PipelineObserver
+from spork.core.pipeline.tier2 import process_tier2_message
+from spork.core.providers.base import DraftCreator, MailboxLister, ThreadHistoryReader
 from spork.core.providers.loader import load_provider
 from spork.core.rules.loader import load_rules
 from spork.core.rules.schema import Action, Rule
@@ -41,7 +44,7 @@ async def run_daemon(
     daemon_state: DaemonState | None = None,
     idle_delay_seconds: float = 1.0,
 ) -> None:
-    """Compose `config` into a running Tier 1 daemon loop + IPC server.
+    """Compose `config` into a running Tier 1+2 daemon loop + IPC server.
 
     Runs until `stop_event` is set (a fresh one is created if none is
     given, so a caller with no shutdown mechanism yet — `main.py`
@@ -59,11 +62,21 @@ async def run_daemon(
     provider = load_provider(config.provider.spec, **config.provider.kwargs)
     source = provider.build_source()
     executor = ActionExecutor(provider.build_action_applier())
+    draft_creator = provider.build_draft_creator()
+    thread_history_reader = provider.build_thread_history_reader()
+    mailbox_lister = provider.build_mailbox_lister()
+
+    # Loaded before llm/alerts (unchanged relative order from before
+    # Tier 2 was wired in) — test_run_daemon_propagates_a_missing_rules_file_error
+    # relies on a bad rules_path surfacing as RulesLoadError regardless
+    # of what else in config is or isn't configured.
+    rules = load_rules(config.rules_path)
+
+    llm_client = load_llm_client(config.llm.spec, **config.llm.kwargs)
 
     alerter = load_alerter(config.alerts.spec, **config.alerts.kwargs)
     ops = PipelineObserver(alerter)
 
-    rules = load_rules(config.rules_path)
     classifier: TextClassifier | None = (
         classify_registry.get(config.tiering.local_classifier)
         if config.tiering.local_classifier is not None
@@ -90,6 +103,11 @@ async def run_daemon(
                     state_db=state_db,
                     ops=ops,
                     classifier=classifier,
+                    llm_client=llm_client,
+                    draft_creator=draft_creator,
+                    thread_history_reader=thread_history_reader,
+                    mailbox_lister=mailbox_lister,
+                    tiering=config.tiering,
                     daemon_state=daemon_state,
                     stop_event=stop_event,
                     idle_delay_seconds=idle_delay_seconds,
@@ -132,12 +150,18 @@ async def _run_message_loop(
     state_db: StateDB,
     ops: PipelineObserver,
     classifier: TextClassifier | None,
+    llm_client: LLMClient,
+    draft_creator: DraftCreator,
+    thread_history_reader: ThreadHistoryReader,
+    mailbox_lister: MailboxLister,
+    tiering: TieringConfig,
     daemon_state: DaemonState,
     stop_event: asyncio.Event,
     idle_delay_seconds: float,
 ) -> None:
     """Repeatedly poll `source` and run each message through Tier 1,
-    until `stop_event` is set.
+    escalating to Tier 2 in the same cycle when Tier 1 routes
+    "escalate", until `stop_event` is set.
 
     `source.poll()` already blocks until it has something (§9.2's
     Trigger/ContentFetcher contract) — jmapc offers no async
@@ -166,7 +190,7 @@ async def _run_message_loop(
         for message in messages:
             if stop_event.is_set():
                 return
-            await asyncio.to_thread(
+            verdict = await asyncio.to_thread(
                 process_message,
                 message,
                 rules,
@@ -176,3 +200,71 @@ async def _run_message_loop(
                 ops=ops,
                 classifier=classifier,
             )
+            # A second, separate to_thread call, strictly sequential
+            # with the one above — StateDB's sequential-access
+            # condition (§6.2.1) only needs "never concurrent", not
+            # "one to_thread wrapper per message" (docs/DESIGN.md). The
+            # whole thing (thread-history/mailbox-list reads included)
+            # runs inside one worker-thread call via _escalate_to_tier2
+            # — those reads may themselves be real I/O against a live
+            # backend, so they belong off the event-loop thread too,
+            # not called directly from this coroutine.
+            if verdict is not None and verdict.action.type == "escalate":
+                await asyncio.to_thread(
+                    _escalate_to_tier2,
+                    message,
+                    thread_history_reader=thread_history_reader,
+                    mailbox_lister=mailbox_lister,
+                    llm_client=llm_client,
+                    executor=executor,
+                    draft_creator=draft_creator,
+                    state_db=state_db,
+                    ops=ops,
+                    tiering=tiering,
+                )
+
+
+def _escalate_to_tier2(
+    message: NormalizedMessage,
+    *,
+    thread_history_reader: ThreadHistoryReader,
+    mailbox_lister: MailboxLister,
+    llm_client: LLMClient,
+    executor: ActionExecutor,
+    draft_creator: DraftCreator,
+    state_db: StateDB,
+    ops: PipelineObserver,
+    tiering: TieringConfig,
+) -> None:
+    """Resolves the two Provider-supplied reads Tier 2 needs and runs
+    `process_tier2_message()` — synchronous end to end so the whole
+    thing is one `asyncio.to_thread()` call (see the caller above).
+    """
+    context = thread_history_reader.get_thread_context(message)
+    process_tier2_message(
+        message,
+        to_addresses=_parse_to_addresses(message),
+        thread_prior_subject=context.prior_subject,
+        thread_user_has_replied=context.user_has_replied,
+        available_mailboxes=mailbox_lister.list_mailboxes(),
+        llm_client=llm_client,
+        executor=executor,
+        draft_creator=draft_creator,
+        state_db=state_db,
+        ops=ops,
+        allowed_categories=tiering.allowed_categories,
+        daily_call_budget=tiering.daily_call_budget,
+        alert_threshold=tiering.alert_threshold,
+        autoact_threshold=tiering.autoact_threshold,
+        max_body_chars=tiering.max_body_chars,
+    )
+
+
+def _parse_to_addresses(message: NormalizedMessage) -> Sequence[str]:
+    """Real `to_addresses`, parsed from `NormalizedMessage.headers["To"]`
+    (docs/DESIGN.md §6.2.1) — comma-split, whitespace-stripped, empty
+    entries dropped. `()` when there's no `To:` header at all, never a
+    fabricated address.
+    """
+    to_header = message.headers.get("To", "")
+    return tuple(addr.strip() for addr in to_header.split(",") if addr.strip())

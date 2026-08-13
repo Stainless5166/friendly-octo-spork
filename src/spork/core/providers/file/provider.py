@@ -15,10 +15,17 @@ its own right, useful for local dev/demo/CI work.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 from spork.core.models import NormalizedMessage
-from spork.core.providers.base import ActionApplier, DraftCreator
+from spork.core.providers.base import (
+    ActionApplier,
+    DraftCreator,
+    MailboxLister,
+    ThreadContext,
+    ThreadHistoryReader,
+)
 from spork.core.providers.file.messages import load_messages
 from spork.core.rules.schema import Action
 from spork.core.sources.base import Source
@@ -65,6 +72,46 @@ class _FileDraftCreator:
             f.write(json.dumps(entry) + "\n")
 
 
+class _FileThreadHistoryReader:
+    """Derives thread history from the *other* messages already present
+    in the same fixture file (docs/DESIGN.md §9.3) — real, inspectable
+    data, not an invented placeholder.
+
+    `prior_subject` is the earliest other message sharing `thread_id`
+    (file order, matching `load_messages()`'s documented ordering
+    guarantee); `user_has_replied` is whether any of them carries
+    `"Sent"` in `mailbox_ids` — a message spork itself sent into that
+    thread.
+    """
+
+    def __init__(self, messages: Sequence[NormalizedMessage]) -> None:
+        self._messages = messages
+
+    def get_thread_context(self, message: NormalizedMessage) -> ThreadContext:
+        others = [
+            m
+            for m in self._messages
+            if m.thread_id == message.thread_id and m.message_id != message.message_id
+        ]
+        prior_subject = others[0].subject if others else None
+        user_has_replied = any("Sent" in m.mailbox_ids for m in others)
+        return ThreadContext(prior_subject=prior_subject, user_has_replied=user_has_replied)
+
+
+class _FileMailboxLister:
+    """Returns a fixed, already-resolved mailbox list — either the
+    explicit `available_mailboxes` a `FileProvider` was constructed
+    with, or one derived from the fixture file itself (see
+    `FileProvider.build_mailbox_lister()`); never invented here.
+    """
+
+    def __init__(self, mailboxes: Sequence[str]) -> None:
+        self._mailboxes = mailboxes
+
+    def list_mailboxes(self) -> Sequence[str]:
+        return self._mailboxes
+
+
 class FileProvider:
     """Adapts a local JSON messages file to the `Provider` contract.
 
@@ -78,7 +125,12 @@ class FileProvider:
     to mutate. `drafts_log_path` defaults to `drafts.jsonl` next to
     `actions_log_path` when not given explicitly, so existing two-arg
     `FileProvider(messages_path, actions_log_path)` call sites keep
-    working unchanged.
+    working unchanged. `build_thread_history_reader()`/
+    `build_mailbox_lister()` (docs/DESIGN.md §9.3) are real too: thread
+    context comes from the other messages already in `messages_path`
+    that share a `thread_id`; the mailbox list is `available_mailboxes`
+    when given, or the sorted union of every message's `mailbox_ids`
+    otherwise.
     """
 
     def __init__(
@@ -87,6 +139,7 @@ class FileProvider:
         actions_log_path: str | Path,
         *,
         drafts_log_path: str | Path | None = None,
+        available_mailboxes: Sequence[str] | None = None,
     ) -> None:
         self._messages_path = Path(messages_path)
         self._actions_log_path = Path(actions_log_path)
@@ -95,6 +148,7 @@ class FileProvider:
             if drafts_log_path is not None
             else self._actions_log_path.with_name("drafts.jsonl")
         )
+        self._available_mailboxes = available_mailboxes
 
     def build_source(self) -> Source:
         messages = load_messages(self._messages_path)
@@ -110,3 +164,13 @@ class FileProvider:
 
     def build_draft_creator(self) -> DraftCreator:
         return _FileDraftCreator(self._drafts_log_path)
+
+    def build_thread_history_reader(self) -> ThreadHistoryReader:
+        return _FileThreadHistoryReader(load_messages(self._messages_path))
+
+    def build_mailbox_lister(self) -> MailboxLister:
+        if self._available_mailboxes is not None:
+            return _FileMailboxLister(self._available_mailboxes)
+        messages = load_messages(self._messages_path)
+        derived = sorted({mailbox_id for m in messages for mailbox_id in m.mailbox_ids})
+        return _FileMailboxLister(derived)
