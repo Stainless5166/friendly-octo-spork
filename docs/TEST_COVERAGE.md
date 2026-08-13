@@ -115,7 +115,20 @@ other JMAP leaf); `run_daemon()`/`_run_message_loop()` now carry an
 escalated message straight into `process_tier2_message()` in the same
 poll cycle via a second, strictly-sequential `asyncio.to_thread()`
 call. `to_addresses` is parsed from real `NormalizedMessage.headers`.
-**M5 is 7/10.**
+**M5 is 7/10.** Updated once more for `spork rules list/edit/enable/disable`
+with live reload: `RulesState` (mirrors `DaemonState`) + a new `reload`
+IPC command that reassigns `rules_state.rules` wholesale (never
+mutated in place) on a successful re-`load_rules()`, read fresh by
+`_run_message_loop()` right after every `poll()` call; a
+`RulesLoadError` from a bad hand-edit is reported as `ok=False`
+without touching the daemon's last-known-good rules.
+`spork.core.rules.writer.dump_rules()` is a small purpose-built TOML
+serializer (no new dependency) `enable`/`disable` use to rewrite
+`rules.toml` — real, stated tradeoff: doesn't preserve hand-written
+comments/formatting. Two stale `docs/DESIGN.md` §13 claims were found
+and corrected along the way (`spork status`'s LLM-spend claim, `spork
+rules list`'s "match stats" claim — neither has real backing data).
+**M5 is 8/10.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -424,7 +437,7 @@ not one message's full cross-tier lifetime, since nothing calls
 exists) — M7 still separately owns `sporkd`'s overall structured
 logging setup and audit-trail completeness beyond triage outcomes.
 
-### M5 — CLI + daemon control surface — 7/10
+### M5 — CLI + daemon control surface — 8/10
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
@@ -434,7 +447,7 @@ logging setup and audit-trail completeness beyond triage outcomes.
 | IPC protocol + Unix socket server | ✅ | ✅ — tests 384–399 + 400–403 (20 tests), 99–100% line coverage on `spork.core.ipc` |
 | `spork status` | ✅ | ✅ — tests 404–407 (4 tests), including a full end-to-end test against a real `sporkd` subprocess |
 | `spork pause`/`resume` | ✅ | ✅ — tests 408–410 (3 tests), including a full pause→status→resume→status round trip |
-| `spork rules list/edit/enable/disable` w/ live reload | ❌ | — |
+| `spork rules list/edit/enable/disable` w/ live reload | ✅ | ✅ — tests 436–454 (19 tests), 100% line coverage on `spork.core.rules.writer`/`spork.daemon.state`/`spork.cli.commands.rules`, no gaps on the touched part of `spork.daemon.loop` |
 | `spork config show/edit` | ❌ | — |
 | `spork logs` | ✅ | ✅ — tests 411–417 (7 tests) |
 | `spork reclassify <id>` | ❌ | — |
@@ -516,7 +529,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (458 tests, all passing — 0 xfail)
+## Full test inventory (477 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -2543,3 +2556,81 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
     `UnrecordedResponseError` propagates through `run_daemon()`'s
     `asyncio.TaskGroup()` (as an `ExceptionGroup`) rather than being
     swallowed or silently marking the message processed.
+
+436. **`core/rules/test_writer.py::test_dump_rules_round_trips_a_single_simple_rule`**
+    `dump_rules([rule])`, reparsed via `load_rules()`, reproduces the
+    original `Rule` exactly.
+
+437. **`core/rules/test_writer.py::test_dump_rules_round_trips_multiple_rules_preserving_order`**
+    Two rules (one disabled, one with `alert_immediately`) round-trip
+    in file order.
+
+438. **`core/rules/test_writer.py::test_dump_rules_of_an_empty_list_produces_a_valid_empty_rules_file`**
+    `dump_rules([])` parses back to `[]`, not an error.
+
+439. **`core/rules/test_writer.py::test_dump_rules_escapes_double_quotes_in_string_fields`**
+    A description/reason containing a literal `"` still round-trips —
+    valid TOML, not corrupted output.
+
+440. **`core/rules/test_writer_edge_cases.py::test_toml_value_raises_type_error_for_an_unsupported_python_type`**
+    `_toml_value()` on a `float` (outside the closed bool/str/list[str]
+    set) raises `TypeError` rather than emitting something invalid.
+
+441. **`daemon/test_loop_ipc.py::test_run_daemon_reload_with_a_valid_rewritten_rules_file_returns_ok`**
+    A `rules.toml` rewritten after `sporkd` started: the `reload`
+    command re-reads it and reports `ok=True`.
+
+442. **`daemon/test_loop_ipc.py::test_run_daemon_reload_with_invalid_rules_returns_ok_false_and_keeps_running`**
+    A hand-edit that breaks `rules.toml`: `reload` reports `ok=False`
+    with a real error message, but a subsequent `status` request over
+    the same socket still succeeds — the daemon itself never crashes.
+
+443. **`daemon/test_loop_ipc.py::test_run_message_loop_picks_up_a_reloaded_rules_list_on_the_next_poll_iteration`**
+    A `_MutatingSource` whose second `poll()` call mutates
+    `rules_state.rules` as a side effect: the first batch's message is
+    tagged Inbox (old rule), the second is moved to Archive (new rule)
+    — `rules_state.rules` is read fresh per poll iteration, not
+    captured once at loop start.
+
+444. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_list_prints_id_status_and_action_per_rule`**
+    Two rules (one enabled, one disabled): both ids and both
+    `enabled`/`disabled` labels appear in the output.
+
+445. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_list_with_no_rules_says_so`**
+    An empty `rules.toml`: "no rules" printed, exit 0, not an error.
+
+446. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_list_with_no_config_produces_a_clean_error`**
+    No `config.toml` anywhere: exit 1, clean `Error:`, no traceback.
+
+447. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_edit_with_no_daemon_running_still_saves_and_says_so`**
+    A no-op `$EDITOR`: the still-valid file re-validates fine, and with
+    no `sporkd` reachable the command says "not running" rather than
+    erroring.
+
+448. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_edit_rejects_an_invalid_save`**
+    `$EDITOR` that corrupts the file: `spork rules edit` reports a
+    clean error and never pushes a reload.
+
+449. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_enable_flips_a_disabled_rule_and_rewrites_the_file`**
+    `spork rules enable newsletters` then `spork rules list`: the rule
+    now shows `enabled`.
+
+450. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_disable_flips_an_enabled_rule`**
+    Same, the other direction, for `disable`.
+
+451. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_enable_with_an_unknown_id_reports_a_clean_error`**
+    `spork rules enable no-such-rule`: exit 1, error names the unknown
+    id, no traceback.
+
+452. **`cli/commands/test_rules_list_edit_enable_disable_edge_cases.py::test_rules_enable_reports_success_against_a_real_running_sporkd`**
+    End to end: a real `sporkd` subprocess, `spork rules enable`
+    against it — "reloaded" appears in the output, the `_push_reload()`
+    success branch its sibling acceptance tests never reach.
+
+453. **`cli/commands/test_rules_list_edit_enable_disable_edge_cases.py::test_push_reload_reports_a_warning_when_sporkd_rejects_the_reload`**
+    A bare `IpcServer` whose `reload` handler raises: `_push_reload()`
+    prints a warning naming the real error, not a silent success.
+
+454. **`cli/commands/test_rules_list_edit_enable_disable_edge_cases.py::test_push_reload_with_no_socket_path_falls_back_to_resolve_socket_path`**
+    `_push_reload(None)` resolves a socket path itself (same defensive
+    pattern `run_daemon()` uses) rather than crashing on `None`.

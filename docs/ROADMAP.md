@@ -393,7 +393,25 @@ live until M5 needed something to control.
       §9.2); a real push connection "staying live" while paused isn't
       achievable without splitting that abstraction further, not done
       here
-- [ ] `spork rules list/edit/enable/disable` with live reload (M)
+- [x] `spork rules list/edit/enable/disable` with live reload (M) —
+      `RulesState` (`spork.daemon.state`) mirrors `DaemonState`: a new
+      `reload` IPC command re-runs `load_rules()` and reassigns
+      `rules_state.rules` wholesale on success (a single atomic
+      reference swap, not an in-place mutation — safe with no lock,
+      same reasoning as `DaemonState`), leaving it untouched on a
+      `RulesLoadError` so a bad hand-edit can't take the daemon down.
+      `_run_message_loop()` reads `rules_state.rules` fresh right after
+      every `poll()` call, so a reload takes effect for the very next
+      batch. `enable`/`disable` rewrite the whole file via
+      `spork.core.rules.writer.dump_rules()` — a small purpose-built
+      serializer for this closed schema, not a new dependency; real,
+      stated tradeoff: comments/formatting in a hand-edited
+      `rules.toml` don't survive it (`edit`, which only opens
+      `$EDITOR`, is unaffected). Corrected two stale `docs/DESIGN.md`
+      §13 claims found while building this: `spork status` doesn't
+      actually report LLM spend yet, and `spork rules list` doesn't
+      have per-rule match stats to show (that's `rule_stats`, a
+      separate, still-unbuilt table behind a different command).
 - [ ] `spork config show/edit` with validation on save (S) — `edit`
       only ever opens the *user* tier (§7.2); `show` flags any value
       the enforced tier is overriding
