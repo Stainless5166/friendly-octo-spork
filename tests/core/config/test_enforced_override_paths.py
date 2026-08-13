@@ -1,4 +1,4 @@
-"""Acceptance tests for spork.core.config.loader.enforced_override_paths() (docs/DESIGN.md §7.2/§13).
+"""Acceptance tests for spork.core.config.loader.enforced_override_paths() (§7.2/§13).
 
 An injectable `enforced_config_path` argument, same reasoning as
 `load_config()`'s own tier-path overrides (see test_loader.py) — tests

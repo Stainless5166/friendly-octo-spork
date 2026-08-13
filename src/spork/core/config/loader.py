@@ -106,3 +106,35 @@ def load_config(
         config = config.model_copy(update={"socket_path": resolve_socket_path()})
 
     return config
+
+
+def _flatten_keys(raw: dict[str, Any], prefix: str = "") -> set[str]:
+    """Every leaf key in `raw`, as a dotted path — `{"tiering": {"x": 1}}`
+    becomes `{"tiering.x"}`. Recurses into nested dicts (TOML tables)
+    the same way `_deep_merge()` does, so a path here means exactly
+    what `_deep_merge()` treats as one mergeable key.
+    """
+    paths: set[str] = set()
+    for key, value in raw.items():
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            paths |= _flatten_keys(value, path)
+        else:
+            paths.add(path)
+    return paths
+
+
+def enforced_override_paths(*, enforced_config_path: Path | None = None) -> set[str]:
+    """Dotted `SporkConfig` field paths present in the enforced tier
+    (docs/DESIGN.md §7.2/§13) — every one is a value `spork config show`
+    must flag, since no user-tier edit can change it, regardless of
+    whether the user's own config happens to already agree with it.
+
+    Deliberately independent of `load_config()`'s merge (reads only
+    the enforced file, not the fully-merged result) — this answers
+    "what does the enforced tier itself set," not "what is the final
+    effective value," which `load_config()` already answers on its
+    own.
+    """
+    raw = _read_toml(enforced_config_path or resolve_enforced_config_path())
+    return _flatten_keys(raw)
