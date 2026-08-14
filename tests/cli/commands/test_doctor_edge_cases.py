@@ -172,3 +172,63 @@ def test_doctor_reports_local_classifier_ok_when_none_configured(tmp_path: Path)
     result = _run("doctor", env=_write_full_setup(tmp_path))
 
     assert "[ok] local classifier: none configured" in result.stdout
+
+
+def test_doctor_injects_a_mapped_provider_secret(tmp_path: Path) -> None:
+    env = _write_full_setup(tmp_path)
+    config_path = Path(env["XDG_CONFIG_HOME"]) / "spork" / "config.toml"
+    text = config_path.read_text().replace(
+        f'''[provider.kwargs]
+        messages_path = "{tmp_path / "messages.json"}"
+        actions_log_path = "{tmp_path / "actions.jsonl"}"''',
+        f'''[provider.kwargs]
+        actions_log_path = "{tmp_path / "actions.jsonl"}"
+        [provider.secret_kwargs]
+        messages_path = "MESSAGES_PATH"''',
+    )
+    config_path.write_text(text)
+    manifest_path = Path(env["XDG_CONFIG_HOME"]) / "spork" / "secretspec.toml"
+    manifest_path.write_text(
+        manifest_path.read_text().replace(
+            'JMAP_API_TOKEN = { description = "test" }',
+            'JMAP_API_TOKEN = { description = "test" }\n'
+            '        MESSAGES_PATH = { description = "test" }',
+        )
+    )
+    env["MESSAGES_PATH"] = str(tmp_path / "messages.json")
+
+    result = _run("doctor", env=env)
+
+    assert "[ok] provider" in result.stdout
+
+
+def test_doctor_reports_llm_failure_when_the_spec_is_bad(tmp_path: Path) -> None:
+    env = _reload_config_with(
+        tmp_path,
+        **{
+            'spec = "spork.core.llm.clients.recorded:RecordedLLMClient"': (
+                'spec = "nonexistent.module:NoSuchLLMClient"'
+            )
+        },
+    )
+
+    result = _run("doctor", env=env)
+
+    assert "[FAIL] LLM client" in result.stdout
+    assert "Traceback" not in result.stderr
+
+
+def test_doctor_reports_alerter_failure_when_the_spec_is_bad(tmp_path: Path) -> None:
+    env = _reload_config_with(
+        tmp_path,
+        **{
+            'spec = "spork.core.alerts.log:LoggingAlerter"': (
+                'spec = "nonexistent.module:NoSuchAlerter"'
+            )
+        },
+    )
+
+    result = _run("doctor", env=env)
+
+    assert "[FAIL] alerter" in result.stdout
+    assert "Traceback" not in result.stderr

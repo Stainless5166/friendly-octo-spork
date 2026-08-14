@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from spork.cli.commands.config import _format_show_lines
-from spork.core.config.schema import BackendSpec, SporkConfig
+from spork.core.config.schema import BackendSpec, LLMRecordingConfig, SporkConfig
 
 
 def _run(*args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -106,3 +106,20 @@ def test_format_show_lines_redacts_across_every_backend_section_independently() 
     assert len(matching) == 1
     assert "sk-real-secret" not in matching[0]
     assert "<redacted>" in matching[0]
+
+
+def test_format_show_lines_displays_secret_names_and_recording_path(tmp_path: Path) -> None:
+    config = _config().model_copy(
+        update={
+            "llm": BackendSpec(
+                spec="spork.core.llm.clients.recorded:RecordedLLMClient",
+                secret_kwargs={"api_key": "LLM_API_KEY"},
+            ),
+            "llm_recording": LLMRecordingConfig(corpus_path=tmp_path / "live.jsonl"),
+        }
+    )
+
+    lines = _format_show_lines(config, set())
+
+    assert "llm.secret_kwargs.api_key = LLM_API_KEY" in lines
+    assert f"llm_recording.corpus_path = {tmp_path / 'live.jsonl'}" in lines
