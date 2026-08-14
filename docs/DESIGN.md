@@ -112,9 +112,9 @@ Two OS processes, one shared library:
 ### 6.1 Core library (`spork.core`)
 
 Solid boxes are built and tested today; dashed boxes are planned
-layout for a milestone that hasn't landed yet (M3's `llm/prompts.py`
-— the not-yet-built step that assembles a `VerdictRequest` from a
-message —, and a future real desktop-notification `Alerter` backend
+layout for a milestone that hasn't landed yet (M3's `llm/prompt.py`,
+`llm/recording.py`, and `llm/clients/litellm.py`, plus a future real
+desktop-notification `Alerter` backend
 alongside M4's `alerts/log.py`). `config/`, `ipc/`, and
 `cli/commands/config.py` are all real as of M5's work on them — no
 longer dashed boxes. `systemd/` (core) and
@@ -197,14 +197,15 @@ flowchart TD
 
         subgraph llm["llm/ (M3)"]
             llm_clean["clean.py<br/>clean_body()"]
-            llm_prompts["prompts.py<br/>VerdictRequest builder"]:::planned
-            llm_base["base.py<br/>LLMClient +<br/>VerdictRequest/Verdict"]
+            llm_prompt["prompt.py<br/>build_prompt() + tool schema"]:::planned
+            llm_recording["recording.py<br/>RecordingLLMClient"]:::planned
+            llm_base["base.py<br/>LLMClient +<br/>VerdictRequest/Verdict/<br/>LLMResult/LLMCallUsage"]
             llm_validate["validate.py<br/>validate_verdict()"]
             llm_confidence["confidence.py<br/>confidence_band()"]
             llm_budget["budget.py<br/>has_budget_remaining()"]
             llm_loader["loader.py<br/>load_llm_client()"]
             subgraph llm_clients["clients/"]
-                llm_anthropic["anthropic.py<br/>AnthropicLLMClient"]
+                llm_litellm["litellm.py<br/>LiteLLMClient"]:::planned
                 llm_recorded["recorded.py<br/>RecordedLLMClient"]
             end
         end
@@ -1137,14 +1138,26 @@ classDiagram
         +draft_reply: Optional~str~
         +reasoning: str
     }
+    class LLMCallUsage {
+        <<dataclass, frozen>>
+        +tokens_in: int
+        +tokens_out: int
+    }
+    class LLMResult {
+        <<dataclass, frozen>>
+        +verdict: Verdict
+        +usage: LLMCallUsage
+    }
     class LLMClient {
         <<Protocol>>
-        +get_verdict(request: VerdictRequest) Verdict
+        +get_verdict(request: VerdictRequest) LLMResult
     }
 
     Verdict *-- Action : suggested_action
     LLMClient ..> VerdictRequest : reads
-    LLMClient ..> Verdict : returns
+    LLMResult *-- Verdict
+    LLMResult *-- LLMCallUsage
+    LLMClient ..> LLMResult : returns
 ```
 
 `Action` is fully defined in `spork.core.rules`'s own diagram — reused
@@ -1211,25 +1224,90 @@ classDiagram
     load_llm_client ..> LLMClientLoadError : raises
 ```
 
-#### `spork.core.llm.clients.anthropic`
+#### `spork.core.llm.prompt`
+
+```mermaid
+classDiagram
+    class CompletionPrompt {
+        <<dataclass, frozen>>
+        +messages: tuple
+        +tools: tuple
+        +tool_choice: dict
+    }
+    class build_prompt {
+        <<function>>
+        +build_prompt(request: VerdictRequest) CompletionPrompt
+    }
+    class VerdictRequest { <<dataclass, frozen>> }
+    class Verdict { <<pydantic BaseModel>> }
+
+    build_prompt ..> VerdictRequest : reads
+    build_prompt ..> Verdict : derives deliver_verdict JSON schema
+    build_prompt ..> CompletionPrompt : produces
+```
+
+The prompt builder is deliberately independent of LiteLLM. Unit tests
+assert the exact system/user message list, tool schema, and forced
+`deliver_verdict` tool choice without importing an SDK or making a
+network call. `CompletionPrompt` is also the exact request material
+the acceptance-corpus recorder persists, so a recording says what was
+sent, not only what came back.
+
+#### `spork.core.llm.clients.litellm`
 
 ```mermaid
 classDiagram
     class LLMClient { <<Protocol>> }
-    class AnthropicLLMClient {
-        -api_key: str
+    class LiteLLMClient {
         -model: str
+        -api_key: Optional~str~
         -max_tokens: int
-        +get_verdict(request: VerdictRequest) Verdict
+        -completion: function
+        +get_verdict(request: VerdictRequest) LLMResult
     }
+    class LiteLLMClientError { <<Exception>> }
+    class build_prompt { <<function>> }
 
-    LLMClient <|.. AnthropicLLMClient : structurally satisfies
-    AnthropicLLMClient ..> NotImplementedError : raises (docs/ROADMAP.md M3)
+    LLMClient <|.. LiteLLMClient : structurally satisfies
+    LiteLLMClient ..> build_prompt : builds exact messages/tools
+    LiteLLMClient ..> LiteLLMClientError : raises
 ```
 
-`get_verdict()` requires a live Anthropic API call — same
-settled-shape-stub reasoning as `JmapClient` (§9.3): constructor args
-and the method signature are real, the call itself isn't yet.
+`LiteLLMClient` is the only live Tier 2 adapter for v1. It uses
+LiteLLM's in-process `completion()` API with a forced
+`deliver_verdict` tool call; a LiteLLM proxy remains possible later
+without changing the protocol, but is out of scope now. The SDK is an
+optional `spork[llm]` dependency and is imported lazily, so
+`RecordedLLMClient` deployments do not install or import it. Tests
+inject a completion callable returning the same response shape as
+LiteLLM, which verifies Spork's request and parsing behavior without a
+network call or API key.
+
+#### `spork.core.llm.recording`
+
+```mermaid
+classDiagram
+    class LLMClient { <<Protocol>> }
+    class RecordingLLMClient {
+        -client: LLMClient
+        -corpus_path: Path
+        -now: function
+        +get_verdict(request: VerdictRequest) LLMResult
+    }
+
+    LLMClient <|.. RecordingLLMClient : structurally satisfies
+    RecordingLLMClient --> LLMClient : delegates to
+    RecordingLLMClient ..> build_prompt : records the same deterministic prompt
+```
+
+`RecordingLLMClient` appends one JSON object per successful call. Each
+record contains the request subject, the complete prompt messages and
+tool definition/choice, a SHA-256 hash of that canonical prompt, the
+validated Verdict, token usage, and timestamp. Live corpora default to
+`tests/fixtures/corpus/`, which is gitignored because real message
+content may be unpublishable; a later CI job may populate a private
+corpus from S3. The recorder never writes API keys or raw SDK response
+objects.
 
 #### `spork.core.llm.clients.recorded`
 
@@ -1244,7 +1322,7 @@ classDiagram
     }
     class RecordedLLMClient {
         -responses: dict
-        +get_verdict(request: VerdictRequest) Verdict
+        +get_verdict(request: VerdictRequest) LLMResult
     }
 
     LLMClient <|.. RecordedLLMClient : structurally satisfies
@@ -1676,6 +1754,7 @@ classDiagram
         +correlation_id: Optional~str~
         +request: Optional~VerdictRequest~
         +verdict: Optional~Verdict~
+        +llm_usage: Optional~LLMCallUsage~
         +band: Optional~ConfidenceBand~
         +audit_event: Optional~str~
         +audit_detail_json: Optional~str~
@@ -2330,9 +2409,9 @@ fallback_poll_interval_seconds = 300
 reconnect_backoff_seconds = [2, 5, 15, 60, 300]
 
 [llm]
-spec = "spork.core.llm.clients.anthropic:AnthropicLLMClient"   # §10.1
+spec = "spork.core.llm.clients.litellm:LiteLLMClient"   # §10.1
 [llm.kwargs]
-model = "claude-sonnet-5"
+model = "anthropic/claude-sonnet-4-5"
 max_tokens = 1024
 
 [alerts]
@@ -3235,12 +3314,29 @@ class Verdict(BaseModel):
     reasoning: str
 
 
-class LLMClient(Protocol):
-    """What every Tier 2 backend adapts to: given one VerdictRequest,
-    return one schema-validated Verdict."""
+@dataclass(frozen=True, slots=True)
+class LLMCallUsage:
+    tokens_in: int
+    tokens_out: int
 
-    def get_verdict(self, request: VerdictRequest) -> Verdict: ...
+
+@dataclass(frozen=True, slots=True)
+class LLMResult:
+    verdict: Verdict
+    usage: LLMCallUsage
+
+
+class LLMClient(Protocol):
+    """Given one VerdictRequest, return a validated verdict and usage."""
+
+    def get_verdict(self, request: VerdictRequest) -> LLMResult: ...
 ```
+
+`LLMResult` is a frozen dataclass containing the validated `Verdict`
+and an `LLMCallUsage(tokens_in, tokens_out)` value. The pipeline stores the
+verdict in `Tier2Meta` as before and records the usage immediately after
+the call. This closes the current zero-token accounting limitation
+without exposing a LiteLLM response object outside the adapter.
 
 - **`Verdict` reuses `rules.schema.Action`** for `suggested_action` —
   the same terminal-action shape a Tier 1 rule produces, so
@@ -3256,25 +3352,26 @@ class LLMClient(Protocol):
   mailbox/category set") — `Verdict` only enforces shape, not
   deployment-specific vocabulary.
 - **Package layout: `spork.core.llm.clients.<name>`** — mirrors
-  `spork.core.providers.<name>`. `AnthropicLLMClient` is the first (and
-  today, only) implementation.
+  `spork.core.providers.<name>`. `LiteLLMClient` is the sole live v1
+  implementation; LiteLLM handles provider-specific SDK translation
+  in-process while Spork retains its narrow protocol and recorded
+  client for deterministic testing.
 - **Loadable at runtime: `spork.core.llm.loader`** — a client is named
   in config (e.g.
-  `[llm] client = "spork.core.llm.clients.anthropic:AnthropicLLMClient"`)
+  `[llm] client = "spork.core.llm.clients.litellm:LiteLLMClient"`)
   and resolved via `importlib` at startup, identical mechanics to
   `spork.core.providers.loader.load_provider` (down to the error type's
-  shape, `LLMClientLoadError`) — spork never imports the `anthropic`
-  SDK unless an Anthropic client is the one actually configured.
-- **`AnthropicLLMClient` is a settled-shape stub, like `JmapClient`.**
-  `get_verdict()` requires a live Anthropic API call, which this
-  environment can't exercise honestly — constructor args (`api_key`,
-  `model`, `max_tokens`) and the method signature are settled now,
-  `get_verdict()` raises `NotImplementedError` pointing at
-  `docs/ROADMAP.md`'s M3 until a real call (and the recorded-response
-  CI fixtures M3's last item calls for) lands. No `anthropic` import
-  anywhere yet — same reason `jmapc` isn't imported by `JmapClient`
-  (§9.3): the SDK isn't a dependency until there's a real call to make
-  with it.
+  shape, `LLMClientLoadError`) — spork never imports the optional
+  `litellm` SDK unless `LiteLLMClient` is actually configured.
+- **`LiteLLMClient` uses forced tool calling, not free-form JSON.**
+  `build_prompt()` derives a single `deliver_verdict` tool's parameter
+  schema from `Verdict.model_json_schema()` and sets `tool_choice` to
+  that function explicitly. `get_verdict()` validates the selected
+  tool name and its JSON arguments before constructing `Verdict`; a
+  missing/wrong/malformed tool call raises one `LiteLLMClientError`.
+  LiteLLM is an optional dependency loaded only when this adapter is
+  configured. Proxy deployment mode is deliberately out of scope for
+  v1; an in-process `completion()` call is the production path.
 
 ### 10.2 Verdict validation against configured mailbox/category set
 
@@ -3382,7 +3479,7 @@ dropped message.
 
 ### 10.5 Recorded-response fixtures for CI
 
-`AnthropicLLMClient` can't be exercised in CI — no live API key, and
+`LiteLLMClient` can't make a live call in CI — no live API key, and
 even with one, a real call is slow, costs money, and isn't
 deterministic. `spork.core.llm.clients.recorded.RecordedLLMClient` is
 the `LLMClient` equivalent of `FileProvider` (§9.3): a second, *fully
@@ -3418,9 +3515,9 @@ class RecordedLLMClient:
 - **Not a way to fake a live verdict for production use** — same
   caveat `FileProvider`'s docstring states for messages: this is
   explicitly a recording/replay backend for CI and offline dry-runs,
-  documented as exactly that, never a stand-in for `AnthropicLLMClient`
+  documented as exactly that, never a stand-in for `LiteLLMClient`
   in a real deployment.
-- **Loadable the same way `AnthropicLLMClient` is** —
+- **Loadable the same way `LiteLLMClient` is** —
   `spork.core.llm.loader.load_llm_client()` works on any `LLMClient`
   spec, so
   `"spork.core.llm.clients.recorded:RecordedLLMClient"` with a
@@ -3515,21 +3612,18 @@ run:
    `VerdictRequest` from it plus `meta`'s caller-supplied fields.
 4. **`CallLLMAugment(llm_client)`** — the one `Augment` in this
    pipeline, and the only stage that reaches outside the payload:
-   calls `llm_client.get_verdict(meta.request)`, sets `meta.verdict`.
+   calls `llm_client.get_verdict(meta.request)`, sets `meta.verdict`
+   and `meta.llm_usage` from the returned `LLMResult`.
    **This is the seam the external API sits behind** — with
    `RecordedLLMClient` (§10.5) it runs today, no live account needed;
-   swap in a real `AnthropicLLMClient` once M3's live-call blocker
+   swap in a real `LiteLLMClient` once M3's live-call blocker
    clears and nothing else in this pipeline changes.
 5. **`RecordLLMUsageFilter(state_db)`** — records that a call was made
    (§10.4) immediately after it happens, before validation — the call
    cost budget/tokens regardless of whether spork ends up liking the
-   response's shape. **Known limitation:** recorded with
-   `tokens_in=tokens_out=0` — `LLMClient.get_verdict()` returns a
-   `Verdict`, not a token-usage figure, so real counts aren't
-   available until a live client's real implementation reports them;
-   call-count enforcement (the part `daily_call_budget` actually
-   gates on) doesn't need them, so this isn't blocking, but `spork
-   status`'s token-spend display will read zeros until that's wired.
+   response's shape. Reads the real `tokens_in`/`tokens_out` values
+   stored in `meta.llm_usage`; `RecordedLLMClient` deliberately returns
+   zeros because replaying a fixture makes no external call.
 6. **`ValidateVerdictFilter(allowed_categories)`** — calls
    `validate_verdict()` (§10.2) against the configured category set
    and `meta.available_mailboxes`; raises on failure. Same policy as
