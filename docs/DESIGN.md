@@ -3454,11 +3454,13 @@ the *daemon* level, crash-looping) are **not** — they're about
 `sporkd`'s own lifecycle, not a `Payload`/`Pipeline.run()` for any one
 message, so they get no module here. The M5 daemon loop
 (`spork.daemon.loop.run_daemon()`) exists now, with `PipelineObserver`/
-`Alerter` already threaded through it for per-message alerts — but
-wiring daemon-lifecycle alerts specifically onto it is real,
-currently-untracked follow-up (docs/ROADMAP.md M4's "Alert triggers"
-item), not something built as a side effect of any M5 item, and not
-invented in this section either.
+`Alerter` already threaded through it for per-message alerts. Of the
+three daemon-health signals, one is wired in directly on the loop
+(§12.3, daily-budget-exhausted); the other two remain real,
+currently-untracked follow-up — JMAP push disconnected still needs a
+live EventSource connection to detect at all (see the comment in
+`spork.core.providers.jmap.push`), and crash-loop detection belongs to
+M6/systemd, not this loop.
 
 **`spork.core.pipeline.observer.PipelineObserver`** is the "combine
 logging and alerting" object: every alert-worthy pipeline outcome
@@ -3565,6 +3567,66 @@ side effect alongside the existing one, same shape as adding
 `WriteAuditEntryFilter` was to the M2 pipeline: composition, not a
 rewrite of `build_default_pipeline()`/`build_tier2_pipeline()`'s
 existing stages.
+
+### 12.3 Daemon-level daily-budget-exhausted alert
+
+The first of §12.2's three daemon-health signals to get wired in
+(docs/ROADMAP.md M4's "Alert triggers" item) — chosen over the other
+two because it's the only one that needs no live network to build
+honestly: it's a `StateDB` read, the same one `BudgetGateSelector`
+(§10.7) already does per Tier-2-eligible message, just asked once more
+from the daemon loop itself. The other two — JMAP push disconnected,
+daemon crash-looping — stay genuinely blocked (see the comment in
+`spork.core.providers.jmap.push` for the former; the latter is M6/
+systemd's job, not this loop's).
+
+**Distinct from `RecordBudgetExhaustedFilter` (§12.2's table):** that
+filter alerts *per skipped message* — "this one didn't get a Tier 2
+opinion" — every single time Tier 1 escalates while the budget is
+already gone, which is by design (§10's documented policy: never
+silently drop budget-exhausted mail). This is a different signal at a
+different level: a one-shot-per-day daemon-health notification —
+"sporkd itself has hit its ceiling for today" — meant for an operator
+skimming alerts, not a per-message audit trail. Firing it every time
+would just be `RecordBudgetExhaustedFilter` again under a different
+name; firing it once tells the operator something new.
+
+**Mechanism:**
+
+- `DaemonState` (§6.2.2) gains one field:
+  `budget_exhausted_alert_date: str | None = None` — the ISO date
+  (`YYYY-MM-DD`, matching `StateDB.get_llm_usage(date)`'s existing
+  slicing convention, `now()[:10]`) this alert last fired on, or
+  `None` if it hasn't fired today. Reassignment-only, same
+  no-lock-needed reasoning as `paused`/`started_at`.
+- `_run_message_loop()` gains a `now: Callable[[], str] = _utc_now_iso`
+  DI parameter, mirroring the pattern already used by
+  `process_message()`/`process_tier2_message()`/`CorrelationIdFilter`
+  — production callers never override it, tests inject a fixed clock
+  to control which day's budget row is checked without needing to
+  cross an actual midnight.
+- Right after each `escalate_message()` call (the only place Tier 2
+  calls — and therefore budget spend — happen in the loop), a small
+  helper checks `state_db.get_llm_usage(today)` against
+  `tiering.daily_call_budget` via the existing
+  `spork.core.llm.budget.has_budget_remaining()`. If the budget is
+  gone *and* `daemon_state.budget_exhausted_alert_date != today`, it
+  fires one `ops.alert(..., urgency="critical")` call and sets
+  `daemon_state.budget_exhausted_alert_date = today`. If the budget
+  still has headroom, or today's alert already fired, it's a no-op.
+- **Self-resetting across date rollover, no special-casing:** the
+  guard is an equality check against *today's* date, not a boolean
+  flag — the day after exhaustion, `today` no longer matches the
+  stored date (even though the field is still set from yesterday), so
+  the very next exhausted-budget check fires again and overwrites the
+  field with the new date. No midnight timer, no explicit reset logic
+  anywhere.
+- The alert's `correlation_id` (required by `PipelineObserver.alert()`,
+  §12.2) isn't any one message's — this fires from daemon lifecycle,
+  not a `Pipeline.run()` — so it gets its own fresh one via the same
+  `new_id: Callable[[], str] = lambda: uuid.uuid4().hex` DI pattern
+  `CorrelationIdFilter` uses, not threaded from whichever message
+  happened to trigger the check.
 
 ## 13. CLI command reference (v1 surface)
 
