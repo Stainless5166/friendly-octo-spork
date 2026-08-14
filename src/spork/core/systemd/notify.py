@@ -27,13 +27,18 @@ def notify(
 
     `socket_path` overrides `$NOTIFY_SOCKET` when given (mainly for
     tests); otherwise it's read from `environ` (defaulting to the real
-    `os.environ`). Returns `False` and sends nothing when no socket
-    address is available — the common case whenever the calling
-    process isn't running under a `Type=notify` unit (every test run,
-    every plain `uv run sporkd`), so callers can call this
-    unconditionally without checking first. Returns `True` once the
-    datagram has actually been sent.
+    `os.environ`). Returns `False` and sends nothing when there's
+    nothing meaningful to do — an empty `state`, no socket address
+    available (the common case whenever the calling process isn't
+    running under a `Type=notify` unit: every test run, every plain
+    `uv run sporkd`), or the address turning out to be stale/unreachable
+    once connected to — this is a best-effort readiness signal, not
+    something worth taking `sporkd`'s own startup down over. Returns
+    `True` once the datagram has actually been sent.
     """
+    if not state:
+        return False
+
     env = environ if environ is not None else os.environ
     address = socket_path if socket_path is not None else env.get("NOTIFY_SOCKET")
     if not address:
@@ -50,6 +55,8 @@ def notify(
     try:
         sock.connect(address)
         sock.sendall(state.encode())
+    except OSError:
+        return False
     finally:
         sock.close()
     return True
