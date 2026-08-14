@@ -28,6 +28,7 @@ from spork.core.pipeline.modules import (
     WriteAuditEntryFilter,
 )
 from spork.core.pipeline.observer import PipelineObserver
+from spork.core.pipeline.tracing import wrap_selector, wrap_stages
 from spork.core.rules.engine import RuleVerdict
 from spork.core.rules.schema import Action, Rule
 from spork.core.state.db import StateDB
@@ -71,28 +72,34 @@ def build_default_pipeline(
     know about.
     """
     terminal: Pipeline[MessageMeta] = Pipeline(
-        [
-            ApplyActionFilter(executor),
-            WriteAuditEntryFilter(state_db),
-            MarkProcessedFilter(state_db),
-        ]
+        wrap_stages(
+            [
+                ApplyActionFilter(executor),
+                WriteAuditEntryFilter(state_db),
+                MarkProcessedFilter(state_db),
+            ],
+            ops,
+        )
     )
     escalate: Pipeline[MessageMeta] = Pipeline(
-        [
-            RecordEscalationFilter(ops),
-            WriteAuditEntryFilter(state_db),
-            MarkProcessedFilter(state_db),
-        ]
+        wrap_stages(
+            [
+                RecordEscalationFilter(ops),
+                WriteAuditEntryFilter(state_db),
+                MarkProcessedFilter(state_db),
+            ],
+            ops,
+        )
     )
     process = Pipeline(
-        [TimestampFilter(now), CorrelationIdFilter(new_correlation_id)],
-        selector=RuleEvaluationSelector(),
+        wrap_stages([TimestampFilter(now), CorrelationIdFilter(new_correlation_id)], ops),
+        selector=wrap_selector(RuleEvaluationSelector(), ops),
         routes={"terminal": terminal, "escalate": escalate},
     )
     if force:
         return process
     return Pipeline(
-        selector=IdempotencyGateSelector(state_db),
+        selector=wrap_selector(IdempotencyGateSelector(state_db), ops),
         routes={"skip": Pipeline(), "continue": process},
     )
 
