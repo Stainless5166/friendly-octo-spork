@@ -9,6 +9,7 @@ read (`Source`) and write (`ActionApplier`) sides.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Protocol
 
 from spork.core.models import NormalizedMessage
 from spork.core.providers.base import (
@@ -19,11 +20,17 @@ from spork.core.providers.base import (
     ThreadContext,
     ThreadHistoryReader,
 )
-from spork.core.providers.jmap.client import JmapClient
+from spork.core.providers.jmap.client import JmapClient, JmapFetchResult
 from spork.core.providers.jmap.push import JmapPushTrigger
 from spork.core.rules.schema import Action
 from spork.core.sources.base import Source
 from spork.core.sources.triggered import TriggeredSource
+
+
+class _FetchClient(Protocol):
+    """The read leaf needed by the temporary TriggeredSource adapter."""
+
+    def fetch_new_messages(self, since_cursor: str | None) -> JmapFetchResult: ...
 
 
 class _JmapContentFetcher:
@@ -38,12 +45,12 @@ class _JmapContentFetcher:
     yet; this class isn't pretending otherwise.
     """
 
-    def __init__(self, client: JmapClient, *, cursor: str | None = None) -> None:
+    def __init__(self, client: _FetchClient, *, cursor: str | None = None) -> None:
         self._client = client
         self._cursor = cursor
 
     def fetch(self) -> Sequence[NormalizedMessage]:
-        return self._client.fetch_new_messages(since_cursor=self._cursor)
+        return self._client.fetch_new_messages(since_cursor=self._cursor).messages
 
 
 class _JmapActionApplier:

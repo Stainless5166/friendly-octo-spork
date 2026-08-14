@@ -34,14 +34,14 @@ Two supported paths: the manual steps below, or — on Arch Linux —
 same install (same unit file, same layout), just packaged. Either way
 you end up with `sporkd` running as a systemd **user** service.
 
-> **Honest caveat:** JMAP live connectivity (`JmapClient.connect()`/
-> `fetch_new_messages()`) is still a settled-shape `NotImplementedError`
-> — genuinely blocked on a live Fastmail session to build against
-> honestly, see `docs/ROADMAP.md` M1. Following this quickstart with a
+> **Honest caveat:** authenticated JMAP session discovery and read-only
+> `Email/changes`/`Email/get` fetching are now real and verified against
+> Fastmail. Cursor-safe daemon acknowledgement and EventSource push are
+> still incomplete; see `docs/ROADMAP.md` M1. Following this quickstart with a
 > real `spork.core.providers.jmap.provider:JmapProvider` config gets
 > `sporkd` started (`sd_notify`'s `READY=1` fires, `systemctl --user
 > status` shows it up) but it will stop shortly after, once its first
-> poll hits that stub. Steps 1–3 and the install flow (steps 4–5) are
+> poll hits the push-listener stub. Steps 1–3 and the install flow (steps 4–5) are
 > all real today, independent of that gap; step 3 below configures
 > `FileProvider`/`RecordedLLMClient` instead of `JmapProvider` for
 > exactly this reason — everything through "the daemon is installed,
@@ -56,10 +56,10 @@ you end up with `sporkd` running as a systemd **user** service.
    $ uv sync
    ```
 
-   `litellm` is an optional runtime dependency. The repository's dev
-   environment installs it for tests; a production live-LLM install
-   uses `uv tool install '.[llm]'`. `RecordedLLMClient` needs no LLM
-   extra.
+   `litellm` and `jmapc` are optional runtime dependencies. The
+   repository's dev environment installs both for tests; a production
+   live install uses `uv tool install '.[llm,jmap]'`.
+   `RecordedLLMClient` and `FileProvider` need neither extra.
 
 2. **Set up secrets** ([SecretSpec](https://github.com/cachix/secretspec),
    §7.3 of `docs/DESIGN.md`). `spork` depends only on SecretSpec's

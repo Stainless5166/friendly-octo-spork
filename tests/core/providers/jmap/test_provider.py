@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from spork.core.providers.jmap.client import JmapClient
+from spork.core.providers.jmap.client import JmapClient, JmapFetchResult
 from spork.core.providers.jmap.provider import (
     JmapProvider,
     _JmapActionApplier,
@@ -47,16 +47,21 @@ def test_source_poll_raises_not_implemented() -> None:
         source.poll()
 
 
-def test_content_fetcher_delegates_to_the_client_directly() -> None:
-    """The fetcher half of build_source()'s composition also raises
-    NotImplementedError on its own (not just when reached via the
-    trigger firing first) — it's a real delegation to
-    JmapClient.fetch_new_messages(), not a second placeholder."""
-    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
-    fetcher = _JmapContentFetcher(client)
+def test_content_fetcher_returns_messages_from_the_clients_candidate_batch(
+    make_message,
+) -> None:
+    """The temporary TriggeredSource adapter unwraps messages while the
+    cursor-safe daemon acknowledgement path is built in the next unit."""
+    message = make_message()
 
-    with pytest.raises(NotImplementedError):
-        fetcher.fetch()
+    class _Client:
+        def fetch_new_messages(self, since_cursor: str | None) -> JmapFetchResult:
+            assert since_cursor == "state-1"
+            return JmapFetchResult(messages=(message,), cursor="state-2")
+
+    fetcher = _JmapContentFetcher(_Client(), cursor="state-1")
+
+    assert fetcher.fetch() == (message,)
 
 
 def test_build_action_applier_returns_something_that_can_apply(make_message) -> None:
