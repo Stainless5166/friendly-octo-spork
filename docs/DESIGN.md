@@ -134,6 +134,7 @@ flowchart TD
             config_loader["loader.py<br/>load_config()"]
         end
         secrets_mod["secrets.py<br/>secretspec integration"]
+        runtime_mod["runtime.py<br/>secret injection +<br/>backend composition"]:::planned
         models_mod["models.py<br/>NormalizedMessage"]
         logging_setup_mod["logging_setup.py<br/>configure_logging() (M7)"]
 
@@ -607,6 +608,11 @@ classDiagram
         <<pydantic BaseModel, extra=forbid>>
         +spec: str
         +kwargs: dict
+        +secret_kwargs: dict~str,str~
+    }
+    class LLMRecordingConfig {
+        <<pydantic BaseModel, extra=forbid>>
+        +corpus_path: Path
     }
     class TieringConfig {
         <<pydantic BaseModel, extra=forbid>>
@@ -623,6 +629,7 @@ classDiagram
         +provider: BackendSpec
         +llm: BackendSpec
         +alerts: BackendSpec
+        +llm_recording: Optional~LLMRecordingConfig~
         +rules_path: Path
         +db_path: Path
         +socket_path: Path
@@ -632,6 +639,7 @@ classDiagram
     class ConfigLoadError { <<Exception>> }
 
     SporkConfig *-- BackendSpec : provider, llm, alerts
+    SporkConfig *-- LLMRecordingConfig
     SporkConfig *-- TieringConfig
 
     class resolve_user_config_path { <<function>> }
@@ -682,6 +690,56 @@ module boundary, the same convention as `RulesLoadError`/
 `ProviderLoadError`/`AlerterLoadError`. Built as M5's first item, real
 and 100%-covered — this diagram settled the shape before any of it
 was implemented, same as `spork.core.alerts`' had.
+
+#### `spork.core.runtime`
+
+```mermaid
+classDiagram
+    class BackendSpec { <<pydantic BaseModel>> }
+    class SporkConfig { <<pydantic BaseModel>> }
+    class Secrets { <<dataclass, frozen>> }
+    class Provider { <<Protocol>> }
+    class LLMClient { <<Protocol>> }
+    class Alerter { <<Protocol>> }
+    class RecordingLLMClient
+    class resolve_runtime_secrets {
+        <<function>>
+        +resolve_runtime_secrets(config, reason) Secrets
+    }
+    class materialize_backend_kwargs {
+        <<function>>
+        +materialize_backend_kwargs(spec, secrets) dict
+    }
+    class build_provider { <<function>> }
+    class build_llm_client { <<function>> }
+    class build_alerter { <<function>> }
+
+    resolve_runtime_secrets ..> SporkConfig : checks configured secret mappings
+    resolve_runtime_secrets ..> Secrets : resolves once when needed
+    materialize_backend_kwargs ..> BackendSpec : reads kwargs + secret_kwargs
+    materialize_backend_kwargs ..> Secrets : reads mapped values
+    build_provider ..> Provider : loads with materialized kwargs
+    build_llm_client ..> LLMClient : loads with materialized kwargs
+    build_llm_client ..> RecordingLLMClient : wraps when configured
+    build_alerter ..> Alerter : loads with materialized kwargs
+```
+
+`BackendSpec.secret_kwargs` maps a constructor argument to a SecretSpec
+name, for example `api_token = "JMAP_API_TOKEN"`. It contains names,
+never values, so `spork config show` may display it without exposing a
+credential. A constructor key cannot appear in both `kwargs` and
+`secret_kwargs`; config validation rejects that ambiguity rather than
+silently choosing one. `resolve_runtime_secrets()` calls SecretSpec at
+most once per command invocation and only when at least one configured
+backend has a secret mapping. `build_provider()`/`build_llm_client()`/
+`build_alerter()` are the shared composition path used by `sporkd`,
+`spork doctor`, and `spork reclassify`.
+
+An optional top-level `[llm_recording]` table wraps the configured live
+or recorded client in `RecordingLLMClient` after construction. Its
+`corpus_path` is configuration, not a backend constructor argument;
+there is no nested dynamic-client specification and no secret value in
+the corpus configuration.
 
 #### `spork.core.models`
 
@@ -2099,7 +2157,9 @@ classDiagram
         <<Typer command "install-service">>
         +install_service_command(enable_now: bool) None
     }
-    class load_provider { <<function>> }
+    class build_provider { <<function>> }
+    class build_llm_client { <<function>> }
+    class build_alerter { <<function>> }
     class process_message { <<function>> }
     class escalate_message { <<function>> }
     class MessageNotFoundError { <<Exception>> }
@@ -2156,15 +2216,19 @@ classDiagram
     doctor ..> SecretsError : catches, reported as one failed check
     doctor ..> load_config : config check
     doctor ..> ConfigLoadError : catches, reported as one failed check
-    doctor ..> load_provider : provider check (needs config)
+    doctor ..> build_provider : provider check (config + mapped secrets)
     doctor ..> ProviderLoadError : catches, reported as one failed check
+    doctor ..> build_llm_client : LLM check (config + mapped secrets)
+    doctor ..> build_alerter : alerter check (config + mapped secrets)
     doctor ..> load_rules : rules check (needs config)
     doctor ..> RulesLoadError : catches, reported as one failed check
     doctor ..> UnknownClassifierError : local_classifier check, catches
     doctor ..> NotImplementedError : catches JMAP-connectivity stub, one more failed check
     doctor ..> check_unit_status : systemd unit install/enabled/active check (§14)
     reclassify ..> load_config : locates provider/rules/db
-    reclassify ..> load_provider : builds Provider, standalone (§7.4)
+    reclassify ..> build_provider : builds Provider, standalone (§7.4)
+    reclassify ..> build_llm_client : builds/wraps LLMClient on escalation
+    reclassify ..> build_alerter : builds Alerter
     reclassify ..> MessageNotFoundError : catches, clean CLI error
     reclassify ..> process_message : force=True, bypasses the idempotency gate
     reclassify ..> escalate_message : when Tier 1 escalates
@@ -2174,12 +2238,12 @@ classDiagram
 ```
 
 Unlike every other CLI command in this diagram, `doctor` never stops
-at its first failure: it runs each of its seven checks independently
-(secrets, config, provider, rules, the configured local classifier if
-any, JMAP connectivity, the systemd unit), catching each check's own
+at its first failure: it runs each of its nine checks independently
+(secrets, config, provider, LLM client, alerter, rules, the configured
+local classifier if any, JMAP connectivity, the systemd unit), catching each check's own
 specific exception type and printing one `[ok]`/`[FAIL]` line per
 check, only exiting non-zero (still never a raw traceback) once all
-seven have run and at least one failed. The provider/rules/classifier
+checks have run and at least one failed. The backend/rules/classifier
 checks are skipped (reported, not silently omitted) when the config
 check itself failed — there's no `SporkConfig` to build them from.
 
@@ -2243,8 +2307,9 @@ classDiagram
     run --> main : typer.run(main)
     main ..> _run_until_signalled : asyncio.run()
     _run_until_signalled ..> run_daemon : awaits, stop_event set by SIGTERM/SIGINT handlers
-    run_daemon ..> Provider : load_provider() -> build_source()/build_action_applier()/build_draft_creator()/build_thread_history_reader()/build_mailbox_lister()
-    run_daemon ..> LLMClient : load_llm_client()
+    run_daemon ..> Secrets : resolve_runtime_secrets() once
+    run_daemon ..> Provider : build_provider() -> build_source()/build_action_applier()/build_draft_creator()/build_thread_history_reader()/build_mailbox_lister()
+    run_daemon ..> LLMClient : build_llm_client(), optionally recording-wrapped
     run_daemon --> ActionExecutor : constructs
     run_daemon --> StateDB : opens
     run_daemon --> PipelineObserver : constructs
@@ -2371,6 +2436,11 @@ case-insensitively contains `token`, `key`, `secret`, or `password` —
 a heuristic name-based check, stated as exactly that, not a guarantee
 against every way a secret could be spelled.
 
+`secret_kwargs` is different: its values are SecretSpec field names,
+not credentials. `spork config show` prints those mappings as ordinary
+configuration so the operator can see which constructor argument uses
+which declared secret; it never resolves or prints the mapped value.
+
 **`spork config edit`, and why it doesn't push a live reload:** opens
 the *user* tier's `config.toml` in `$EDITOR`, then validates by calling
 `load_config()` for real (no path overrides) — the actual merged
@@ -2406,12 +2476,20 @@ host = "api.fastmail.com"
 account_email = "will@example.com"   # used to resolve the JMAP account ID
 fallback_poll_interval_seconds = 300
 reconnect_backoff_seconds = [2, 5, 15, 60, 300]
+[provider.secret_kwargs]
+api_token = "JMAP_API_TOKEN"
 
 [llm]
 spec = "spork.core.llm.clients.litellm:LiteLLMClient"   # §10.1
 [llm.kwargs]
 model = "anthropic/claude-sonnet-4-5"
 max_tokens = 1024
+[llm.secret_kwargs]
+api_key = "ANTHROPIC_API_KEY"
+
+# Optional acceptance-only recording. Omit in normal operation.
+[llm_recording]
+corpus_path = "/home/will/spork/tests/fixtures/corpus/live.jsonl"
 
 [alerts]
 spec = "spork.core.alerts.log:LoggingAlerter"   # v1's only real backend — §12.1
@@ -4084,8 +4162,8 @@ spork reclassify <message-id> # standalone, like spork logs — works whether
                                # even though the outcome looks the same as
                                # an ordinary automatic run
 
-spork doctor                  # secretspec check, config/provider/rules/
-                               # local-classifier load checks, JMAP auth
+spork doctor                  # secretspec check, config/provider/LLM/
+                               # alerter/rules/local-classifier load checks, JMAP auth
                                # check, systemd unit install/enabled/
                                # active state — DB migration status
                                # isn't wired in yet
