@@ -15,6 +15,7 @@ from spork.core.providers.jmap.client import JmapClient, JmapFetchResult
 from spork.core.providers.jmap.provider import (
     JmapProvider,
     _JmapActionApplier,
+    _JmapCheckpointedSource,
     _JmapContentFetcher,
     _JmapDraftCreator,
     _JmapMailboxLister,
@@ -53,15 +54,42 @@ def test_content_fetcher_returns_messages_from_the_clients_candidate_batch(
     """The temporary TriggeredSource adapter unwraps messages while the
     cursor-safe daemon acknowledgement path is built in the next unit."""
     message = make_message()
+    cursors: list[str | None] = []
 
     class _Client:
         def fetch_new_messages(self, since_cursor: str | None) -> JmapFetchResult:
-            assert since_cursor == "state-1"
+            cursors.append(since_cursor)
             return JmapFetchResult(messages=(message,), cursor="state-2")
 
     fetcher = _JmapContentFetcher(_Client(), cursor="state-1")
 
     assert fetcher.fetch() == (message,)
+
+
+def test_checkpointed_source_exposes_the_clients_candidate_state(make_message) -> None:
+    message = make_message()
+    cursors: list[str | None] = []
+
+    class _Client(JmapClient):
+        def __init__(self) -> None:
+            pass
+
+        def fetch_new_messages(self, since_cursor: str | None) -> JmapFetchResult:
+            cursors.append(since_cursor)
+            return JmapFetchResult(messages=(message,), cursor="state-2")
+
+    class _Trigger:
+        def wait(self) -> None:
+            pass
+
+    source = _JmapCheckpointedSource(_Client(), "state-1", trigger=_Trigger())
+
+    batch = source.poll_batch()
+
+    assert batch.messages == (message,)
+    assert batch.checkpoint == "state-2"
+    assert source.poll() == (message,)
+    assert cursors == ["state-1", "state-2"]
 
 
 def test_build_action_applier_returns_something_that_can_apply(make_message) -> None:
