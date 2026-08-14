@@ -13,13 +13,18 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
+from spork.core.config.schema import (
+    BackendSpec,
+    LLMRecordingConfig,
+    SporkConfig,
+    TieringConfig,
+)
 
 
 def _minimal_sporkconfig(**overrides: object) -> SporkConfig:
     defaults: dict[str, object] = {
         "provider": BackendSpec(spec="spork.core.providers.jmap.provider:JmapProvider"),
-        "llm": BackendSpec(spec="spork.core.llm.clients.anthropic:AnthropicLLMClient"),
+        "llm": BackendSpec(spec="spork.core.llm.clients.litellm:LiteLLMClient"),
         "alerts": BackendSpec(spec="spork.core.alerts.log:LoggingAlerter"),
         "rules_path": Path("~/.config/spork/rules.toml"),
         "db_path": Path("~/.local/share/spork/state.sqlite3"),
@@ -107,3 +112,32 @@ def test_backendspec_kwargs_defaults_to_empty_dict() -> None:
     spec = BackendSpec(spec="spork.core.alerts.log:LoggingAlerter")
 
     assert spec.kwargs == {}
+
+
+def test_backendspec_accepts_secret_name_mappings_separately_from_kwargs() -> None:
+    spec = BackendSpec(
+        spec="example:Backend",
+        kwargs={"host": "api.example.com"},
+        secret_kwargs={"api_token": "JMAP_API_TOKEN"},
+    )
+
+    assert spec.kwargs == {"host": "api.example.com"}
+    assert spec.secret_kwargs == {"api_token": "JMAP_API_TOKEN"}
+
+
+def test_backendspec_rejects_a_constructor_key_in_both_config_and_secrets() -> None:
+    with pytest.raises(ValidationError, match="api_token"):
+        BackendSpec(
+            spec="example:Backend",
+            kwargs={"api_token": "plaintext"},
+            secret_kwargs={"api_token": "JMAP_API_TOKEN"},
+        )
+
+
+def test_sporkconfig_accepts_optional_llm_recording_configuration(tmp_path: Path) -> None:
+    config = _minimal_sporkconfig(
+        llm_recording=LLMRecordingConfig(corpus_path=tmp_path / "corpus" / "live.jsonl")
+    )
+
+    assert config.llm_recording is not None
+    assert config.llm_recording.corpus_path == tmp_path / "corpus" / "live.jsonl"
