@@ -59,7 +59,7 @@ def test_content_fetcher_returns_messages_from_the_clients_candidate_batch(
             assert since_cursor == "state-1"
             return JmapFetchResult(messages=(message,), cursor="state-2")
 
-    fetcher = _JmapContentFetcher(_Client(), cursor="state-1")  # type: ignore[arg-type]
+    fetcher = _JmapContentFetcher(_Client(), cursor="state-1")
 
     assert fetcher.fetch() == (message,)
 
