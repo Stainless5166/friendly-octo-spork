@@ -191,6 +191,18 @@ empirically, `resolve_secretspec_path()` and §7.3's prose both updated.
 **M6 is 7/7 — the milestone is complete** in the same sense every prior
 one is: everything buildable and testable without a live
 account/Arch-tooling-having-machine is real, 604 tests all green.
+Updated once more for M7's five buildable items: structured
+application logging (`spork.core.logging_setup`), per-message pipeline
+tracing (`spork.core.pipeline.tracing`), audit trail completeness
+(control-plane `audit_log` entries), a security review pass against
+§15 (two real gaps found and fixed: a missing README privacy
+disclosure, and `Secrets.__repr__` leaking resolved values), and a
+coverage pass confirming `spork.core.rules`/`spork.core.actions.executor`
+were already fully covered by prior milestones. **M7 is now 5/9** — the
+remaining four (confidence tuning, rate-limit verification, crash-loop
+verification, tagging v1.0.0) all share the one live-account/live-week
+blocker the milestone's own exit criteria state explicitly, same
+"not yet met" pattern as M1's. 653 tests, all green.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -641,13 +653,56 @@ fully-configured one passing every check this milestone can actually
 make pass, leaving only JMAP connectivity (M1, genuinely blocked) and
 the never-installed systemd unit non-zero (test 552).
 
-### M7 — Hardening & v1 release
+### M7 — Hardening & v1 release — 5/9
 
-No implementation, no tests. Not evaluated here — nothing to check yet.
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| Confidence threshold tuning pass | — | Genuinely blocked — needs real triage volume from a live account |
+| Rate-limit / 429 handling verified | — | Genuinely blocked — same live-account reason |
+| Crash-loop / restart behavior verified | — | `Restart=on-failure` has been in the unit file since M6; *verifying* it needs a real systemd session this sandbox doesn't have either |
+| Structured application logging | ✅ | ✅ — tests 566–574 (`spork.core.logging_setup`, 100% line coverage), 578–582 (CLI wiring) |
+| Per-message tracing through the pipeline | ✅ | ✅ — tests 583–595 (`spork.core.pipeline.tracing`, 100% line+branch coverage on `spork.core.pipeline`) |
+| Audit trail completeness (control-plane changes) | ✅ | ✅ — tests 596–609 (`StateDB.write_control_plane_audit_entry()`, `DaemonState.pending_control_plane_events`, CLI wiring across rules/config/pause/resume/reclassify — 100% coverage on every touched module) |
+| Security review pass against §15 | ✅ | ✅ — test 610 (the one gap that needed a code fix: `Secrets.__repr__`); the README privacy-disclosure gap needed no test (prose) |
+| Full test suite green; rule engine + action executor coverage | ✅ | ✅ — `spork.core.rules`/`spork.core.actions.executor` were already 100% line+branch before this pass; one small opportunistic gap closed (tests 608–609) |
+| Tag v1.0.0 | — | Gated on the exit criteria below, which are gated on a live account |
+
+`spork.core.pipeline.tracing` (`TracingStage`/`TracingSelector`) is a
+generic wrapper layered on top of `build_default_pipeline()`/
+`build_tier2_pipeline()` at composition time — no change to any of the
+21 concrete Filter/Selector/Augment classes across both pipelines, and
+no change to what their existing bare-`Payload` unit tests exercise
+(tests 583–593 use a minimal local metadata type, not
+`MessageMeta`/`Tier2Meta`, proving the wrapper is genuinely reusable,
+not hardcoded to either pipeline's shape).
+
+The audit-trail-completeness item needed a real design correction, not
+just plumbing: a first-draft "make the `pause`/`resume` IPC handler
+`async`, `await asyncio.to_thread(state_db.write_control_plane_audit_entry,
+...)` directly from it" turns out not to actually serialize against
+`_run_message_loop()`'s own in-flight `to_thread(process_message,
+...)` call — two independent `to_thread()` calls from two different
+coroutines can still race the same `sqlite3` connection object, the
+exact hazard `docs/DESIGN.md` §6.2.2 already exists to avoid. Fixed by
+not adding a second call site at all: `DaemonState` gains
+`pending_control_plane_events`, appended to synchronously (an
+in-memory mutation, same as flipping `.paused`) and drained once per
+`_run_message_loop()` iteration — the one code path that already
+safely, sequentially owns every `StateDB` access.
+
+The security review pass found and fixed two real gaps, not just
+confirmed the six existing claims: the README never actually disclosed
+that ambiguous mail goes to Claude despite §15 explicitly claiming it
+did (a real prose gap, now fixed), and `Secrets` (`spork.core.secrets`)
+is a plain `@dataclass` whose default `__repr__` printed every
+resolved secret's real value verbatim — confirmed empirically
+(`repr(Secrets({"JMAP_API_TOKEN": "..."}))` really did leak the value)
+before fixing with `repr=False` + a custom `__repr__` showing only the
+declared names.
 
 ---
 
-## Full test inventory (604 tests, all passing — 0 xfail)
+## Full test inventory (653 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -3177,3 +3232,136 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
 
 565. **`test_pkgbuild.py::test_pkgbuild_pkgver_matches_pyproject`**
     No drift between the Arch package version and `pyproject.toml`'s own.
+
+### M7 — Hardening & v1 release
+
+566. **`core/test_logging_setup.py::test_configure_logging_defaults_the_spork_logger_to_info`**
+
+567. **`core/test_logging_setup.py::test_configure_logging_sets_the_given_level`**
+
+568. **`core/test_logging_setup.py::test_configure_logging_writes_a_line_to_the_given_stream`**
+
+569. **`core/test_logging_setup.py::test_configure_logging_output_includes_level_and_logger_name`**
+    Journal-friendly: no timestamp, but level + logger name so
+    `spork.pipeline`/`spork.daemon.loop`/etc. lines are distinguishable.
+
+570. **`core/test_logging_setup.py::test_configure_logging_respects_the_configured_level`**
+    A DEBUG message is dropped when configured at INFO.
+
+571. **`core/test_logging_setup.py::test_configure_logging_is_idempotent_not_accumulating_handlers`**
+    A second `configure_logging()` call replaces the handler rather
+    than adding a second one.
+
+572. **`core/test_logging_setup_edge_cases.py::test_configure_logging_appends_extra_fields_as_key_value_pairs`**
+    The exact mechanism `PipelineObserver.trace()` relies on for
+    `correlation_id`.
+
+573. **`core/test_logging_setup_edge_cases.py::test_configure_logging_includes_exception_info_when_logged_with_exc_info`**
+
+574. **`core/test_logging_setup_edge_cases.py::test_configure_logging_raises_valueerror_for_an_unknown_level`**
+
+575. **`core/config/test_schema.py::test_sporkconfig_log_level_defaults_to_info`**
+
+576. **`core/config/test_schema.py::test_sporkconfig_accepts_every_documented_log_level`**
+    (parametrized, 5 level names)
+
+577. **`core/config/test_schema.py::test_sporkconfig_rejects_an_unknown_log_level`**
+    A typo'd/lowercase `log_level` fails loudly at config-load time.
+
+578. **`daemon/test_main.py::test_log_level_option_appears_in_help`**
+
+579. **`daemon/test_main.py::test_an_invalid_log_level_produces_a_clean_error_not_a_traceback`**
+
+580. **`daemon/test_main.py::test_sporkd_starts_successfully_with_a_log_level_override`**
+    A real running `sporkd` subprocess, same spawn-and-wait-for-the-
+    socket pattern `test_status.py`'s own end-to-end test uses.
+
+581. **`cli/test_main.py::test_log_level_option_appears_in_help`**
+
+582. **`cli/test_main.py::test_an_invalid_log_level_produces_a_clean_error_not_a_traceback`**
+    Fails before the subcommand (`doctor`) ever runs.
+
+583. **`core/pipeline/test_tracing.py::test_tracing_stage_delegates_to_the_wrapped_filter`**
+
+584. **`core/pipeline/test_tracing.py::test_tracing_stage_delegates_to_the_wrapped_augment_via_augment_not_apply`**
+    The real point: a `TracingStage` wrapping an `Augment` still calls
+    `.augment()` on it, even though the wrapper itself only ever
+    exposes `.apply()` to the outer `Pipeline`.
+
+585. **`core/pipeline/test_tracing.py::test_tracing_stage_traces_the_wrapped_stage_name`**
+
+586. **`core/pipeline/test_tracing.py::test_tracing_stage_includes_the_correlation_id_in_the_trace`**
+
+587. **`core/pipeline/test_tracing.py::test_tracing_stage_defaults_correlation_id_when_meta_has_none`**
+    A run before `CorrelationIdFilter` never crashes for lack of one.
+
+588. **`core/pipeline/test_tracing.py::test_tracing_stage_includes_duration_ms`**
+
+589. **`core/pipeline/test_tracing.py::test_tracing_selector_delegates_to_the_wrapped_selector`**
+
+590. **`core/pipeline/test_tracing.py::test_tracing_selector_traces_the_chosen_branch`**
+
+591. **`core/pipeline/test_tracing.py::test_wrap_stages_wraps_every_element_preserving_order`**
+
+592. **`core/pipeline/test_tracing.py::test_wrap_stages_wrapped_list_still_runs_in_order`**
+
+593. **`core/pipeline/test_tracing.py::test_wrap_selector_wraps_the_given_selector`**
+
+594. **`core/pipeline/test_default.py::test_process_message_traces_every_stage_it_runs`**
+    A real message through `process_message()`: every one of the 7
+    stages it runs is traced, not just the alert-worthy ones.
+
+595. **`core/pipeline/tier2/test_default.py::test_process_tier2_message_traces_every_stage_it_runs`**
+    Same, for the Tier 2 pipeline's 8 stages on a high-confidence
+    autoact path.
+
+596. **`core/state/test_audit_log.py::test_write_control_plane_audit_entry_uses_the_empty_string_jmap_id_sentinel`**
+
+597. **`core/state/test_audit_log.py::test_write_control_plane_audit_entry_records_detail_json`**
+
+598. **`core/state/test_audit_log.py::test_get_audit_entries_returns_control_plane_and_message_entries_together`**
+    `spork logs` needed no new filtering — both kinds share one
+    unfiltered, oldest-first listing.
+
+599. **`core/state/test_audit_log.py::test_get_audit_entries_filtered_by_jmap_id_excludes_control_plane_entries`**
+    `--message-id` only ever matches per-message rows, by design.
+
+600. **`daemon/test_loop_edge_cases.py::test_run_message_loop_drains_pending_control_plane_events`**
+    A pre-queued `PendingAuditEvent` is written on the first iteration
+    and cleared from the pending list — proven directly against
+    `_run_message_loop()`.
+
+601. **`daemon/test_loop_edge_cases.py::test_run_message_loop_drains_pending_events_even_while_paused`**
+    Otherwise a repeated pause (or a resume the loop hasn't observed
+    yet) would never get its own audit entry written.
+
+602. **`daemon/test_loop_ipc.py::test_run_daemon_pause_and_resume_write_control_plane_audit_entries`**
+    End to end: pause/resume over a real socket against a real
+    running `run_daemon()` eventually produce `"daemon_paused"`/
+    `"daemon_resumed"` rows.
+
+603. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_enable_writes_a_control_plane_audit_entry`**
+    `detail_json` names the rule.
+
+604. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_disable_writes_a_control_plane_audit_entry`**
+
+605. **`cli/commands/test_config.py::test_config_edit_writes_a_control_plane_audit_entry_on_success`**
+
+606. **`cli/commands/test_config.py::test_config_edit_writes_no_audit_entry_on_a_rejected_save`**
+    A save that fails validation never reaches `load_config()`
+    successfully, so nothing gets written.
+
+607. **`cli/commands/test_reclassify.py::test_reclassify_writes_a_control_plane_audit_entry`**
+    Distinct from the per-message outcome row `process_message()`'s
+    own `WriteAuditEntryFilter` already writes.
+
+608. **`cli/commands/test_pause.py::test_pause_with_no_config_produces_a_clean_error`**
+    Same `ConfigLoadError`-before-ever-touching-the-socket convention
+    `spork status` already had.
+
+609. **`cli/commands/test_pause.py::test_resume_with_no_config_produces_a_clean_error`**
+
+610. **`core/test_secrets_edge_cases.py::test_secrets_repr_never_exposes_resolved_values`**
+    Security review finding: the default dataclass `__repr__` printed
+    every resolved secret's real value verbatim — confirmed
+    empirically before fixing.

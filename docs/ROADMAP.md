@@ -570,15 +570,35 @@ mailbox, with enough observability to actually explain what it did and
 why after the fact — not just correctness, but the ability to debug and
 audit correctness once it's running unattended.
 
-- [ ] Confidence threshold tuning pass against real triage volume (M)
-- [ ] Rate-limit / 429 handling verified against Fastmail's real limits (S)
-- [ ] Crash-loop / restart behavior verified (`Restart=on-failure`) (S)
-- [ ] Structured application logging: Python `logging` wired through
+- [ ] Confidence threshold tuning pass against real triage volume (M) —
+      genuinely blocked: needs real triage decisions from a live
+      account to tune against, same live-account blocker every prior
+      milestone's "not yet met" items share. Nothing to invent here
+      that wouldn't be tuning against fabricated data.
+- [ ] Rate-limit / 429 handling verified against Fastmail's real limits (S) —
+      genuinely blocked, same live-account reasoning; there's no real
+      429 response to verify against without one.
+- [ ] Crash-loop / restart behavior verified (`Restart=on-failure`) (S) —
+      the unit file itself has carried `Restart=on-failure` since M6
+      (`systemd/sporkd.service`); *verifying* it needs a real systemd
+      user session actually restarting a crashed `sporkd`, which this
+      sandbox doesn't have either (confirmed, M6: no `systemctl`/`pacman`
+      tooling here) — not re-confirmed instead of genuinely verified.
+- [x] Structured application logging: Python `logging` wired through
       `sporkd`/`spork` (level configurable via `config.toml`/CLI flag,
       journal-friendly output since M6 runs it under systemd) — separate
       from `audit_log` (§7.4), which is a per-message decision record,
-      not an operational log stream (M)
-- [ ] Per-message tracing through the pipeline: a correlation ID attached
+      not an operational log stream (M) — `spork.core.logging_setup.configure_logging()`:
+      one journal-friendly `StreamHandler` (no timestamp — journald
+      stamps its own; `extra` fields appended generically, the same
+      mechanism `PipelineObserver.trace()` already used for
+      `correlation_id`), no new dependency
+      (`systemd.journal.JournalHandler`), same call `sd_notify`'s own
+      hand-rolled implementation made (M6). `SporkConfig.log_level`
+      (default `"INFO"`); `sporkd --log-level` overrides it, never
+      merged; `spork --log-level` defaults to `"WARNING"` (a
+      short-lived CLI, not the daemon).
+- [x] Per-message tracing through the pipeline: a correlation ID attached
       to a message at ingestion, threaded through every Tier 1/Tier 2
       Filter/Selector/Augment stage (§9.4/§10.7) and included in that
       message's log lines, so one message's full journey — which
@@ -586,25 +606,79 @@ audit correctness once it's running unattended.
       from logs alone. Lightweight and stdlib-based (the correlation ID
       + structured logging above); no distributed-tracing dependency
       (OpenTelemetry etc.) — this is a single-process daemon, not a
-      distributed system, and a heavier dependency isn't justified (M)
-- [ ] Audit trail completeness: extend `audit_log` beyond per-message
+      distributed system, and a heavier dependency isn't justified (M) —
+      `spork.core.pipeline.tracing.{TracingStage,TracingSelector}`: a
+      generic wrapper around any `Filter`/`Augment`/`Selector`, applied
+      by `build_default_pipeline()`/`build_tier2_pipeline()` at
+      composition time to every stage they compose — no change to any
+      of the 8+13 concrete module classes, or to what their existing
+      bare-`Payload` unit tests exercise. Cross-tier stitching (Tier
+      1's correlation ID into Tier 2's, on escalation) stays a real,
+      separately-tracked open gap (§12.2) — not part of what this item
+      resolves.
+- [x] Audit trail completeness: extend `audit_log` beyond per-message
       triage outcomes to cover control-plane changes too — `spork rules
       enable/disable`, `spork config edit`, `spork pause`/`resume`,
       `spork reclassify` (M5) — so there's a full "what changed this
       daemon's behavior, and when" trail, not just "what happened to
-      this message" (M)
-- [ ] Security review pass against §15 (control socket perms, no
-      secrets on disk, no send capability) (M)
-- [ ] Full test suite green in CI; coverage of rule engine + action
-      executor especially (M)
-- [ ] Tag v1.0.0
+      this message" (M) — `StateDB.write_control_plane_audit_entry()`
+      (`jmap_id=""` sentinel, no schema change/migration needed).
+      `pause`/`resume` needed real design work, not just plumbing: a
+      first-draft "make the IPC handler async, write directly" doesn't
+      actually serialize against `_run_message_loop()`'s own in-flight
+      `to_thread(process_message, ...)` call — fixed by queuing a
+      `PendingAuditEvent` onto `DaemonState` instead (an in-memory
+      append, same as flipping `.paused`) and having
+      `_run_message_loop()` — the one code path that already safely
+      owns every `StateDB` access — drain it each iteration, even
+      while paused. One stated tradeoff: a pause/resume entry lands on
+      the next iteration, not synchronously with the IPC response.
+- [x] Security review pass against §15 (control socket perms, no
+      secrets on disk, no send capability) (M) — verified all six of
+      §15's claims against the actual code (grepped for `eval`/`exec`/
+      `pickle`/`shell=True`/`EmailSubmission`/`smtp`, not just re-read
+      the doc). Two real gaps found and fixed, not just documented:
+      the README never actually disclosed that ambiguous mail goes to
+      Claude despite §15 explicitly claiming it did (added a real
+      Privacy note); `Secrets` (`spork.core.secrets`) is a plain
+      `@dataclass` whose default `__repr__` printed every resolved
+      secret's real value verbatim — confirmed empirically before
+      fixing (`repr=False` + a custom `__repr__` showing only the
+      declared names).
+- [x] Full test suite green in CI; coverage of rule engine + action
+      executor especially (M) — `spork.core.rules`/`spork.core.actions.executor`
+      were already at 100% line *and* branch coverage before this
+      pass, with real edge-case tests already covering every
+      documented behavioral claim (AND semantics across multiple
+      `Condition` fields, classifier invoked at most once, `escalate`
+      rejected outright, `move`/`tag` rejected without a mailbox) —
+      prior milestones' own TDD discipline already met this, confirmed
+      rather than assumed. One small, cheap gap found and closed
+      opportunistically while checking the rest of the suite's
+      coverage: `spork pause`/`resume` had no test for a missing
+      `config.toml` (`spork status` already did). 653 tests, ruff+mypy
+      clean.
+- [ ] Tag v1.0.0 — not done here: gated on this milestone's own exit
+      criteria (below), which are gated on a live account this
+      environment doesn't have. A real-world-readiness call for the
+      maintainer to make once that week actually happens, not
+      something to do from this sandbox.
 
 **Exit criteria:** the daemon runs against the maintainer's real inbox for
 a full week with no manual intervention beyond normal `spork` CLI use, and
 no verdict-schema or action-executor bug reaches an unattended irreversible
 action. A week's worth of triage decisions and every control-plane change
 can be fully reconstructed from logs + the audit trail alone, without
-needing to re-derive anything from memory.
+needing to re-derive anything from memory. **5 of 9 checklist items above
+are done in the same sense every prior milestone's buildable-without-a-
+live-account items are** — real and tested, 653 tests all green. **The
+exit criterion itself is not met, and can't be from this sandbox**: it
+needs a live JMAP account (still M1's blocker) and a live Anthropic
+account running unattended for a full week, neither available here. The
+three remaining checklist items (confidence tuning, rate-limit
+verification, crash-loop verification) and the exit criterion all share
+that one blocker — not new scope invented for M7, the same one M1's own
+exit criteria has stated since the beginning.
 
 ## Stretch / post-v1 (not scoped, not blocking)
 

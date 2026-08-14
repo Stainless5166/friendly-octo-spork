@@ -189,6 +189,10 @@ adapter (`FileProvider`), is real and tested. M6's own exit criterion
 ("`spork status` reporting healthy" against a real account) still
 can't be fully met until M1 is — the unit file, `sd_notify`, the
 install flow, `spork doctor`'s checks, and the Arch package are all
-real regardless. M7 (hardening/v1 release) hasn't started. See
-`docs/ROADMAP.md` for the full milestone breakdown and what's still
-open within each.
+real regardless. M7 (hardening/v1 release) is 5/9: structured logging,
+per-message pipeline tracing, audit trail completeness, a security
+review pass, and rule-engine/action-executor coverage are all done;
+confidence tuning, rate-limit verification, crash-loop verification,
+and tagging v1.0.0 all share the same live-account/live-week blocker
+M7's own exit criteria state explicitly. See `docs/ROADMAP.md` for the
+full milestone breakdown and what's still open within each.
