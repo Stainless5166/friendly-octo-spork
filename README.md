@@ -175,6 +175,10 @@ you end up with `sporkd` running as a systemd **user** service.
   v1.
 - [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md) — test-by-test
   inventory, cross-checked against the roadmap.
+- [`docs/reports/`](docs/reports/) — dated, point-in-time status
+  snapshots (open the HTML file directly in a browser) — not kept in
+  sync like the three docs above; each one reflects the repo at the
+  commit it names.
 
 ## Status
 
