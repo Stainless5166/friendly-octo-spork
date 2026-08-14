@@ -193,6 +193,122 @@ def test_run_daemon_runs_an_escalated_message_through_tier2(tmp_path: Path) -> N
     assert row == ("tier2", "ignore")
 
 
+def _write_two_escalating_messages(path: Path) -> None:
+    """Two messages, both destined to escalate (docs/DESIGN.md §12.3's
+    "fires only once even across multiple escalations" acceptance
+    test needs a second escalation in the same run — one VIP sender
+    isn't enough to prove the daemon-level alert doesn't fire twice)."""
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "message_id": "msg-vip-1",
+                    "thread_id": "thread-vip-1",
+                    "from_address": "boss@example.com",
+                    "from_domain": "example.com",
+                    "subject": "Urgent one",
+                    "body_text": "Need this today.",
+                },
+                {
+                    "message_id": "msg-vip-2",
+                    "thread_id": "thread-vip-2",
+                    "from_address": "boss@example.com",
+                    "from_domain": "example.com",
+                    "subject": "Urgent two",
+                    "body_text": "Need this too.",
+                },
+            ]
+        )
+    )
+
+
+def _write_escalate_all_rules(path: Path) -> None:
+    path.write_text(
+        """
+        [[rule]]
+        id = "vip-senders"
+        when = { from_in = ["boss@example.com"] }
+        action = { type = "escalate", reason = "vip_sender", alert_immediately = true }
+        """
+    )
+
+
+def _config_with_exhausted_budget(tmp_path: Path) -> SporkConfig:
+    """Two escalating messages against a `daily_call_budget=0` — every
+    Tier 2 attempt lands on the budget_exhausted branch without ever
+    calling the (deliberately misconfigured, should-never-be-reached)
+    LLM client, same "budget check happens before any LLM call" fact
+    §10.4/§10.7 already rely on."""
+    messages_path = tmp_path / "messages.json"
+    _write_two_escalating_messages(messages_path)
+    rules_path = tmp_path / "rules.toml"
+    _write_escalate_all_rules(rules_path)
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text("{}")  # never consulted: budget_exhausted skips CallLLMAugment
+
+    return SporkConfig(
+        provider=BackendSpec(
+            spec="spork.core.providers.file.provider:FileProvider",
+            kwargs={
+                "messages_path": str(messages_path),
+                "actions_log_path": str(tmp_path / "actions.jsonl"),
+            },
+        ),
+        llm=BackendSpec(
+            spec="spork.core.llm.clients.recorded:RecordedLLMClient",
+            kwargs={"responses_path": str(responses_path)},
+        ),
+        alerts=BackendSpec(spec="spork.core.alerts.log:LoggingAlerter"),
+        rules_path=rules_path,
+        db_path=tmp_path / "state.sqlite3",
+        socket_path=tmp_path / "sporkd.sock",
+        tiering=TieringConfig(allowed_categories=["needs_reply"], daily_call_budget=0),
+    )
+
+
+def test_run_daemon_fires_a_daemon_level_alert_when_the_daily_budget_is_exhausted(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A daemon-health alert distinct from RecordBudgetExhaustedFilter's
+    existing per-message "Tier 2 skipped" alert (docs/DESIGN.md §12.3)
+    fires once the daily call budget is already gone."""
+    caplog.set_level(logging.INFO)
+    config = _config_with_exhausted_budget(tmp_path)
+
+    asyncio.run(_run_briefly(config))
+
+    assert "Daily LLM budget exhausted" in caplog.text
+
+
+def test_run_daemon_fires_the_daemon_level_budget_alert_only_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Both fixture messages escalate onto an already-exhausted budget
+    in the same run, but the one-shot-per-day daemon alert fires only
+    once — unlike the per-message RecordBudgetExhaustedFilter alert,
+    which fires for each of them."""
+    caplog.set_level(logging.INFO)
+    config = _config_with_exhausted_budget(tmp_path)
+
+    asyncio.run(_run_briefly(config))
+
+    assert caplog.text.count("Daily LLM budget exhausted") == 1
+
+
+def test_run_daemon_does_not_fire_the_daemon_level_budget_alert_when_budget_remains(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The ordinary VIP-escalation config (default daily_call_budget)
+    never trips the new daemon-health alert — it's specific to
+    exhaustion, not a side effect of any escalation."""
+    caplog.set_level(logging.INFO)
+    config = _config(tmp_path)
+
+    asyncio.run(_run_briefly(config))
+
+    assert "Daily LLM budget exhausted" not in caplog.text
+
+
 def test_run_daemon_stops_promptly_after_stop_event_is_set(tmp_path: Path) -> None:
     """run_daemon() actually returns once stop_event is set, rather
     than running forever — proven by awaiting it with a bounded
