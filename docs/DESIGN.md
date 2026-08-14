@@ -2270,6 +2270,12 @@ classDiagram
     }
     class Provider { <<Protocol>> }
     class Source { <<Protocol>> }
+    class CheckpointedSource { <<Protocol>> }
+    class MessageBatch {
+        <<dataclass, frozen>>
+        +messages: Sequence~NormalizedMessage~
+        +checkpoint: Optional~str~
+    }
     class LLMClient { <<Protocol>> }
     class DraftCreator { <<Protocol>> }
     class ThreadHistoryReader { <<Protocol>> }
@@ -2318,6 +2324,7 @@ classDiagram
     _run_until_signalled ..> run_daemon : awaits, stop_event set by SIGTERM/SIGINT handlers
     run_daemon ..> Secrets : resolve_runtime_secrets() once
     run_daemon ..> Provider : build_provider() -> build_source()/build_action_applier()/build_draft_creator()/build_thread_history_reader()/build_mailbox_lister()
+    run_daemon ..> StateDB : opens before source composition; reads account cursor
     run_daemon ..> LLMClient : build_llm_client(), optionally recording-wrapped
     run_daemon --> ActionExecutor : constructs
     run_daemon --> StateDB : opens
@@ -2328,6 +2335,9 @@ classDiagram
     run_daemon ..> _run_message_loop : both run inside one asyncio.TaskGroup (§6.2.2)
     run_daemon ..> IpcServer : .serve(stop_event)
     _run_message_loop --> Source : polls, via asyncio.to_thread (§6.2.1)
+    _run_message_loop ..> CheckpointedSource : uses poll_batch() when provider supports cursor checkpoints
+    CheckpointedSource ..> MessageBatch : returns candidate checkpoint
+    _run_message_loop --> StateDB : acknowledges checkpoint only after whole batch succeeds
     _run_message_loop --> DaemonState : skips poll()+processing while paused; drains pending_control_plane_events each iteration (M7, §6.2.2)
     _run_message_loop --> RulesState : reads .rules fresh every poll iteration (§6.2.2)
     _run_message_loop ..> process_message : Tier 1, via asyncio.to_thread

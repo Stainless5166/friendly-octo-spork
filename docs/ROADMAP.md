@@ -73,6 +73,13 @@ a forced network drop and reconnects. **Not yet met.** The authenticated
 client leaf is now real; the remaining blockers are cursor-safe daemon
 acknowledgement and the EventSource push/reconnect path.
 
+The next unit introduces a narrow optional `CheckpointedSource` protocol
+and immutable `MessageBatch`: ordinary providers continue to return
+messages, while JMAP returns a candidate Email state. `sporkd` opens
+`StateDB` before source composition, reads the account cursor, and writes
+the candidate only after all messages in that batch complete successfully.
+This is deliberately separate from EventSource transport work.
+
 ## M1a — Source / dispatch pipeline
 
 **Goal:** message acquisition (Trigger/ContentFetcher/Source) and
