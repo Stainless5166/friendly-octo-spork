@@ -217,6 +217,14 @@ provider/LLM/alerter builders used by daemon, doctor, and reclassify,
 and optional `[llm_recording]` configuration wraps the chosen client.
 The runtime module and changed config/daemon paths have 100% line
 coverage. **M5 is now 11/11 and the full suite is 684 tests, all green.**
+Updated once more for the first live JMAP leaf: `JmapClient.connect()`
+and `fetch_new_messages()` now authenticate through optional `jmapc`,
+baseline current Email state, page `Email/changes`, normalize Inbox
+messages, and return a candidate checkpoint under one `JmapError`
+boundary. The production path was manually verified against Fastmail
+without fetching historical message bodies; CI remains network-free.
+The changed JMAP client has 100% line coverage. **The full suite is 704
+tests, all green.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -293,25 +301,25 @@ verified).
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
-| `jmap.client` session bootstrap (`jmapc`) | 🟡 stub — raises `NotImplementedError` | ✅ (that it raises) — tests 49, 50 |
+| `jmap.client` session bootstrap (`jmapc`) | ✅ | ✅ — tests 49–50, 640–651; 100% line coverage plus a live Fastmail session/baseline check |
 | Mailbox role resolution + caching | ✅ | ✅ — tests 20–26 (7 tests) |
-| `Email/query`+`Email/get` batched fetch | 🟡 stub — same `JmapClient.fetch_new_messages()` | ✅ (that it raises) — test 50 |
+| `Email/changes`+`Email/get` batched fetch | ✅ client leaf; daemon acknowledgement still open | ✅ — tests 50, 640–651 |
 | EventSource push listener + backoff | 🟡 stub (listener) / ✅ (backoff math) | ✅ (that it raises) — tests 51, 52 / ✅ (math) — tests 16–19 |
 | Poll-based fallback | ✅ (real, network-free) | ✅ — tests 53–61 (9 tests) |
 | State DB (`push_cursor`, `processed_messages`) | ✅ | ✅ — tests 62–71 (10 tests) |
 | `spork doctor` | 🟡 stub — CLI wiring real, connectivity check raises `NotImplementedError` | ✅ (that it raises cleanly) — tests 147–149 |
 
-Three of these are genuinely done: mailbox resolution (unchanged),
+Five of these are genuinely done: session bootstrap, read-only fetch,
+mailbox resolution,
 poll-based fallback (`IntervalTimer` + `FallbackSource`, pure control
 flow, no network needed to build or test), and the state DB (SQLite,
 same story). The push-listener's backoff *scheduling* is real and
 tested too, separately from the listener itself.
 
-The other four — client session bootstrap, batched fetch, the actual
-push listener, and now `spork doctor`'s connectivity check — all
-genuinely require a live Fastmail session to implement for real, which
-this environment can't exercise honestly. Rather than leaving them
-untested, their shape is settled (constructor args, method
+The actual push listener and `spork doctor`'s connectivity check remain
+stubs. Cursor persistence also still needs a daemon acknowledgement
+contract before this client can ingest mail safely across crashes.
+Their shape remains settled (constructor args, method
 names/signatures, CLI wiring) and each raises a specific
 `NotImplementedError`, verified by a normal *passing* test (not
 `xfail` — the raise is the correct, specified behavior at this stage,
@@ -713,7 +721,7 @@ declared names.
 
 ---
 
-## Full test inventory (684 tests, all passing — 0 xfail)
+## Full test inventory (704 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -1029,21 +1037,19 @@ see each section heading). These pick back up at 72.
     exits cleanly rather than falling through to the daemon loop's
     `NotImplementedError`.
 
-### tests/core/providers/jmap — NotImplementedError-catching (M1)
+### tests/core/providers/jmap — live reads + remaining stubs (M1)
 
-These pass normally — raising `NotImplementedError` is the correct,
-specified behavior at this stage (see the M1 coverage table above),
-not a placeholder assertion.
+The read-side client tests are now real and network-free through an
+injected jmapc-shaped client. Push and mutation-side tests still pass
+normally by asserting their settled `NotImplementedError` behavior.
 
-49. **`test_client.py::test_connect_raises_not_implemented`**
-    Constructs `JmapClient(host=..., api_token=...)` and calls
-    `connect()`. Asserts `NotImplementedError`, confirming the
-    session-bootstrap placeholder is in place with the right shape.
+49. **`test_client.py::test_connect_authenticates_once_and_exposes_the_primary_account`**
+    Authenticates once despite two `connect()` calls, resolves the Inbox
+    role, and exposes the primary account ID used for cursor storage.
 
-50. **`test_client.py::test_fetch_new_messages_raises_not_implemented`**
-    Calls `client.fetch_new_messages(since_cursor=None)`. Asserts
-    `NotImplementedError`, covering the batched-fetch checklist item
-    (folded into this same method).
+50. **`test_client.py::test_first_fetch_baselines_current_email_state_without_replaying_history`**
+    `since_cursor=None` requests no Email objects and returns the current
+    state with an empty batch, preventing an implicit historical replay.
 
 51. **`test_push.py::test_wait_raises_not_implemented`**
     Constructs `JmapPushTrigger(client)` and calls `wait()` directly.
@@ -1172,12 +1178,10 @@ not a placeholder assertion.
     propagated from `JmapPushTrigger.wait()` — proving `JmapProvider`
     wires the real (if still-stubbed) pieces together.
 
-83. **`jmap/test_provider.py::test_content_fetcher_delegates_to_the_client_directly`**
-    Constructs `_JmapContentFetcher(client)` directly (not via
-    `build_source()`, where `wait()` would raise first and mask this)
-    and calls `.fetch()`. Asserts `NotImplementedError`, propagated from
-    `JmapClient.fetch_new_messages()` — proving the fetcher half is a
-    real delegation, not a second placeholder.
+83. **`jmap/test_provider.py::test_content_fetcher_returns_messages_from_the_clients_candidate_batch`**
+    The temporary TriggeredSource adapter unwraps messages from
+    `JmapFetchResult`; cursor acknowledgement remains a separate daemon
+    composition unit.
 
 84. **`test_loader.py::test_load_provider_imports_and_instantiates_by_spec`**
     Calls `load_provider(f"{__name__}:_FixtureProvider")` (a fixture
@@ -3478,3 +3482,43 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
 
 639. **`cli/commands/test_doctor_edge_cases.py::test_doctor_reports_alerter_failure_when_the_spec_is_bad`**
     A bad alerter spec is likewise reported cleanly and independently.
+
+### M1 live JMAP read follow-up (tests 640–651)
+
+640. **`core/providers/jmap/test_client.py::test_fetch_pages_created_messages_normalizes_and_filters_to_inbox`**
+    Exhausts multiple changes pages, fetches created objects, filters
+    non-Inbox mail, and normalizes sender/body/header fields.
+
+641. **`core/providers/jmap/test_client.py::test_session_and_request_failures_share_one_jmap_error_boundary`**
+    A backend failure becomes one catchable `JmapError`.
+
+642. **`core/providers/jmap/test_client_edge_cases.py::test_missing_optional_dependency_names_the_install_extra`**
+    Both lazy import paths identify `spork[jmap]` when absent.
+
+643. **`core/providers/jmap/test_client_edge_cases.py::test_default_factory_passes_credentials_to_jmapc`**
+    The production factory passes host and token to jmapc without
+    retaining another representation.
+
+644. **`core/providers/jmap/test_client_edge_cases.py::test_connect_rejects_missing_or_ambiguous_inbox_roles`**
+    Parametrized across no Inbox and duplicate Inbox-role mailboxes.
+
+645. **`core/providers/jmap/test_client_edge_cases.py::test_connect_rejects_incomplete_session_metadata`**
+    Rejects a missing mailbox list or primary account ID.
+
+646. **`core/providers/jmap/test_client_edge_cases.py::test_baseline_requires_a_nonempty_email_state`**
+    Refuses a checkpoint that cannot be resumed later.
+
+647. **`core/providers/jmap/test_client_edge_cases.py::test_empty_changes_advance_the_candidate_cursor_without_email_get`**
+    Empty change pages advance state without an unnecessary object fetch.
+
+648. **`core/providers/jmap/test_client_edge_cases.py::test_changes_reject_malformed_state_metadata`**
+    Invalid created IDs, states, and pagination flags fail closed.
+
+649. **`core/providers/jmap/test_client_edge_cases.py::test_email_get_failures_are_reported_at_the_jmap_boundary`**
+    Transport failures and malformed object lists share `JmapError`.
+
+650. **`core/providers/jmap/test_client_edge_cases.py::test_normalization_rejects_a_message_without_jmap_ids`**
+    Required transport identity fields cannot be fabricated.
+
+651. **`core/providers/jmap/test_client_edge_cases.py::test_normalization_tolerates_missing_optional_sender_body_and_headers`**
+    Optional RFC fields safely normalize to empty pipeline values.

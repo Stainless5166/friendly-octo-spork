@@ -31,22 +31,23 @@ CI runs on every push.
 **Goal:** the daemon can authenticate, resolve mailboxes, and fetch mail
 read-only. No actions taken yet.
 
-- [ ] `spork.core.providers.jmap.client`: session bootstrap via `jmapc`, secrets
-      wired through `secretspec` (M) — shape settled, `connect()` and
-      `fetch_new_messages()` (implemented as cursor-correct
-      `Email/changes`+`Email/get`, replacing the earlier inaccurate
-      “Email/query since cursor” wording) deliberately raise `NotImplementedError`:
-      a real jmapc session against a live Fastmail account is real-network
-      work this environment can't exercise honestly. See
-      `tests/core/providers/jmap/test_client.py`.
+- [x] `spork.core.providers.jmap.client`: session bootstrap via `jmapc`, secrets
+      wired through `secretspec` (M) — `connect()` performs authenticated
+      session discovery and Inbox-role resolution; `fetch_new_messages()`
+      baselines without replaying history, then uses cursor-correct
+      `Email/changes`+`Email/get` paging and returns a candidate Email-state
+      checkpoint with normalized Inbox messages. The earlier “Email/query
+      since cursor” wording was not valid JMAP and has been removed. CI uses
+      injected jmapc-shaped responses; the production factory and baseline
+      were also exercised successfully against the maintainer's live Fastmail
+      account without retrieving historical message bodies.
 - [x] Mailbox role resolution + caching (Inbox, Drafts, custom mailboxes) (S)
-- [ ] ~~`Email/changes` + `Email/get` batched fetch of new mail since a cursor (M)~~
+- [x] ~~`Email/changes` + `Email/get` batched fetch of new mail since a cursor (M)~~
       — folded into `JmapClient.fetch_new_messages()` above, same status.
 - [ ] EventSource push listener with reconnect/backoff (M) — backoff
       *scheduling* is done and tested (`spork.core.providers.jmap.backoff`); the
-      listener itself (`JmapPushTrigger.wait()`) is a settled-shape
-      `NotImplementedError` stub for the same live-connection reason as
-      the client. See `tests/core/providers/jmap/test_push.py`.
+      listener itself (`JmapPushTrigger.wait()`) remains a settled-shape
+      `NotImplementedError` stub. See `tests/core/providers/jmap/test_push.py`.
 - [x] Poll-based fallback when push is unavailable/disconnected (S) —
       real, tested implementation (`spork.core.sources.timer.IntervalTimer`
       + `spork.core.sources.fallback.FallbackSource`), pure control flow
@@ -57,8 +58,8 @@ read-only. No actions taken yet.
       wiring is real (the earlier "CLI framework isn't chosen yet"
       note is stale: Typer's been in use since M2's `spork rules
       test`); the connectivity check itself is a settled-shape
-      `NotImplementedError`, same blocker as `JmapClient.connect()`
-      above, caught and reported as a clean CLI error rather than a
+      `NotImplementedError`; it is not yet wired to the now-real configured
+      `JmapClient.connect()` path, and is caught as a clean CLI error rather than a
       traceback. Secrets/systemd/DB checks from docs/DESIGN.md §12
       aren't wired in yet — this command doesn't pretend to run them
       until it does. Originally blocked on `spork.core.config` not
@@ -68,10 +69,9 @@ read-only. No actions taken yet.
 
 **Exit criteria:** `sporkd` runs, logs each new inbox message's subject
 as it arrives (via push, verified by sending a real test email), survives
-a forced network drop and reconnects. **Not yet met** — still blocked on
-a real `jmapc` session (`JmapClient.connect()`/`JmapPushTrigger.wait()`),
-which needs a live Fastmail account and API token to actually build and
-test against, not just design.
+a forced network drop and reconnects. **Not yet met.** The authenticated
+client leaf is now real; the remaining blockers are cursor-safe daemon
+acknowledgement and the EventSource push/reconnect path.
 
 ## M1a — Source / dispatch pipeline
 
@@ -235,8 +235,8 @@ drives an action.
 - [x] Draft creation path (`Email/set` into Drafts, never `EmailSubmission`) (M) —
       `Provider` gains `build_draft_creator()` (§9.3, §10.6); `JmapClient.create_draft()`
       is a fourth settled-shape `NotImplementedError` stub (needs a
-      live Fastmail session, same as `connect()`/`fetch_new_messages()`/
-      `apply_action()`); `FileProvider.build_draft_creator()` is real,
+      live Fastmail write contract, unlike the now-real read-only
+      `connect()`/`fetch_new_messages()` path); `FileProvider.build_draft_creator()` is real,
       appending to a second JSON-lines log distinct from the actions
       one. Never wired to `EmailSubmission` anywhere — §11's invariant
       enforced by omission.
@@ -265,9 +265,8 @@ test run. **All 7 original items above, plus the Tier 2 pipeline wiring,
 are done in the same sense M1's JMAP work is "done"; the LiteLLM
 integration follow-up is now done too.** The exit
 criterion is still **not yet met** as an
-end-to-end exit criterion, still blocked on the same live Fastmail
-session M1 needs (`JmapClient.connect()`/`fetch_new_messages()`/
-`apply_action()`/`create_draft()`) plus a live model API session through
+end-to-end exit criterion, still blocked on the Fastmail write path
+(`JmapClient.apply_action()`/`create_draft()`) plus a live model API session through
 `LiteLLMClient` to swap in for `RecordedLLMClient`.
 One piece is deliberately still unbuilt even with those two live
 sessions: deciding *which* escalated message needs a Tier 2 run — Tier
@@ -574,9 +573,9 @@ without a live JMAP/Anthropic account or an actual Arch machine is real
 and tested (604 tests, this milestone's own). **The exit criterion
 itself is not yet met**, and can't be until M1 is: `sporkd` under a
 freshly-installed unit still can't stay up against a real Fastmail
-account, because `JmapClient.connect()`/`fetch_new_messages()` are
-still the settled-shape `NotImplementedError` stubs M1 describes — the
-first live poll would raise, taking the daemon down shortly after
+      account, because cursor-safe daemon ingestion and JMAP push remain
+      incomplete — the first live poll still reaches the push-listener stub,
+      taking the daemon down shortly after
 `sd_notify`'s own `READY=1` fires. Every piece of *this* milestone's
 own scope (the unit file, `sd_notify`, the install flow, `spork
 doctor`'s checks, the package) is real; "running healthy against a

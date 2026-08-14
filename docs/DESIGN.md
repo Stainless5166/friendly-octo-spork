@@ -4328,9 +4328,12 @@ WantedBy=default.target
 
 - **Unit:** rule engine (condition matching), verdict schema validation,
   action executor (mocked JMAP client), state DB migrations.
-- **Contract/integration:** `jmapc` calls exercised against a recorded
-  fixture (VCR-style cassette) of real (sanitized) JMAP responses, so
-  tests don't require a live Fastmail account or network access in CI.
+- **Contract/integration:** `JmapClient` accepts a narrow injected client
+  factory; CI exercises jmapc request classes against recorded-shaped,
+  sanitized response objects, including paging and malformed responses,
+  without a live Fastmail account or network access. Manual acceptance
+  separately verifies the production factory against Fastmail without
+  placing credentials or mailbox content in fixtures.
 - **LLM:** prompt → verdict tests run against recorded Claude API
   responses for a fixed set of sample emails (not live calls in CI);
   a small manual/eval script (not CI-gated) for prompt-quality iteration
