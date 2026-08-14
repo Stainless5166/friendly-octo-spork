@@ -124,8 +124,7 @@ class JmapClient:
     def account_id(self) -> str:
         """Return the connected primary account ID used as the cursor key."""
         self.connect()
-        if self._account_id is None:
-            raise JmapError("JMAP session has no primary mail account")
+        assert self._account_id is not None
         return self._account_id
 
     def fetch_new_messages(self, since_cursor: str | None) -> JmapFetchResult:
@@ -192,8 +191,7 @@ class JmapClient:
 
     def _request(self, method: object) -> object:
         """Apply the module's single error boundary to one JMAP method."""
-        if self._client is None:
-            raise JmapError("JMAP client is not connected")
+        assert self._client is not None
         try:
             return self._client.request(method, raise_errors=True)
         except Exception as exc:
