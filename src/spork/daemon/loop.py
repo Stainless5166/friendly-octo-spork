@@ -28,7 +28,12 @@ from spork.core.llm.budget import has_budget_remaining
 from spork.core.pipeline import process_message
 from spork.core.pipeline.observer import PipelineObserver
 from spork.core.pipeline.tier2.escalate import escalate_message
-from spork.core.providers.base import DraftCreator, MailboxLister, ThreadHistoryReader
+from spork.core.providers.base import (
+    CheckpointedProvider,
+    DraftCreator,
+    MailboxLister,
+    ThreadHistoryReader,
+)
 from spork.core.rules.loader import load_rules
 from spork.core.rules.schema import Action
 from spork.core.runtime import (
@@ -38,7 +43,7 @@ from spork.core.runtime import (
     resolve_runtime_secrets,
 )
 from spork.core.secrets import Secrets
-from spork.core.sources.base import Source
+from spork.core.sources.base import CheckpointedSource, Source
 from spork.core.state.db import StateDB
 from spork.core.systemd.notify import notify
 from spork.daemon.state import DaemonState, PendingAuditEvent, RulesState
@@ -80,7 +85,6 @@ async def run_daemon(
         secrets if secrets is not None else resolve_runtime_secrets(config, reason="start sporkd")
     )
     provider = build_provider(config, runtime_secrets)
-    source = provider.build_source()
     executor = ActionExecutor(provider.build_action_applier())
     draft_creator = provider.build_draft_creator()
     thread_history_reader = provider.build_thread_history_reader()
@@ -114,14 +118,20 @@ async def run_daemon(
         socket_path, handlers=_build_ipc_handlers(daemon_state, rules_state, config.rules_path)
     )
 
-    # Everything above can fail loudly (a bad provider/rules/llm/alerts
-    # spec); only once composition has actually succeeded is this
-    # process "ready" in any meaningful sense — docs/DESIGN.md §14.
-    # A safe no-op outside a Type=notify unit (every test, every plain
-    # `uv run sporkd`): notify()/notify_fn never raises.
-    notify_fn("READY=1")
-
     with StateDB(config.db_path) as state_db:
+        checkpoint_account_id: str | None = None
+        source: Source
+        if isinstance(provider, CheckpointedProvider):
+            checkpoint_account_id = provider.account_id()
+            source = provider.build_checkpointed_source(state_db.get_cursor(checkpoint_account_id))
+        else:
+            source = provider.build_source()
+
+        # Everything above can fail loudly (including JMAP session
+        # discovery); only once composition and cursor loading have
+        # succeeded is this process "ready" in a meaningful sense.
+        notify_fn("READY=1")
+
         async with asyncio.TaskGroup() as tg:
             tg.create_task(
                 _run_message_loop(
@@ -140,6 +150,7 @@ async def run_daemon(
                     daemon_state=daemon_state,
                     stop_event=stop_event,
                     idle_delay_seconds=idle_delay_seconds,
+                    cursor_account_id=checkpoint_account_id,
                 )
             )
             tg.create_task(ipc_server.serve(stop_event))
@@ -253,6 +264,7 @@ async def _run_message_loop(
     stop_event: asyncio.Event,
     idle_delay_seconds: float,
     now: Callable[[], str] = _utc_now_iso,
+    cursor_account_id: str | None = None,
 ) -> None:
     """Repeatedly poll `source` and run each message through Tier 1,
     escalating to Tier 2 in the same cycle when Tier 1 routes
@@ -308,9 +320,18 @@ async def _run_message_loop(
         if daemon_state.paused:
             await asyncio.sleep(idle_delay_seconds)
             continue
-        messages = await asyncio.to_thread(source.poll)
+        checkpointed_source = source if isinstance(source, CheckpointedSource) else None
+        if checkpointed_source is None:
+            messages = await asyncio.to_thread(source.poll)
+            checkpoint = None
+        else:
+            batch = await asyncio.to_thread(checkpointed_source.poll_batch)
+            messages = batch.messages
+            checkpoint = batch.checkpoint
         rules = rules_state.rules
         if not messages:
+            if checkpoint is not None and cursor_account_id is not None:
+                await asyncio.to_thread(state_db.set_cursor, cursor_account_id, checkpoint)
             await asyncio.sleep(idle_delay_seconds)
             continue
         for message in messages:
@@ -356,3 +377,5 @@ async def _run_message_loop(
                     ops=ops,
                     now=now,
                 )
+        if checkpoint is not None and cursor_account_id is not None:
+            await asyncio.to_thread(state_db.set_cursor, cursor_account_id, checkpoint)
