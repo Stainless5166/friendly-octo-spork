@@ -286,13 +286,24 @@ def test_run_daemon_fires_the_daemon_level_budget_alert_only_once(
     """Both fixture messages escalate onto an already-exhausted budget
     in the same run, but the one-shot-per-day daemon alert fires only
     once — unlike the per-message RecordBudgetExhaustedFilter alert,
-    which fires for each of them."""
+    which fires for each of them.
+
+    Counts actual deliveries (records from LoggingAlerter's own
+    logger), not raw substring occurrences in caplog.text — a single
+    PipelineObserver.alert() call legitimately logs the same title
+    twice (once via trace(), once via the delivery itself), so a
+    plain text.count() would overcount even one real alert."""
     caplog.set_level(logging.INFO)
     config = _config_with_exhausted_budget(tmp_path)
 
     asyncio.run(_run_briefly(config))
 
-    assert caplog.text.count("Daily LLM budget exhausted") == 1
+    deliveries = [
+        r
+        for r in caplog.records
+        if r.name == "spork.core.alerts.log" and "Daily LLM budget exhausted" in r.getMessage()
+    ]
+    assert len(deliveries) == 1
 
 
 def test_run_daemon_does_not_fire_the_daemon_level_budget_alert_when_budget_remains(
