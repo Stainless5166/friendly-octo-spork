@@ -23,9 +23,9 @@ see "Keeping docs in sync" below.
   group, `sporkd` is a single-command app.
 - **pydantic** for the rule schema and the Tier 2 `Verdict` schema;
   **SecretSpec** for secrets (`secretspec.toml` + `spork.core.secrets`);
-  **jmapc** for JMAP and **anthropic** for the Claude API (neither yet
-  a dependency — both still behind `NotImplementedError` stubs, see
-  below).
+  **jmapc** for JMAP (still behind `NotImplementedError` stubs) and
+  optional **LiteLLM** for in-process Tier 2 provider routing/tool
+  calling; recorded LLM fixtures need no live SDK or API call.
 - **ruff** (lint + format), **mypy --strict**, **pytest** + **pytest-cov**.
 
 ## Architecture in one paragraph

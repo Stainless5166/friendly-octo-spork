@@ -2,7 +2,7 @@
 
 A Python-based email triage tool targeting the JMAP spec (built for
 Fastmail). Listens for new mail via JMAP push, runs it through a tiered
-pipeline — cheap rules first, LLM (Claude) only when ambiguous or
+pipeline — cheap rules first, an LLM only when ambiguous or
 important — and files, tags, or drafts a reply, alerting a human for
 anything uncertain or high-stakes. Never auto-sends.
 
@@ -14,16 +14,18 @@ Ships as two executables:
 - **`spork`** — the CLI. Check daemon status, edit configuration, and
   manage/test triage rules.
 
-Secrets (JMAP API token, Anthropic API key, etc.) are declared with
+Secrets (JMAP API token, model-provider API key, etc.) are declared with
 [SecretSpec](https://github.com/cachix/secretspec) rather than `.env`
 files. Dependencies are managed with [UV](https://docs.astral.sh/uv/).
 
 **Privacy note:** when a message doesn't match any Tier 1 rule and
-needs a judgment call, its cleaned body text is sent to Claude (the
-Anthropic API) for classification — that's the whole point of Tier 2.
+needs a judgment call, its cleaned body text is sent through LiteLLM
+to the configured model provider for classification — that's the whole
+point of Tier 2.
 Only use `spork` if you're comfortable with ambiguous mail going to
-Claude. Rule-matched mail (Tier 1) never leaves your machine; nothing
-is ever auto-sent to anyone regardless of tier (docs/DESIGN.md §15).
+that configured provider. Rule-matched mail (Tier 1) never leaves your
+machine; nothing is ever auto-sent to anyone regardless of tier
+(docs/DESIGN.md §15).
 
 ## Quickstart
 
@@ -53,6 +55,11 @@ you end up with `sporkd` running as a systemd **user** service.
    $ cd friendly-octo-spork
    $ uv sync
    ```
+
+   `litellm` is an optional runtime dependency. The repository's dev
+   environment installs it for tests; a production live-LLM install
+   uses `uv tool install '.[llm]'`. `RecordedLLMClient` needs no LLM
+   extra.
 
 2. **Set up secrets** ([SecretSpec](https://github.com/cachix/secretspec),
    §7.3 of `docs/DESIGN.md`). `spork` depends only on SecretSpec's

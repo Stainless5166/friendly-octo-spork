@@ -3,8 +3,7 @@
 An LLM client is named in config as a "module.path:ClassName" spec and
 resolved via `importlib` at startup — identical mechanics to
 `spork.core.providers.loader.load_provider`: a client's dependencies
-(the `anthropic` SDK, an eventual other provider's SDK) only get
-imported if that client is the one actually configured.
+(`litellm` today) only get imported if that client is configured.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ def load_llm_client(spec: str, /, **kwargs: Any) -> LLMClient:
     """Load and construct an LLMClient from a "module.path:ClassName" spec.
 
     `kwargs` pass straight through to the client's constructor (e.g.
-    `api_key=`/`model=` for `AnthropicLLMClient`) — this function
+    `api_key=`/`model=` for `LiteLLMClient`) — this function
     doesn't know or care what any given client's constructor needs.
     """
     module_path, sep, class_name = spec.partition(":")
@@ -52,6 +51,6 @@ def load_llm_client(spec: str, /, **kwargs: Any) -> LLMClient:
 
     try:
         client: LLMClient = client_cls(**kwargs)
-    except TypeError as exc:
+    except Exception as exc:
         raise LLMClientLoadError(f"could not construct LLM client {spec!r}: {exc}") from exc
     return client

@@ -64,11 +64,13 @@ def test_get_verdict_returns_the_recorded_verdict_for_a_matching_subject(
     _write_responses(responses_path)
     client = RecordedLLMClient(responses_path)
 
-    verdict = client.get_verdict(_request("Re: Thursday call"))
+    result = client.get_verdict(_request("Re: Thursday call"))
 
-    assert isinstance(verdict, Verdict)
-    assert verdict.category == "needs_reply"
-    assert verdict.suggested_action.mailbox == "Needs-Reply"
+    assert isinstance(result.verdict, Verdict)
+    assert result.verdict.category == "needs_reply"
+    assert result.verdict.suggested_action.mailbox == "Needs-Reply"
+    assert result.usage.tokens_in == 0
+    assert result.usage.tokens_out == 0
 
 
 def test_get_verdict_returns_different_verdicts_for_different_subjects(
@@ -84,8 +86,8 @@ def test_get_verdict_returns_different_verdicts_for_different_subjects(
     first = client.get_verdict(_request("Re: Thursday call"))
     second = client.get_verdict(_request("Newsletter"))
 
-    assert first.category == "needs_reply"
-    assert second.category == "fyi"
+    assert first.verdict.category == "needs_reply"
+    assert second.verdict.category == "fyi"
 
 
 def test_get_verdict_raises_for_a_subject_with_no_recorded_response(tmp_path: Path) -> None:

@@ -1,10 +1,4 @@
-"""The common contract every Tier 2 (LLM) backend adapts to (docs/DESIGN.md §10.1).
-
-Mirrors spork.core.providers.base's Provider pattern: Claude is the
-only backend spork talks to today, but nothing downstream of
-`LLMClient` should need to know that — a second backend is an
-addition, not a rewrite.
-"""
+"""The common contract every Tier 2 (LLM) backend adapts to (docs/DESIGN.md §10.1)."""
 
 from __future__ import annotations
 
@@ -84,12 +78,28 @@ class Verdict(BaseModel):
         return action
 
 
+@dataclass(frozen=True, slots=True)
+class LLMCallUsage:
+    """Token counts from one external LLM call, before daily aggregation."""
+
+    tokens_in: int
+    tokens_out: int
+
+
+@dataclass(frozen=True, slots=True)
+class LLMResult:
+    """The validated verdict and usage returned across the LLMClient boundary."""
+
+    verdict: Verdict
+    usage: LLMCallUsage
+
+
 class LLMClient(Protocol):
-    """What every Tier 2 backend (Claude today, others later) adapts to.
+    """What every Tier 2 backend adapts to.
 
     A `Protocol`, not an ABC — a backend never needs to import or
     inherit from anything here to satisfy it, same as
     `spork.core.providers.base.Provider`.
     """
 
-    def get_verdict(self, request: VerdictRequest) -> Verdict: ...
+    def get_verdict(self, request: VerdictRequest) -> LLMResult: ...

@@ -205,6 +205,17 @@ drives an action.
       real constructor/method signature, `get_verdict()` a clean
       `NotImplementedError` until a live Anthropic API session is
       possible — no `anthropic` import yet, same as `jmapc`.
+- [x] Replace the direct-Anthropic settled-shape stub with a real
+      in-process `LiteLLMClient` using a forced `deliver_verdict` tool
+      call; add exact prompt construction, real token usage, and an
+      append-only acceptance-corpus recorder. `litellm` is an optional
+      `spork[llm]` dependency; LiteLLM proxy mode is explicitly out of
+      scope for v1. Live corpora are written under the gitignored
+      `tests/fixtures/corpus/` and may be supplied privately to CI from
+      S3 later (M) — implemented with an SDK-independent prompt
+      builder, lazy optional import, mocked upstream acceptance tests,
+      real usage propagation, and 100% coverage on the changed LLM/Tier
+      2 modules.
 - [x] Verdict validation against configured mailbox/category set (S) —
       `spork.core.llm.validate.validate_verdict()` (§10.2): checks
       `category`/`suggested_action.mailbox` against sets passed in
@@ -236,8 +247,8 @@ drives an action.
 
 - [x] Tier 2 pipeline wired end to end (§10.7) —
       `spork.core.pipeline.tier2` (`Tier2Meta` + 13 modules +
-      `build_tier2_pipeline()`/`process_tier2_message()`) composes all
-      seven items above into one runnable pipeline: budget gate → LLM
+      `build_tier2_pipeline()`/`process_tier2_message()`) composes the
+      seven original items into one runnable pipeline: budget gate → LLM
       call → usage recording → verdict validation → confidence gating
       → action application/draft creation → audit → idempotency.
       `test_default.py` runs it end to end against `RecordedLLMClient`
@@ -249,13 +260,14 @@ drives an action.
 **Exit criteria:** an escalated test email gets a sane structured verdict,
 the corresponding action is applied, and a drafted reply lands in Drafts
 un-sent. Budget cutoff verified by lowering `daily_call_budget` to 1 in a
-test run. **All 7 items above, plus the Tier 2 pipeline wiring, are done
-in the same sense M1's JMAP work is "done"** — every piece buildable
-without a live account is real and tested; **not yet met** as an
+test run. **All 7 original items above, plus the Tier 2 pipeline wiring,
+are done in the same sense M1's JMAP work is "done"; the LiteLLM
+integration follow-up is now done too.** The exit
+criterion is still **not yet met** as an
 end-to-end exit criterion, still blocked on the same live Fastmail
 session M1 needs (`JmapClient.connect()`/`fetch_new_messages()`/
-`apply_action()`/`create_draft()`) plus a live Anthropic API session
-(`AnthropicLLMClient.get_verdict()`) to swap in for `RecordedLLMClient`.
+`apply_action()`/`create_draft()`) plus a live model API session through
+`LiteLLMClient` to swap in for `RecordedLLMClient`.
 One piece is deliberately still unbuilt even with those two live
 sessions: deciding *which* escalated message needs a Tier 2 run — Tier
 1's escalate branch already marks a message processed (the interim M2

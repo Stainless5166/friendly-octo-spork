@@ -13,7 +13,7 @@ import pytest
 
 from spork.core.actions.executor import ActionExecutor
 from spork.core.alerts.base import AlertUrgency
-from spork.core.llm.base import Verdict
+from spork.core.llm.base import LLMResult, Verdict, VerdictRequest
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline.core import Payload
 from spork.core.pipeline.meta import MissingMetaError
@@ -54,7 +54,7 @@ class _RecordingDraftCreator:
 
 
 class _StubLLMClient:
-    def get_verdict(self, request: object) -> Verdict:  # pragma: no cover - never called
+    def get_verdict(self, request: VerdictRequest) -> LLMResult:  # pragma: no cover - never called
         raise NotImplementedError
 
 
@@ -101,6 +101,15 @@ def test_record_llm_usage_filter_raises_when_ts_is_missing(tmp_path: Path, make_
     with StateDB(tmp_path / "state.sqlite3") as db:
         with pytest.raises(MissingMetaError):
             RecordLLMUsageFilter(db).apply(_payload(make_message))
+
+
+def test_record_llm_usage_filter_raises_when_call_usage_is_missing(
+    tmp_path: Path, make_message
+) -> None:
+    """A timestamp alone cannot invent token counts for a call result."""
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        with pytest.raises(MissingMetaError, match="meta.llm_usage"):
+            RecordLLMUsageFilter(db).apply(_payload(make_message, ts="2026-08-14T10:00:00+00:00"))
 
 
 def test_validate_verdict_filter_raises_when_verdict_is_missing(make_message) -> None:
