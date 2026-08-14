@@ -112,7 +112,7 @@ class BuildVerdictRequestFilter:
 class CallLLMAugment:
     """The one Augment in this pipeline — the only stage that reaches
     outside the payload. Calls `llm_client.get_verdict()`, the seam
-    the external Anthropic API sits behind (§10.7): swap in a real
+    the external model API sits behind (§10.7): swap in a real
     client once it's ready, nothing else here changes.
     """
 
@@ -125,8 +125,15 @@ class CallLLMAugment:
             raise MissingMetaError(
                 "CallLLMAugment requires meta.request — run BuildVerdictRequestFilter first"
             )
-        verdict = self._llm_client.get_verdict(request)
-        return dataclasses.replace(payload, meta=dataclasses.replace(payload.meta, verdict=verdict))
+        result = self._llm_client.get_verdict(request)
+        return dataclasses.replace(
+            payload,
+            meta=dataclasses.replace(
+                payload.meta,
+                verdict=result.verdict,
+                llm_usage=result.usage,
+            ),
+        )
 
 
 class RecordLLMUsageFilter:
@@ -134,11 +141,8 @@ class RecordLLMUsageFilter:
     happens — the call cost budget regardless of whether the response
     later fails validation (§10.4, §10.7).
 
-    Known limitation: recorded with tokens_in=tokens_out=0.
-    `LLMClient.get_verdict()` returns a `Verdict`, not a token-usage
-    figure, so real counts aren't available until a live client
-    reports them — call-count enforcement doesn't need them, but
-    `spork status`'s token-spend display will read zeros until then.
+    Reads the per-call usage returned at the LLMClient boundary;
+    recorded/offline clients return zero because no external call was made.
     """
 
     def __init__(self, state_db: StateDB) -> None:
@@ -150,7 +154,14 @@ class RecordLLMUsageFilter:
             raise MissingMetaError(
                 "RecordLLMUsageFilter requires meta.ts — run TimestampFilter first"
             )
-        self._state_db.record_llm_call(ts[:10], tokens_in=0, tokens_out=0)
+        usage = payload.meta.llm_usage
+        if usage is None:
+            raise MissingMetaError(
+                "RecordLLMUsageFilter requires meta.llm_usage — run CallLLMAugment first"
+            )
+        self._state_db.record_llm_call(
+            ts[:10], tokens_in=usage.tokens_in, tokens_out=usage.tokens_out
+        )
         return payload
 
 

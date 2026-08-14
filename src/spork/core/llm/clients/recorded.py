@@ -2,7 +2,7 @@
 
 The LLMClient equivalent of `spork.core.providers.file.FileProvider`
 (§9.3): a second, fully real adapter with no `NotImplementedError`
-anywhere, for CI and offline dry-runs — `AnthropicLLMClient` can't be
+anywhere, for CI and offline dry-runs — `LiteLLMClient` can't be
 exercised in CI (no live API key, and even with one a real call is
 slow, costs money, and isn't deterministic). Not a way to fake a live
 verdict for production use — same caveat `FileProvider` states for
@@ -16,7 +16,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from spork.core.llm.base import Verdict, VerdictRequest
+from spork.core.llm.base import LLMCallUsage, LLMResult, Verdict, VerdictRequest
 
 
 class RecordedResponsesLoadError(ValueError):
@@ -79,11 +79,12 @@ class RecordedLLMClient:
     def __init__(self, responses_path: str | Path) -> None:
         self._responses = load_recorded_responses(responses_path)
 
-    def get_verdict(self, request: VerdictRequest) -> Verdict:
+    def get_verdict(self, request: VerdictRequest) -> LLMResult:
         try:
-            return self._responses[request.subject]
+            verdict = self._responses[request.subject]
         except KeyError as exc:
             raise UnrecordedResponseError(
                 f"no recorded response for subject {request.subject!r}; "
                 f"known subjects: {sorted(self._responses)}"
             ) from exc
+        return LLMResult(verdict=verdict, usage=LLMCallUsage(tokens_in=0, tokens_out=0))
