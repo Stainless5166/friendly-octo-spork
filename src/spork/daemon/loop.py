@@ -77,9 +77,7 @@ async def run_daemon(
     daemon_state.started_at = datetime.now(UTC).isoformat()
 
     runtime_secrets = (
-        secrets
-        if secrets is not None
-        else resolve_runtime_secrets(config, reason="start sporkd")
+        secrets if secrets is not None else resolve_runtime_secrets(config, reason="start sporkd")
     )
     provider = build_provider(config, runtime_secrets)
     source = provider.build_source()
