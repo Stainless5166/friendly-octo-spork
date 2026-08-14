@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from spork.core.actions.executor import ActionExecutor
-from spork.core.llm.base import Verdict, VerdictRequest
+from spork.core.llm.base import LLMCallUsage, LLMResult, Verdict, VerdictRequest
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline.core import Payload
 from spork.core.pipeline.observer import PipelineObserver
@@ -69,9 +69,12 @@ class _StubLLMClient:
         self._verdict = verdict
         self.requests: list[VerdictRequest] = []
 
-    def get_verdict(self, request: VerdictRequest) -> Verdict:
+    def get_verdict(self, request: VerdictRequest) -> LLMResult:
         self.requests.append(request)
-        return self._verdict
+        return LLMResult(
+            verdict=self._verdict,
+            usage=LLMCallUsage(tokens_in=17, tokens_out=9),
+        )
 
 
 def _verdict(**overrides: object) -> Verdict:
@@ -179,12 +182,18 @@ def test_call_llm_augment_delegates_to_the_client_and_sets_the_verdict(make_mess
 def test_record_llm_usage_filter_records_one_call(tmp_path: Path, make_message) -> None:
     """A call is recorded against meta.ts's date."""
     with StateDB(tmp_path / "state.sqlite3") as db:
-        payload = _payload(make_message, ts="2026-08-12T10:00:00Z")
+        payload = _payload(
+            make_message,
+            ts="2026-08-12T10:00:00Z",
+            llm_usage=LLMCallUsage(tokens_in=17, tokens_out=9),
+        )
         RecordLLMUsageFilter(db).apply(payload)
 
         usage = db.get_llm_usage("2026-08-12")
 
     assert usage.calls == 1
+    assert usage.tokens_in == 17
+    assert usage.tokens_out == 9
 
 
 def test_validate_verdict_filter_passes_through_a_valid_verdict(make_message) -> None:

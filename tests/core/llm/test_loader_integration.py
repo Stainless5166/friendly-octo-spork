@@ -13,22 +13,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from spork.core.llm.base import VerdictRequest
-from spork.core.llm.clients.anthropic import AnthropicLLMClient
+from spork.core.llm.clients.litellm import LiteLLMClient
 from spork.core.llm.clients.recorded import RecordedLLMClient
 from spork.core.llm.loader import load_llm_client
 
 
-def test_load_llm_client_resolves_anthropic_llm_client_by_its_documented_spec() -> None:
-    """The exact spec string §10.1 documents for config.toml resolves
-    to a real AnthropicLLMClient, constructed with the given kwargs."""
+def test_load_llm_client_resolves_litellm_client_by_its_documented_spec() -> None:
+    """The exact config spec resolves to a real LiteLLMClient."""
     client = load_llm_client(
-        "spork.core.llm.clients.anthropic:AnthropicLLMClient", api_key="fake-key"
+        "spork.core.llm.clients.litellm:LiteLLMClient",
+        model="anthropic/claude-sonnet-4-5",
+        completion=lambda **_: None,
     )
 
-    assert isinstance(client, AnthropicLLMClient)
+    assert isinstance(client, LiteLLMClient)
 
 
 def test_load_llm_client_resolves_recorded_llm_client_by_its_documented_spec(
@@ -67,25 +66,4 @@ def test_load_llm_client_resolves_recorded_llm_client_by_its_documented_spec(
         thread_user_has_replied=False,
         available_mailboxes=(),
     )
-    assert client.get_verdict(request).category == "fyi"
-
-
-def test_load_llm_client_propagates_anthropic_client_get_verdict_not_implemented() -> None:
-    """A loaded AnthropicLLMClient still behaves like the real class —
-    get_verdict() raises NotImplementedError, not something the loader
-    itself would swallow or change."""
-    client = load_llm_client(
-        "spork.core.llm.clients.anthropic:AnthropicLLMClient", api_key="fake-key"
-    )
-    request = VerdictRequest(
-        subject="s",
-        from_address="a@example.com",
-        to_addresses=(),
-        cleaned_body="body",
-        thread_prior_subject=None,
-        thread_user_has_replied=False,
-        available_mailboxes=(),
-    )
-
-    with pytest.raises(NotImplementedError):
-        client.get_verdict(request)
+    assert client.get_verdict(request).verdict.category == "fyi"
