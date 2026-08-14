@@ -23,7 +23,7 @@ from spork.core.providers.base import (
 from spork.core.providers.jmap.client import JmapClient, JmapFetchResult
 from spork.core.providers.jmap.push import JmapPushTrigger
 from spork.core.rules.schema import Action
-from spork.core.sources.base import Source
+from spork.core.sources.base import CheckpointedSource, MessageBatch, Source, Trigger
 from spork.core.sources.triggered import TriggeredSource
 
 
@@ -51,6 +51,31 @@ class _JmapContentFetcher:
 
     def fetch(self) -> Sequence[NormalizedMessage]:
         return self._client.fetch_new_messages(since_cursor=self._cursor).messages
+
+
+class _JmapCheckpointedSource:
+    """Push-triggered JMAP source that exposes a candidate Email state."""
+
+    def __init__(
+        self,
+        client: JmapClient,
+        cursor: str | None,
+        *,
+        trigger: Trigger | None = None,
+    ) -> None:
+        self._client = client
+        self._cursor = cursor
+        self._trigger = trigger if trigger is not None else JmapPushTrigger(client)
+
+    def poll_batch(self) -> MessageBatch:
+        self._trigger.wait()
+        result = self._client.fetch_new_messages(since_cursor=self._cursor)
+        self._cursor = result.cursor
+        return MessageBatch(messages=result.messages, checkpoint=result.cursor)
+
+    def poll(self) -> Sequence[NormalizedMessage]:
+        """Expose the ordinary Source view for generic callers."""
+        return self.poll_batch().messages
 
 
 class _JmapActionApplier:
@@ -138,6 +163,14 @@ class JmapProvider:
         trigger = JmapPushTrigger(self._client)
         fetcher = _JmapContentFetcher(self._client, cursor=self._cursor)
         return TriggeredSource(trigger, fetcher)
+
+    def account_id(self) -> str:
+        """Connect before readiness and identify the StateDB cursor row."""
+        return self._client.account_id
+
+    def build_checkpointed_source(self, cursor: str | None) -> CheckpointedSource:
+        """Build the JMAP source using the daemon's acknowledged cursor."""
+        return _JmapCheckpointedSource(self._client, cursor)
 
     def build_action_applier(self) -> ActionApplier:
         return _JmapActionApplier(self._client)

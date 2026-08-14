@@ -11,9 +11,31 @@ free by composing an independent `Trigger` and `ContentFetcher`
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol
+from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from spork.core.models import NormalizedMessage
+
+
+@dataclass(frozen=True, slots=True)
+class MessageBatch:
+    """Messages plus an optional source state safe to acknowledge later."""
+
+    messages: Sequence[NormalizedMessage]
+    checkpoint: str | None = None
+
+
+@runtime_checkable
+class CheckpointedSource(Protocol):
+    """A source whose state advances only after daemon processing succeeds."""
+
+    def poll_batch(self) -> MessageBatch:
+        """Return messages and a candidate checkpoint for this batch."""
+        ...
+
+    def poll(self) -> Sequence[NormalizedMessage]:
+        """Remain usable anywhere a plain Source is accepted."""
+        ...
 
 
 class Trigger(Protocol):

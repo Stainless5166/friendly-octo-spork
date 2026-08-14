@@ -54,6 +54,11 @@ read-only. No actions taken yet.
       with no network dependency. Ready to compose with a real
       `JmapClient`-backed fetcher once that exists.
 - [x] State DB: `push_cursor`, `processed_messages` tables + migrations (S)
+- [x] Cursor-safe daemon acknowledgement (M) — `CheckpointedSource` returns
+      an immutable `MessageBatch`; `sporkd` reads the account cursor before
+      composing JMAP, processes the complete batch, and persists the candidate
+      state only after success. Empty batches advance state; failures and
+      shutdowns leave the previous cursor for replay on restart.
 - [x] `spork doctor` reports JMAP auth + connectivity status (S) — CLI
       wiring is real (the earlier "CLI framework isn't chosen yet"
       note is stale: Typer's been in use since M2's `spork rules
@@ -70,8 +75,11 @@ read-only. No actions taken yet.
 **Exit criteria:** `sporkd` runs, logs each new inbox message's subject
 as it arrives (via push, verified by sending a real test email), survives
 a forced network drop and reconnects. **Not yet met.** The authenticated
-client leaf is now real; the remaining blockers are cursor-safe daemon
-acknowledgement and the EventSource push/reconnect path.
+client leaf is now real; the remaining blocker is the EventSource
+push/reconnect path. The daemon now has crash-safe cursor acknowledgement,
+but the JMAP source still waits on the push stub until the next unit.
+
+The next unit implements the EventSource transport and reconnect path.
 
 ## M1a — Source / dispatch pipeline
 

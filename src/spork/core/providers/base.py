@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from spork.core.models import NormalizedMessage
 from spork.core.rules.schema import Action
-from spork.core.sources.base import Source
+from spork.core.sources.base import CheckpointedSource, Source
 
 
 class ActionApplier(Protocol):
@@ -104,3 +104,12 @@ class Provider(Protocol):
     def build_thread_history_reader(self) -> ThreadHistoryReader: ...
     def build_mailbox_lister(self) -> MailboxLister: ...
     def build_message_lookup(self) -> MessageLookup: ...
+
+
+@runtime_checkable
+class CheckpointedProvider(Protocol):
+    """Optional provider capability for stateful message acquisition."""
+
+    def account_id(self) -> str: ...
+
+    def build_checkpointed_source(self, cursor: str | None) -> CheckpointedSource: ...
