@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spork Readiness Report</title>
+<style>
+  :root {
+    --paper: #f5f6f2;
+    --surface: #ffffff;
+    --surface-2: #eef1ea;
+    --ink: #1b211d;
+    --ink-soft: #57625a;
+    --ink-faint: #838f85;
+    --line: #dce0d8;
+    --accent: #24707a;
+    --accent-ink: #ffffff;
+    --accent-soft: #e4eeee;
+    --ok: #3f8b4c;
+    --ok-soft: #e6f1e7;
+    --warn: #a5711c;
+    --warn-soft: #f6ecda;
+    --blocked: #af4536;
+    --blocked-soft: #f6e6e3;
+    --shadow: 0 1px 2px rgba(27, 33, 29, 0.06), 0 8px 24px -12px rgba(27, 33, 29, 0.18);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #121715;
+      --surface: #191f1c;
+      --surface-2: #202822;
+      --ink: #e9ece7;
+      --ink-soft: #a3ae9f;
+      --ink-faint: #6d7a72;
+      --line: #2a322c;
+      --accent: #62b3b5;
+      --accent-ink: #0d1917;
+      --accent-soft: #1c2c2c;
+      --ok: #7bc47e;
+      --ok-soft: #1c2c1e;
+      --warn: #dba85b;
+      --warn-soft: #2e2618;
+      --blocked: #e28576;
+      --blocked-soft: #2e1e1a;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #121715;
+    --surface: #191f1c;
+    --surface-2: #202822;
+    --ink: #e9ece7;
+    --ink-soft: #a3ae9f;
+    --ink-faint: #6d7a72;
+    --line: #2a322c;
+    --accent: #62b3b5;
+    --accent-ink: #0d1917;
+    --accent-soft: #1c2c2c;
+    --ok: #7bc47e;
+    --ok-soft: #1c2c1e;
+    --warn: #dba85b;
+    --warn-soft: #2e2618;
+    --blocked: #e28576;
+    --blocked-soft: #2e1e1a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: ui-serif, "Iowan Old Style", "Palatino Linotype", "Georgia", "Times New Roman", serif;
+    font-size: 17px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  .mono {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  .page {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: clamp(28px, 6vw, 64px) clamp(20px, 5vw, 28px) 72px;
+  }
+
+  /* ---------- header ---------- */
+
+  header.top {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding-bottom: 28px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 32px;
+  }
+
+  .eyebrow {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  h1 {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+    font-weight: 700;
+    font-size: clamp(30px, 6vw, 42px);
+    letter-spacing: -0.01em;
+    margin: 0;
+    text-wrap: balance;
+    color: var(--ink);
+  }
+
+  .dek {
+    font-size: 18px;
+    color: var(--ink-soft);
+    max-width: 58ch;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .meta {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin-top: 4px;
+  }
+
+  .meta span::before {
+    content: "· ";
+    color: var(--line);
+  }
+  .meta span:first-child::before { content: ""; }
+
+  /* ---------- stat tiles ---------- */
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 28px;
+  }
+
+  .stat {
+    background: var(--surface);
+    padding: 16px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .stat .n {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--ink);
+    line-height: 1.1;
+  }
+
+  .stat .l {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  @media (max-width: 620px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  /* ---------- callout ---------- */
+
+  .callout {
+    background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin-bottom: 40px;
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+  }
+
+  .callout .mark {
+    font-family: ui-monospace, monospace;
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--accent-ink);
+    background: var(--accent);
+    border-radius: 6px;
+    padding: 3px 7px;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+    margin-top: 2px;
+  }
+
+  .callout p {
+    margin: 0;
+    font-size: 15.5px;
+    color: var(--ink);
+  }
+
+  .callout code {
+    font-size: 0.88em;
+  }
+
+  /* ---------- sections ---------- */
+
+  section { margin-bottom: 44px; }
+
+  h2 {
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
+    font-size: 13px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 700;
+    margin: 0 0 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  h2 .count {
+    color: var(--ink);
+    font-weight: 700;
+  }
+
+  /* ---------- milestone strip ---------- */
+
+  .milestones {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--surface);
+  }
+
+  .m-row {
+    display: grid;
+    grid-template-columns: 52px 92px 1fr;
+    gap: 12px;
+    align-items: center;
+    padding: 11px 16px;
+    border-top: 1px solid var(--line);
+  }
+  .m-row:first-child { border-top: none; }
+
+  .m-id {
+    font-family: ui-monospace, monospace;
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--ink);
+  }
+
+  .pill {
+    font-family: ui-monospace, monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    font-weight: 700;
+    padding: 3px 8px;
+    border-radius: 100px;
+    text-align: center;
+    white-space: nowrap;
+    width: fit-content;
+  }
+  .pill.done  { background: var(--ok-soft); color: var(--ok); }
+  .pill.partial { background: var(--warn-soft); color: var(--warn); }
+  .pill.blocked { background: var(--blocked-soft); color: var(--blocked); }
+
+  .m-desc {
+    font-size: 14.5px;
+    color: var(--ink-soft);
+    line-height: 1.4;
+  }
+  .m-desc b { color: var(--ink); font-weight: 600; }
+
+  @media (max-width: 560px) {
+    .m-row { grid-template-columns: 40px 84px 1fr; padding: 10px 12px; gap: 8px; }
+    .m-desc { font-size: 13.5px; }
+  }
+
+  /* ---------- outstanding / validated cards ---------- */
+
+  .cards {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--stripe, var(--line));
+    border-radius: 8px;
+    padding: 14px 16px;
+    box-shadow: var(--shadow);
+  }
+
+  .card.blocked { --stripe: var(--blocked); }
+  .card.ok { --stripe: var(--ok); }
+
+  .card .head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 5px;
+  }
+
+  .card .title {
+    font-weight: 700;
+    font-size: 15.5px;
+    color: var(--ink);
+  }
+
+  .card .tag {
+    font-family: ui-monospace, monospace;
+    font-size: 10.5px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    white-space: nowrap;
+  }
+
+  .card p {
+    margin: 0;
+    font-size: 14.5px;
+    color: var(--ink-soft);
+    line-height: 1.5;
+  }
+
+  .card code {
+    background: var(--surface-2);
+    border-radius: 4px;
+    padding: 0.05em 0.35em;
+    font-size: 0.86em;
+  }
+
+  .group-label {
+    font-family: ui-monospace, monospace;
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 22px 0 8px;
+  }
+  .group-label:first-child { margin-top: 0; }
+
+  /* ---------- footer ---------- */
+
+  footer {
+    border-top: 1px solid var(--line);
+    padding-top: 20px;
+    font-size: 13px;
+    color: var(--ink-faint);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  footer .mono { font-family: ui-monospace, monospace; font-size: 12px; }
+
+  a { color: var(--accent); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .card, .stat, .m-row { transition: background-color 0.15s ease; }
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <header class="top">
+    <div class="eyebrow">Engineering Status · Spork</div>
+    <h1>Readiness Report</h1>
+    <p class="dek">What's been validated, what's still outstanding, and the one thing gating most of both.</p>
+    <div class="meta">
+      <span>commit e25b277</span>
+      <span>branch claude/m7-implementation</span>
+      <span>2026-08-14</span>
+      <span>10 milestones tracked (M0&ndash;M7, incl. M1a/M1b)</span>
+    </div>
+  </header>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="n">653&nbsp;/&nbsp;653</div>
+      <div class="l">tests passing</div>
+    </div>
+    <div class="stat">
+      <div class="n">99%</div>
+      <div class="l">line coverage</div>
+    </div>
+    <div class="stat">
+      <div class="n">clean</div>
+      <div class="l">ruff · mypy&nbsp;--strict</div>
+    </div>
+    <div class="stat">
+      <div class="n">66&nbsp;of&nbsp;8nbsp;of6&nbsp;of&nbsp;8nbsp;10</div>
+      <div class="l">milestones share 1 blocker</div>
+    </div>
+  </div>
+
+  <div class="callout">
+    <span class="mark">ROOT&nbsp;CAUSE</span>
+    <p>
+      Nearly everything still open below traces back to one fact: no live Fastmail JMAP session and no
+      live Anthropic API session exist in any environment this project has been built in. <code>JmapClient</code>'s
+      five methods and <code>JmapPushTrigger.wait()</code> are settled-shape, tested <code>NotImplementedError</code>
+      stubs &mdash; real signatures, real passing tests asserting the correct raise, not missing work. Everything
+      downstream of that connection (rule dry-runs against recent mail, live verdicts, a systemd unit staying up,
+      confidence tuning, rate-limit handling) stops at that same wall.
+    </p>
+  </div>
+
+  <section>
+    <h2>Milestones</h2>
+    <div class="milestones">
+      <div class="m-row">
+        <span class="m-id mono">M0</span>
+        <span class="pill done">done</span>
+        <span class="m-desc">Scaffolding, CI, both entry points. Nothing left open.</span>
+      </div>
+      <div class="m-row">
+        <span class="m-id mono">M1</span>
+        <span class="pill partial">partial</span>
+        <span class="m-desc">JMAP connectivity. Mailbox resolution and poll fallback are real; <b>session bootstrap and push are the root-cause stub.</b></span>
+      </div>
+      <div class="m-row">
+        <span class="m-id mono">M1a</span>
+        <span class="pill done">done</span>
+        <span class="m-desc">Source/dispatch pipeline &mdash; pure logic, no live account needed. Fully met.</span>
+      </div>
+      <div class="m-row">
+        <span class="m-id mono">M1b</span>
+        <span class="pill done">done</span>
+        <span class="m-desc">Provider abstraction, proven by a second real adapter (<code>FileProvider</code>). Fully met.</span>
+      </div>
+      <div class="m-row">
+        <span class="m-id mono">M2</span>
+        <span class="pill partial">partial</span>
+        <span class="m-desc">Rule engine + action executor. All 7 items built and tested; <b><code>spork rules test</code>'s live dry-run</b> waits on M1.</span>
+      </div>
+      <div class="m-row">
+        <span class="m-id mono">M3</span>
+        <span class="pill partial">partial</span>
+        <span class="m-desc">Tier 2 (Claude) escalation. All 7 pieces + pipeline wiring built, proven against recorded fixtures; <b>live end-to-end run</b> waits on both accounts.</span>
+      </div>
+      <div class="m-row">
+        <span class="m-id mono">M4</span>
+        <span class="pill partial">partial</span>
+        <span class="m-desc">Alerting, 2.5 of 3. Daily-budget alert done; <b>push-disconnected alert</b> needs a live EventSource to time out on.</span>
+      </div>
+      <div class="m-row">
+        <span class="m-id mono">M5</span>
+        <span class="pill done">done</span>
+        <span class="m-desc">Full CLI + daemon control surface, 10 of 10. Nothing left open.</span>
+      </div>
+      <div class="m-row">
+        <span class="m-id mono">M6</span>
+        <span class="pill partial">partial</span>
+        <span class="m-desc">Systemd packaging, 7 of 7 items real and tested; <b>exit criterion</b> ("<code>spork status</code> healthy") still needs M1.</span>
+      </div>
+      <div class="m-row">
+        <span class="m-id mono">M7</span>
+        <span class="pill partial">partial</span>
+        <span class="m-desc">Hardening, 5 of 9. Logging, tracing, audit trail, security review, coverage done; <b>tuning, rate-limits, crash-loop, v1.0.0 tag</b> remain.</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Outstanding</h2>
+    <div class="cards">
+
+      <div class="group-label">Needs a live JMAP session</div>
+      <div class="card blocked">
+        <div class="head"><span class="title">JMAP session bootstrap &amp; push listener</span><span class="tag">M1</span></div>
+        <p><code>JmapClient.connect()</code> / <code>fetch_new_messages()</code> and <code>JmapPushTrigger.wait()</code> — a real <code>jmapc</code> session against a live Fastmail account, with reconnect/backoff already built and tested.</p>
+      </div>
+      <div class="card blocked">
+        <div class="head"><span class="title"><code>spork rules test</code>'s live dry-run</span><span class="tag">M2</span></div>
+        <p>Loads and validates any <code>rules.toml</code> today; running it against actual recent mail needs M1.</p>
+      </div>
+      <div class="card blocked">
+        <div class="head"><span class="title">Rate-limit / 429 handling</span><span class="tag">M7</span></div>
+        <p>No real 429 response exists to design a verified backoff against without a live account.</p>
+      </div>
+
+      <div class="group-label">Needs a live JMAP + Anthropic session together</div>
+      <div class="card blocked">
+        <div class="head"><span class="title">Tier 2 end-to-end run</span><span class="tag">M3</span></div>
+        <p>An escalated test email getting a real (not recorded) verdict, a real action, a real drafted reply.</p>
+      </div>
+      <div class="card blocked">
+        <div class="head"><span class="title">Confidence threshold tuning</span><span class="tag">M7</span></div>
+        <p>Needs real triage decisions from a live account to tune against &mdash; tuning against fabricated data isn't tuning.</p>
+      </div>
+
+      <div class="group-label">Needs a live systemd / dbus session (this sandbox has neither)</div>
+      <div class="card blocked">
+        <div class="head"><span class="title">JMAP push-disconnected alert</span><span class="tag">M4</span></div>
+        <p>Detecting "disconnected &gt; N minutes" needs a live EventSource connection to have something to time out on.</p>
+      </div>
+      <div class="card blocked">
+        <div class="head"><span class="title">Crash-loop / restart verification</span><span class="tag">M7</span></div>
+        <p><code>Restart=on-failure</code> has been in the unit file since M6; watching systemd actually restart a crashed <code>sporkd</code> needs a real user session.</p>
+      </div>
+
+      <div class="group-label">Needs Arch Linux tooling (this sandbox is Ubuntu)</div>
+      <div class="card blocked">
+        <div class="head"><span class="title"><code>makepkg -si</code> itself</span><span class="tag">M6</span></div>
+        <p>The <code>PKGBUILD</code>'s syntax, required fields, and install paths are tested without Arch tooling; the actual build/install isn't.</p>
+      </div>
+
+      <div class="group-label">A call for the maintainer, not this sandbox</div>
+      <div class="card blocked">
+        <div class="head"><span class="title">Tag v1.0.0</span><span class="tag">M7</span></div>
+        <p>Gated on the daemon running a real inbox for a full unattended week &mdash; a real-world-readiness judgment, not a build step.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Validated</h2>
+    <div class="cards">
+      <div class="card ok">
+        <div class="head"><span class="title">Full suite, every push</span><span class="tag">repo-wide</span></div>
+        <p>653 tests, 0 xfail, 99% line coverage (2,121 statements, 6 uncovered &mdash; see below). <code>ruff check</code> and <code>mypy --strict</code> both clean.</p>
+      </div>
+      <div class="card ok">
+        <div class="head"><span class="title">Rule engine &amp; action executor</span><span class="tag">M7 coverage pass</span></div>
+        <p>100% line <em>and</em> branch coverage confirmed this pass &mdash; AND-semantics across condition fields, classifier invoked at most once, <code>escalate</code> rejected outright, <code>move</code>/<code>tag</code> rejected without a mailbox.</p>
+      </div>
+      <div class="card ok">
+        <div class="head"><span class="title">Security review vs. design §15</span><span class="tag">M7</span></div>
+        <p>All 6 stated claims checked against the actual code (grepped for <code>eval</code>/<code>exec</code>/<code>pickle</code>/<code>shell=True</code>/<code>EmailSubmission</code>/<code>smtp</code>), not re-read from the doc. Two real gaps found <em>and fixed</em>: the README never disclosed that ambiguous mail reaches Claude; <code>Secrets</code>' auto-generated <code>__repr__</code> printed resolved values verbatim.</p>
+      </div>
+      <div class="card ok">
+        <div class="head"><span class="title">End-to-end without a live account</span><span class="tag">M5&ndash;M6</span></div>
+        <p><code>FileProvider</code> + <code>RecordedLLMClient</code> + <code>LoggingAlerter</code> carry a real message through Tier&nbsp;1, Tier&nbsp;2, alerting, and audit logging; a real <code>sporkd</code> subprocess answers a real <code>spork</code> CLI over a real Unix control socket.</p>
+      </div>
+      <div class="card ok">
+        <div class="head"><span class="title">Structured logging &amp; per-message tracing</span><span class="tag">M7</span></div>
+        <p><code>configure_logging()</code> wired through both entry points; a correlation ID now threads through every Filter/Selector/Augment stage in both pipelines via a generic wrapper &mdash; no change to any of the 21 concrete module classes.</p>
+      </div>
+      <div class="card ok">
+        <div class="head"><span class="title">Control-plane audit trail</span><span class="tag">M7</span></div>
+        <p><code>rules enable/disable</code>, <code>config edit</code>, <code>pause</code>/<code>resume</code>, and <code>reclassify</code> all now write <code>audit_log</code> entries alongside per-message outcomes.</p>
+      </div>
+      <div class="card ok">
+        <div class="head"><span class="title">Known, minor, non-blocking gaps</span><span class="tag">honesty check</span></div>
+        <p>6 uncovered lines total: 1 local-classifier success branch (no backend is registered anywhere yet, by design), 4 in <code>status</code>/<code>pause</code> CLI edge branches, 1 in the IPC client. Listed here, not hidden.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>stainless5166/friendly-octo-spork</span>
+    <span class="mono">prepared from repo state at commit e25b277</span>
+  </footer>
+
+</div>
+</body>
+</html>

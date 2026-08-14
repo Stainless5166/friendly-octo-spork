@@ -32,6 +32,7 @@ from spork.core.pipeline.tier2.modules import (
     ValidateVerdictFilter,
     WriteAuditEntryFilter,
 )
+from spork.core.pipeline.tracing import wrap_selector, wrap_stages
 from spork.core.providers.base import DraftCreator
 from spork.core.state.db import StateDB
 
@@ -69,41 +70,53 @@ def build_tier2_pipeline(
     wiring), not a difference in what this pipeline does.
     """
     act: Pipeline[Tier2Meta] = Pipeline(
-        [
-            ApplyVerdictActionFilter(executor, ops),
-            CreateDraftIfWantedFilter(draft_creator),
-            WriteAuditEntryFilter(state_db),
-            MarkProcessedFilter(state_db),
-        ]
+        wrap_stages(
+            [
+                ApplyVerdictActionFilter(executor, ops),
+                CreateDraftIfWantedFilter(draft_creator),
+                WriteAuditEntryFilter(state_db),
+                MarkProcessedFilter(state_db),
+            ],
+            ops,
+        )
     )
     alert_only: Pipeline[Tier2Meta] = Pipeline(
-        [
-            RecordAlertOnlyFilter(ops),
-            CreateDraftIfWantedFilter(draft_creator),
-            WriteAuditEntryFilter(state_db),
-            MarkProcessedFilter(state_db),
-        ]
+        wrap_stages(
+            [
+                RecordAlertOnlyFilter(ops),
+                CreateDraftIfWantedFilter(draft_creator),
+                WriteAuditEntryFilter(state_db),
+                MarkProcessedFilter(state_db),
+            ],
+            ops,
+        )
     )
     budget_ok: Pipeline[Tier2Meta] = Pipeline(
-        [
-            BuildVerdictRequestFilter(max_body_chars),
-            CallLLMAugment(llm_client),
-            RecordLLMUsageFilter(state_db),
-            ValidateVerdictFilter(allowed_categories),
-        ],
-        selector=ConfidenceBandSelector(alert_threshold, autoact_threshold),
+        wrap_stages(
+            [
+                BuildVerdictRequestFilter(max_body_chars),
+                CallLLMAugment(llm_client),
+                RecordLLMUsageFilter(state_db),
+                ValidateVerdictFilter(allowed_categories),
+            ],
+            ops,
+        ),
+        selector=wrap_selector(ConfidenceBandSelector(alert_threshold, autoact_threshold), ops),
         routes={"autoact": act, "autoact_alert": act, "alert_only": alert_only},
     )
     budget_exhausted: Pipeline[Tier2Meta] = Pipeline(
-        [
-            RecordBudgetExhaustedFilter(ops),
-            WriteAuditEntryFilter(state_db),
-            MarkProcessedFilter(state_db),
-        ]
+        wrap_stages(
+            [
+                RecordBudgetExhaustedFilter(ops),
+                WriteAuditEntryFilter(state_db),
+                MarkProcessedFilter(state_db),
+            ],
+            ops,
+        )
     )
     return Pipeline(
-        [TimestampFilter(now), CorrelationIdFilter(new_correlation_id)],
-        selector=BudgetGateSelector(state_db, daily_call_budget),
+        wrap_stages([TimestampFilter(now), CorrelationIdFilter(new_correlation_id)], ops),
+        selector=wrap_selector(BudgetGateSelector(state_db, daily_call_budget), ops),
         routes={"budget_ok": budget_ok, "budget_exhausted": budget_exhausted},
     )
 

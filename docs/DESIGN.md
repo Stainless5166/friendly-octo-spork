@@ -119,7 +119,8 @@ alongside M4's `alerts/log.py`). `config/`, `ipc/`, and
 `cli/commands/config.py` are all real as of M5's work on them — no
 longer dashed boxes. `systemd/` (core) and
 `cli/commands/install_service.py` land with M6 — no longer dashed
-either. This is layout orientation
+either. `logging_setup.py` and `pipeline/tracing.py` land with M7 —
+also no longer dashed. This is layout orientation
 only — see §6.4 for what each built module's classes actually look
 like.
 
@@ -135,6 +136,7 @@ flowchart TD
         end
         secrets_mod["secrets.py<br/>secretspec integration"]
         models_mod["models.py<br/>NormalizedMessage"]
+        logging_setup_mod["logging_setup.py<br/>configure_logging() (M7)"]
 
         subgraph pipeline["pipeline/"]
             pipeline_core["core.py<br/>Payload/Filter/Selector/Pipeline"]
@@ -142,6 +144,7 @@ flowchart TD
             pipeline_modules["modules.py<br/>7 concrete Filters/Selectors"]
             pipeline_default["default.py<br/>build_default_pipeline() +<br/>process_message()"]
             pipeline_observer["observer.py<br/>PipelineObserver"]
+            pipeline_tracing["tracing.py<br/>TracingStage/TracingSelector (M7)"]
             subgraph pipeline_tier2["tier2/"]
                 tier2_meta["meta.py<br/>Tier2Meta"]
                 tier2_modules["modules.py<br/>13 concrete Filters/Selectors/Augment"]
@@ -281,6 +284,23 @@ Single-process, asyncio event loop:
    taken, latency, token cost if Tier 2) in the state DB.
 10. Serve the local control socket concurrently for CLI requests
     (status, pause, "reclassify message X", "reload rules").
+
+**Structured application logging (M7):** `main()` calls
+`spork.core.logging_setup.configure_logging(level)` before
+`run_daemon()` starts — `level` is `--log-level` if given, else
+`config.log_level` (`SporkConfig`'s own field, default `"INFO"`),
+never both silently merged. This configures the `"spork"` logger
+namespace (every module's `logging.getLogger("spork.xxx")` call is a
+child of it, including `PipelineObserver`'s existing
+`"spork.pipeline"`) with one `StreamHandler` to stderr — journald
+captures a systemd unit's stderr line-by-line automatically (§14), so
+no `systemd.journal.JournalHandler`/extra dependency is needed, the
+same "no new dependency for something this small" call
+`spork.core.systemd.notify`'s hand-rolled `sd_notify` made. Distinct
+from `audit_log` (§7.4): this is an operational log stream (what the
+daemon is *doing*, at whatever verbosity `--log-level` asks for),
+`audit_log` is a permanent, structured per-decision/per-change record
+— turning logging up or down never changes what lands in `audit_log`.
 
 #### 6.2.1 Bridging synchronous I/O into the asyncio loop
 
@@ -442,6 +462,36 @@ a worker thread — exactly the concurrent access §6.2.1's
 any code, not after: `spork status` doesn't report LLM spend this
 round (see below) rather than accepting that risk.
 
+**`pause`/`resume` writing a control-plane audit entry (M7, §7.4) hits
+this exact hazard too — and a first-draft fix (make the handler
+`async def`, `await asyncio.to_thread(state_db.write_control_plane_audit_entry,
+...)` directly from it) turns out not to actually solve it: `to_thread()`
+only moves *that one call* off the event-loop thread, it doesn't
+serialize it against a *different*, already-in-flight
+`to_thread(process_message, ...)` call from `_run_message_loop()` — two
+independent `to_thread()` calls from two different coroutines can
+still run concurrently, on two different worker threads, against the
+same `state_db` connection object, which is exactly the hazard this
+whole section exists to avoid. A correct fix needs either a new
+`asyncio.Lock` serializing *every* `to_thread(state_db...)` call site
+(the message loop's included) or avoiding a second call site
+entirely — the latter is what's actually built: `DaemonState` gains
+`pending_control_plane_events: list[PendingAuditEvent]` (a small
+frozen dataclass: `event: str`, `detail_json: Optional[str]`).
+`_pause`/`_resume` stay plain, synchronous handlers — `daemon_state.paused`
+flips immediately, and `daemon_state.pending_control_plane_events.append(...)`
+is a second in-memory, event-loop-thread-only mutation, no different in
+kind from the first. `_run_message_loop()` — the one code path that
+already safely, sequentially owns every `to_thread(state_db...)` call —
+drains that list once per iteration (before `poll()`, so a pause takes
+effect for writes too, not just reads), writing each pending event via
+its own existing `to_thread()` mechanism, then clears it. The one
+honest tradeoff: a pause/resume audit entry lands on the *next*
+message-loop iteration, not synchronously with the IPC response
+(bounded by `idle_delay_seconds`, ~1s in production) — stated
+plainly rather than hidden, the same way this section already states
+`spork status`'s LLM-spend gap rather than working around it unsafely.
+
 **`RulesState`** (`spork.daemon.state`, alongside `DaemonState`) is
 the same pattern applied to a different problem: `spork rules edit`/
 `enable`/`disable` (§7.5, §13) write a new `rules.toml`, and a running
@@ -577,6 +627,7 @@ classDiagram
         +db_path: Path
         +socket_path: Path
         +tiering: TieringConfig
+        +log_level: Literal["DEBUG"|"INFO"|"WARNING"|"ERROR"|"CRITICAL"]
     }
     class ConfigLoadError { <<Exception>> }
 
@@ -1292,6 +1343,7 @@ classDiagram
         +has_processed(jmap_id: str) bool
         +mark_processed(jmap_id: str, ...) None
         +write_audit_entry(...) None
+        +write_control_plane_audit_entry(ts, event, detail_json) None
         +get_audit_entries(jmap_id: Optional~str~) list
         +record_llm_call(date: str, tokens_in: int, tokens_out: int) None
         +get_llm_usage(date: str) LLMUsage
@@ -1362,10 +1414,12 @@ raw traceback.
 
 #### `spork.core.pipeline`
 
-Four diagrams: the generic framework (`core.py`); `observer.py`'s
+Five diagrams: the generic framework (`core.py`); `observer.py`'s
 `PipelineObserver` (§12.2, shared by both concrete pipelines below);
-then the concrete Tier 1 pipeline (`meta.py`/`modules.py`/`default.py`,
-§9.4); then Tier 2's (`tier2/`, §10.7).
+`tracing.py`'s `TracingStage`/`TracingSelector` (M7 — the generic
+per-stage instrumentation wrapper, also shared by both); then the
+concrete Tier 1 pipeline (`meta.py`/`modules.py`/`default.py`, §9.4);
+then Tier 2's (`tier2/`, §10.7).
 
 ```mermaid
 classDiagram
@@ -1430,6 +1484,65 @@ module below takes one via constructor DI, same as `state_db`.
 injection); `alert()` does that and delegates to `Alerter.notify()`
 (§12.1) — `Alerter` itself is unchanged, `PipelineObserver` composes
 it rather than replacing it.
+
+```mermaid
+classDiagram
+    class Filter~M~ { <<Protocol>> }
+    class Selector~M~ { <<Protocol>> }
+    class Augment~M~ { <<Protocol>> }
+    class PipelineObserver
+    class TracingStage~M~ {
+        <<Filter, wraps Filter or Augment>>
+        -stage: Filter~M~ | Augment~M~
+        -ops: PipelineObserver
+        +apply(payload: Payload~M~) Payload~M~
+    }
+    class TracingSelector~M~ {
+        <<Selector, wraps Selector>>
+        -selector: Selector~M~
+        -ops: PipelineObserver
+        +select(payload: Payload~M~) tuple
+    }
+    class wrap_stages { <<function>> }
+    class wrap_selector { <<function>> }
+
+    Filter <|.. TracingStage : structurally satisfies
+    Augment <|.. TracingStage : structurally satisfies
+    Selector <|.. TracingSelector : structurally satisfies
+    TracingStage --> PipelineObserver : traces via
+    TracingSelector --> PipelineObserver : traces via
+    wrap_stages ..> TracingStage : wraps every element of a stages list
+    wrap_selector ..> TracingSelector : wraps one selector
+```
+
+`TracingStage`/`TracingSelector` (M7, docs/ROADMAP.md's "per-message
+tracing" item) are generic, dependency-free wrappers, not a change to
+`core.py` itself — `Pipeline`/`Filter`/`Selector`/`Augment` stay
+message-agnostic (§9.4's own stated design), and a `TracingStage`
+always presents as a plain `Filter` to the outer `Pipeline.run()`
+(only `.apply()`), regardless of whether the module it wraps is really
+a `Filter` or an `Augment` — internally it still calls the wrapped
+stage's real `.apply()`/`.augment()` via the same `isinstance` check
+`Pipeline.run()` itself uses, so wrapping never changes what actually
+executes, only what gets logged around it. Each records one
+`ops.trace()` call after the wrapped stage returns: the wrapped
+stage's class name, elapsed time (`time.monotonic()`, not wall-clock —
+duration shouldn't be sensitive to a clock adjustment mid-run),
+`kind` (`"filter"`/`"augment"`), and — for `TracingSelector` — which
+branch was chosen. `correlation_id` is read off `payload.meta` via
+`getattr(meta, "correlation_id", None)` rather than a new `Protocol`
+bound on `M`: both `MessageMeta` and `Tier2Meta` already carry the
+field (§12.2), and duck-typing here keeps `tracing.py` reusable for
+any future `Payload` metadata type that happens to expose one, the
+same "generic, not hardcoded to this pipeline's shape" spirit
+`core.py` itself already has. `build_default_pipeline()`/
+`build_tier2_pipeline()` (§9.4/§10.7) wrap every concrete stage/selector
+they compose via `wrap_stages()`/`wrap_selector()` at construction
+time — no change to any of the 7+13 concrete module classes
+themselves, and no change to what a module-level unit test (constructs
+a bare `Payload`, calls `.apply()`/`.select()`/`.augment()` directly,
+never through a `Pipeline`) exercises, since those tests never go
+through the wrapper at all.
 
 ```mermaid
 classDiagram
@@ -1914,6 +2027,7 @@ classDiagram
     class MessageNotFoundError { <<Exception>> }
     class resolve_secrets { <<function>> }
     class SecretsError { <<Exception>> }
+    class StateDB { <<empty box, defined in spork.core.state>> }
     class ProviderLoadError { <<Exception>> }
     class UnknownClassifierError { <<Exception>> }
     class check_unit_status { <<function>> }
@@ -1946,13 +2060,16 @@ classDiagram
     enable ..> load_rules : reads current rules
     enable ..> dump_rules : rewrites rules.toml
     enable ..> send_request : pushes "reload" (best-effort)
+    enable --> StateDB : writes "rules_enable" control-plane audit entry (M7, §7.4)
     disable ..> load_rules : reads current rules
     disable ..> dump_rules : rewrites rules.toml
     disable ..> send_request : pushes "reload" (best-effort)
+    disable --> StateDB : writes "rules_disable" control-plane audit entry (M7, §7.4)
     config_show ..> load_config : the effective merged config
     config_show ..> enforced_override_paths : flags enforced values
     config_edit ..> load_config : validates the real merged result on save
     config_edit ..> ConfigLoadError : catches, clean CLI error
+    config_edit --> StateDB : writes "config_edit" control-plane audit entry on a successful save (M7, §7.4)
     status ..> send_request : "status"
     pause ..> send_request : "pause"
     resume ..> send_request : "resume"
@@ -1973,6 +2090,7 @@ classDiagram
     reclassify ..> MessageNotFoundError : catches, clean CLI error
     reclassify ..> process_message : force=True, bypasses the idempotency gate
     reclassify ..> escalate_message : when Tier 1 escalates
+    reclassify --> StateDB : writes "reclassify_triggered" control-plane audit entry (M7, §7.4), distinct from process_message's own per-message row
     install_service_command ..> install_service : writes unit file, daemon-reload, enable --now
     install_service_command ..> InstallServiceError : catches, clean CLI error
 ```
@@ -2012,11 +2130,18 @@ classDiagram
     class escalate_message { <<function>> }
     class IpcServer
 
+    class PendingAuditEvent {
+        <<dataclass, frozen>>
+        +event: str
+        +detail_json: Optional~str~
+    }
     class DaemonState {
         <<dataclass>>
         +paused: bool
         +started_at: str
+        +pending_control_plane_events: list~PendingAuditEvent~
     }
+    DaemonState *-- PendingAuditEvent : pending_control_plane_events (M7)
     class RulesState {
         <<dataclass>>
         +rules: Sequence
@@ -2051,7 +2176,7 @@ classDiagram
     run_daemon ..> _run_message_loop : both run inside one asyncio.TaskGroup (§6.2.2)
     run_daemon ..> IpcServer : .serve(stop_event)
     _run_message_loop --> Source : polls, via asyncio.to_thread (§6.2.1)
-    _run_message_loop --> DaemonState : skips poll()+processing while paused
+    _run_message_loop --> DaemonState : skips poll()+processing while paused; drains pending_control_plane_events each iteration (M7, §6.2.2)
     _run_message_loop --> RulesState : reads .rules fresh every poll iteration (§6.2.2)
     _run_message_loop ..> process_message : Tier 1, via asyncio.to_thread
     _run_message_loop ..> escalate_message : Tier 2, when Tier 1 escalates, a second sequential asyncio.to_thread (§6.2.1) — spork.core.pipeline.tier2.escalate (M5), also used by spork reclassify
@@ -2227,6 +2352,11 @@ allowed_categories = ["needs_reply", "fyi", "newsletter", "spam"]   # §10.2
 
 db_path = "~/.local/share/spork/state.sqlite3"   # $XDG_DATA_HOME — persistent app data
 rules_path = "~/.config/spork/rules.toml"
+log_level = "INFO"   # DEBUG|INFO|WARNING|ERROR|CRITICAL (M7, §6.2) — sporkd's own
+                      # operational log verbosity, journald-captured under systemd;
+                      # overridden by `sporkd --log-level` when given, never merged
+                      # with it. Unrelated to audit_log (§7.4), which always records
+                      # regardless of this setting.
 
 # socket_path is optional — resolve_socket_path() (§6.4) defaults to
 # $XDG_RUNTIME_DIR/spork/sporkd.sock (0700, tmpfs-backed, gone on
@@ -2304,7 +2434,25 @@ Single file, WAL mode, no external DB dependency. Built tables (final —
   — the dedupe/idempotency key. A message is only ever acted on once
   unless a manual `spork reclassify` forces it.
 - `audit_log(id, ts, jmap_id, event, detail_json)` — human-readable
-  trail for `spork logs`.
+  trail for `spork logs`. As of M7, not just per-message triage
+  outcomes: `jmap_id = ""` (the empty string — never a real JMAP ID,
+  so it's a safe, unambiguous "not about any one message" sentinel,
+  chosen over adding a nullable column or a second table because it
+  needs no schema change at all, and this codebase has no migration
+  mechanism yet to make one safely — §7.4's own "no separate
+  migrations step exists yet" note) marks a **control-plane** entry:
+  `spork rules enable/disable`, `spork config edit`,
+  `spork pause`/`resume`, and `spork reclassify <id>` being
+  operator-triggered (distinct from its own per-message outcome row,
+  which still gets a real `jmap_id`) — see §13 for exactly which
+  event name each one writes.
+  `StateDB.write_control_plane_audit_entry(*, ts, event, detail_json)`
+  is a thin wrapper over the same `write_audit_entry()` insert,
+  `jmap_id` fixed to `""` rather than exposed as a parameter, so a
+  caller can't accidentally write a control-plane entry under a real
+  message's ID. `get_audit_entries()` is unchanged (still returns
+  every row, message and control-plane alike, oldest-first) — `spork
+  logs` (§13) needed no new filtering to show both in one trail.
 - `push_cursor(account_id, state)` — the last JMAP `state` string seen,
   so a restart resumes from where it left off instead of re-scanning the
   whole mailbox.
@@ -3666,12 +3814,19 @@ now has, in `_run_message_loop()` and `spork reclassify` alike) doesn't
 thread Tier 1's correlation ID into `Tier2Meta` the way it threads
 `to_addresses`/`thread_prior_subject` in. Stitching the two into one
 cross-tier trace is real, wanted work — genuinely unbuilt, not blocked
-on anything missing anymore now that a real caller exists. This
-partially satisfies `docs/ROADMAP.md` M7's "per-message tracing" item
-for the pipeline-internal portion (the correlation ID + `LoggerAdapter`
-mechanism); M7 still separately owns wiring `sporkd`'s overall
-structured logging setup (handlers, level, journal output) and
-audit-trail completeness beyond triage outcomes.
+on anything missing anymore now that a real caller exists — and is
+*not* part of what M7's "per-message tracing" checklist item resolves
+below, so it stays open even once that item is done.
+
+`docs/ROADMAP.md` M7's "per-message tracing" item itself (every Tier
+1/Tier 2 Filter/Selector/Augment stage logged, so one message's full
+journey through *one* pipeline run is reconstructable from logs alone)
+is `TracingStage`/`TracingSelector`, above — every concrete module both
+`build_default_pipeline()` and `build_tier2_pipeline()` compose is
+wrapped with one, so a stage's own class never needs to call
+`ops.trace()` itself to be traced. M7 separately owns wiring `sporkd`'s
+overall structured logging setup (handlers, level, journal output,
+§6.2) and audit-trail completeness beyond triage outcomes (§7.4).
 
 `Verdict.urgency` (`"low" | "medium" | "high"`, `llm.base.Verdict`) and
 `AlertUrgency` (`"low" | "normal" | "critical"`, §12.1) are deliberately
@@ -3776,7 +3931,12 @@ spork pause / resume          # stop/start Tier 1+2 processing without
                                # killing the daemon (§6.2.2's honest
                                # caveat: today this also stops polling,
                                # not just acting on what's already
-                               # fetched — see the design note)
+                               # fetched — see the design note). Each
+                               # queues a "daemon_paused"/"daemon_resumed"
+                               # control-plane audit_log entry (§7.4, M7),
+                               # written on the next message-loop iteration
+                               # (§6.2.2) — not synchronously with the IPC
+                               # response, a stated tradeoff, not a gap
 
 spork rules list              # show rules.toml: id/enabled/description/
                                # action per rule. Per-rule match counts
@@ -3791,7 +3951,10 @@ spork rules edit              # open rules.toml in $EDITOR, validate on save,
 spork rules enable/disable <id>  # flip one rule's enabled field,
                                # rewrite the file, push a reload — real
                                # tradeoff: this rewrite doesn't preserve
-                               # hand-written comments/formatting (§7.5)
+                               # hand-written comments/formatting (§7.5).
+                               # Writes a "rules_enable"/"rules_disable"
+                               # control-plane audit_log entry
+                               # (detail_json: {"rule_id": ...}, §7.4, M7)
 
 spork config show             # effective (merged) config; kwargs entries whose
                                # key looks like a credential are redacted
@@ -3802,17 +3965,31 @@ spork config edit             # open the *user* tier's config.toml in $EDITOR,
                                # pushes a reload (§7.2's "why not," unlike rules):
                                # restart sporkd to apply. Never touches the
                                # system-default or enforced tiers; those are
-                               # edited directly with real filesystem permissions
+                               # edited directly with real filesystem permissions.
+                               # Writes a "config_edit" control-plane audit_log
+                               # entry on a successful save (§7.4, M7)
 
 spork logs [--tail] [--since] [--message-id]  # reads StateDB directly,
-                                               # works even if sporkd isn't running
+                                               # works even if sporkd isn't running.
+                                               # Control-plane entries (§7.4, M7)
+                                               # show up in the unfiltered listing
+                                               # too — --message-id only ever
+                                               # matches per-message rows, by design
 spork reclassify <message-id> # standalone, like spork logs — works whether
                                # or not sporkd is running (§7.4's WAL-mode
                                # reasoning). Looks the message up via
                                # Provider.build_message_lookup(), forces it
                                # through Tier 1 (force=True bypasses the
                                # idempotency gate) and, if it escalates,
-                               # straight into Tier 2 as well
+                               # straight into Tier 2 as well. Also writes a
+                               # "reclassify_triggered" control-plane
+                               # audit_log entry (detail_json:
+                               # {"message_id": ...}, §7.4, M7) — distinct
+                               # from the per-message outcome row Tier 1/2's
+                               # own WriteAuditEntryFilter already writes,
+                               # so "an operator forced this" stays visible
+                               # even though the outcome looks the same as
+                               # an ordinary automatic run
 
 spork doctor                  # secretspec check, config/provider/rules/
                                # local-classifier load checks, JMAP auth

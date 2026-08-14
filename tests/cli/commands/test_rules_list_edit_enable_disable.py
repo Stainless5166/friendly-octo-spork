@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from spork.core.state.db import StateDB
+
 
 def _run(*args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -185,6 +187,39 @@ def test_rules_disable_flips_an_enabled_rule(tmp_path: Path) -> None:
     lines = [line for line in list_result.stdout.splitlines() if "vip-senders" in line]
     assert len(lines) == 1
     assert "disabled" in lines[0]
+
+
+def test_rules_enable_writes_a_control_plane_audit_entry(tmp_path: Path) -> None:
+    """docs/DESIGN.md §7.4/§13 (M7): a "rules_enable" control-plane
+    audit_log entry, detail_json naming the rule."""
+    env = _env(tmp_path)
+    rules_path = tmp_path / "rules.toml"
+    rules_path.write_text(_TWO_RULES)
+    _write_config(tmp_path / "xdg-config-home" / "spork", tmp_path, rules_path=rules_path)
+
+    _run("enable", "newsletters", env=env)
+
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        entries = [e for e in db.get_audit_entries() if e.event == "rules_enable"]
+
+    assert len(entries) == 1
+    assert entries[0].jmap_id == ""
+    assert "newsletters" in (entries[0].detail_json or "")
+
+
+def test_rules_disable_writes_a_control_plane_audit_entry(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    rules_path = tmp_path / "rules.toml"
+    rules_path.write_text(_TWO_RULES)
+    _write_config(tmp_path / "xdg-config-home" / "spork", tmp_path, rules_path=rules_path)
+
+    _run("disable", "vip-senders", env=env)
+
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        entries = [e for e in db.get_audit_entries() if e.event == "rules_disable"]
+
+    assert len(entries) == 1
+    assert "vip-senders" in (entries[0].detail_json or "")
 
 
 def test_rules_enable_with_an_unknown_id_reports_a_clean_error(tmp_path: Path) -> None:

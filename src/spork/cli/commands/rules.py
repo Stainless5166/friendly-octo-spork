@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -17,6 +19,7 @@ from spork.core.ipc.client import IpcConnectionError, send_request
 from spork.core.rules.loader import RulesLoadError, load_rules
 from spork.core.rules.schema import Rule
 from spork.core.rules.writer import dump_rules
+from spork.core.state.db import StateDB
 
 app = typer.Typer(
     name="rules",
@@ -151,6 +154,12 @@ def _set_enabled(rule_id: str, *, enabled: bool) -> None:
         for rule in rules
     ]
     config.rules_path.write_text(dump_rules(updated))
+    with StateDB(config.db_path) as db:
+        db.write_control_plane_audit_entry(
+            ts=datetime.now(UTC).isoformat(),
+            event="rules_enable" if enabled else "rules_disable",
+            detail_json=json.dumps({"rule_id": rule_id}),
+        )
     _push_reload(config.socket_path)
     typer.echo(f"{rule_id}: {'enabled' if enabled else 'disabled'}.")
 

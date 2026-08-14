@@ -74,3 +74,7 @@ class SporkConfig(BaseModel):
     db_path: Path
     socket_path: Path | None = None
     tiering: TieringConfig = Field(default_factory=TieringConfig)
+    # sporkd's own operational log verbosity (§6.2, M7) — distinct from
+    # audit_log (§7.4), which always records regardless of this value.
+    # Overridden by `sporkd --log-level` when given, never merged with it.
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"

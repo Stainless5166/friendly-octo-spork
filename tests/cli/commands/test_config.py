@@ -19,6 +19,7 @@ from pathlib import Path
 
 from spork.cli.commands.config import _format_show_lines, _looks_like_secret
 from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
+from spork.core.state.db import StateDB
 
 
 def _run(*args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -110,6 +111,42 @@ def test_config_edit_with_a_noop_editor_saves_and_says_restart(tmp_path: Path) -
 
     assert result.returncode == 0
     assert "restart" in result.stdout.lower()
+
+
+def test_config_edit_writes_a_control_plane_audit_entry_on_success(tmp_path: Path) -> None:
+    """docs/DESIGN.md §7.4/§13 (M7): a "config_edit" control-plane
+    audit_log entry on a successful save."""
+    env = _env(tmp_path)
+    _write_config(tmp_path / "xdg-config-home" / "spork", tmp_path)
+    env["EDITOR"] = _fake_editor(tmp_path, "")  # does nothing, still a valid save
+
+    _run("edit", env=env)
+
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        entries = [e for e in db.get_audit_entries() if e.event == "config_edit"]
+
+    assert len(entries) == 1
+    assert entries[0].jmap_id == ""
+
+
+def test_config_edit_writes_no_audit_entry_on_a_rejected_save(tmp_path: Path) -> None:
+    """An invalid save never reaches load_config() successfully, so
+    nothing gets written — same "only a real success is recorded"
+    principle as every other control-plane entry."""
+    env = _env(tmp_path)
+    config_path = tmp_path / "xdg-config-home" / "spork" / "config.toml"
+    _write_config(config_path.parent, tmp_path)
+    corrupt_script = (
+        f"import pathlib; pathlib.Path(r'{config_path}').write_text('this is not [ valid toml')"
+    )
+    env["EDITOR"] = _fake_editor(tmp_path, corrupt_script)
+
+    _run("edit", env=env)
+
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        entries = [e for e in db.get_audit_entries() if e.event == "config_edit"]
+
+    assert entries == []
 
 
 def test_config_edit_rejects_an_invalid_save(tmp_path: Path) -> None:

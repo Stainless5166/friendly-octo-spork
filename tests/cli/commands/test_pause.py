@@ -74,6 +74,28 @@ def test_pause_and_resume_help_work() -> None:
         assert "usage" in result.stdout.lower()
 
 
+def test_pause_with_no_config_produces_a_clean_error(tmp_path: Path) -> None:
+    """Same ConfigLoadError-before-ever-touching-the-socket convention
+    as spork status."""
+    env = _env(tmp_path)
+
+    result = _run("pause", env=env)
+
+    assert result.returncode == 1
+    assert "Error:" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_resume_with_no_config_produces_a_clean_error(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+
+    result = _run("resume", env=env)
+
+    assert result.returncode == 1
+    assert "Error:" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_pause_when_daemon_not_running_produces_a_clear_message(tmp_path: Path) -> None:
     """Same "daemon not running" convention as spork status."""
     env = _env(tmp_path)

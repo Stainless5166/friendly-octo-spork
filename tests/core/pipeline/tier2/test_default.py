@@ -11,6 +11,7 @@ and stub Provider-side appliers.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -119,6 +120,41 @@ def test_process_tier2_message_autoacts_on_a_high_confidence_verdict(
     assert verdict is not None
     assert verdict.category == "needs_reply"
     assert applier.calls == [(message, Action(type="tag", mailbox="Needs-Reply"))]
+
+
+def test_process_tier2_message_traces_every_stage_it_runs(
+    tmp_path: Path, make_message, caplog: pytest.LogCaptureFixture
+) -> None:
+    """docs/DESIGN.md §9.4/§12.2 (M7): every module build_tier2_pipeline()
+    composes is wrapped with TracingStage/TracingSelector, same as
+    Tier 1."""
+    caplog.set_level(logging.INFO)
+    responses_path = tmp_path / "responses.json"
+    _write_responses(responses_path, **{"Test subject": _high_confidence_response()})
+    applier = _RecordingApplier()
+    message = make_message(message_id="msg-1", subject="Test subject")
+
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        process_tier2_message(
+            message,
+            llm_client=RecordedLLMClient(responses_path),
+            executor=ActionExecutor(applier),
+            draft_creator=_RecordingDraftCreator(),
+            state_db=db,
+            **_default_kwargs(),
+        )
+
+    for stage_name in (
+        "BudgetGateSelector",
+        "BuildVerdictRequestFilter",
+        "CallLLMAugment",
+        "ValidateVerdictFilter",
+        "ConfidenceBandSelector",
+        "ApplyVerdictActionFilter",
+        "WriteAuditEntryFilter",
+        "MarkProcessedFilter",
+    ):
+        assert stage_name in caplog.text, f"{stage_name} never traced"
 
 
 def test_process_tier2_message_does_not_act_on_a_low_confidence_verdict(

@@ -18,6 +18,13 @@ Secrets (JMAP API token, Anthropic API key, etc.) are declared with
 [SecretSpec](https://github.com/cachix/secretspec) rather than `.env`
 files. Dependencies are managed with [UV](https://docs.astral.sh/uv/).
 
+**Privacy note:** when a message doesn't match any Tier 1 rule and
+needs a judgment call, its cleaned body text is sent to Claude (the
+Anthropic API) for classification — that's the whole point of Tier 2.
+Only use `spork` if you're comfortable with ambiguous mail going to
+Claude. Rule-matched mail (Tier 1) never leaves your machine; nothing
+is ever auto-sent to anyone regardless of tier (docs/DESIGN.md §15).
+
 ## Quickstart
 
 Two supported paths: the manual steps below, or — on Arch Linux —
@@ -168,6 +175,10 @@ you end up with `sporkd` running as a systemd **user** service.
   v1.
 - [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md) — test-by-test
   inventory, cross-checked against the roadmap.
+- [`docs/reports/`](docs/reports/) — dated, point-in-time status
+  snapshots (open the HTML file directly in a browser) — not kept in
+  sync like the three docs above; each one reflects the repo at the
+  commit it names.
 
 ## Status
 
@@ -182,6 +193,10 @@ adapter (`FileProvider`), is real and tested. M6's own exit criterion
 ("`spork status` reporting healthy" against a real account) still
 can't be fully met until M1 is — the unit file, `sd_notify`, the
 install flow, `spork doctor`'s checks, and the Arch package are all
-real regardless. M7 (hardening/v1 release) hasn't started. See
-`docs/ROADMAP.md` for the full milestone breakdown and what's still
-open within each.
+real regardless. M7 (hardening/v1 release) is 5/9: structured logging,
+per-message pipeline tracing, audit trail completeness, a security
+review pass, and rule-engine/action-executor coverage are all done;
+confidence tuning, rate-limit verification, crash-loop verification,
+and tagging v1.0.0 all share the same live-account/live-week blocker
+M7's own exit criteria state explicitly. See `docs/ROADMAP.md` for the
+full milestone breakdown and what's still open within each.

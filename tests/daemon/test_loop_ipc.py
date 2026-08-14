@@ -161,6 +161,40 @@ def test_run_daemon_pause_then_status_reports_paused(tmp_path: Path) -> None:
     asyncio.run(_body())
 
 
+def test_run_daemon_pause_and_resume_write_control_plane_audit_entries(
+    tmp_path: Path,
+) -> None:
+    """docs/DESIGN.md §6.2.2/§7.4 (M7): pause/resume each queue a
+    control-plane audit_log entry, drained and written by
+    _run_message_loop() on its next iteration — not synchronously with
+    the IPC response, a stated tradeoff, so this waits a beat after
+    each call before checking."""
+    config = _config(tmp_path)
+
+    async def _body() -> None:
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            run_daemon(config, stop_event=stop_event, idle_delay_seconds=0.02)
+        )
+        await asyncio.sleep(0.1)
+
+        await asyncio.to_thread(send_request, config.socket_path, "pause")
+        await asyncio.sleep(0.1)
+        await asyncio.to_thread(send_request, config.socket_path, "resume")
+        await asyncio.sleep(0.1)
+
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=2)
+
+    asyncio.run(_body())
+
+    with StateDB(config.db_path) as db:
+        events = [entry.event for entry in db.get_audit_entries() if entry.jmap_id == ""]
+
+    assert "daemon_paused" in events
+    assert "daemon_resumed" in events
+
+
 def test_run_daemon_still_processes_messages_while_serving_ipc(tmp_path: Path) -> None:
     """Both tasks in the TaskGroup genuinely coexist: a status request
     doesn't block or replace Tier 1 message processing."""

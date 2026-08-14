@@ -37,7 +37,7 @@ from spork.core.rules.schema import Action
 from spork.core.sources.base import Source
 from spork.core.state.db import StateDB
 from spork.core.systemd.notify import notify
-from spork.daemon.state import DaemonState, RulesState
+from spork.daemon.state import DaemonState, PendingAuditEvent, RulesState
 
 
 def _utc_now_iso() -> str:
@@ -148,7 +148,12 @@ def _build_ipc_handlers(
     `StateDB` — since these run as coroutines on the event-loop thread
     and could otherwise race a `to_thread(process_message, ...)` call
     touching the same connection from a worker thread (docs/DESIGN.md
-    §6.2.2). `reload` touches `RulesState` the same safe way: it
+    §6.2.2). pause/resume's control-plane audit entries (M7, §7.4)
+    respect this too: they queue a `PendingAuditEvent` onto
+    `DaemonState` (an in-memory append, no different in kind from
+    flipping `.paused`) rather than writing to `StateDB` directly —
+    `_run_message_loop()` is what actually drains and writes them.
+    `reload` touches `RulesState` the same safe way: it
     reassigns `.rules` wholesale rather than mutating the existing list
     in place (§6.2.2/§7.5) — a re-`load_rules()` failure is caught here
     and reported as `IpcResponse(ok=False, ...)`, leaving `rules_state.rules`
@@ -160,10 +165,16 @@ def _build_ipc_handlers(
 
     def _pause(params: dict[str, Any]) -> dict[str, Any]:
         daemon_state.paused = True
+        daemon_state.pending_control_plane_events.append(
+            PendingAuditEvent(event="daemon_paused", detail_json=None)
+        )
         return {"paused": True}
 
     def _resume(params: dict[str, Any]) -> dict[str, Any]:
         daemon_state.paused = False
+        daemon_state.pending_control_plane_events.append(
+            PendingAuditEvent(event="daemon_resumed", detail_json=None)
+        )
         return {"paused": False}
 
     def _reload(params: dict[str, Any]) -> dict[str, Any]:
@@ -266,6 +277,26 @@ async def _run_message_loop(
     tests use it to control which day's budget row the check reads.
     """
     while not stop_event.is_set():
+        # Drained unconditionally, even while paused (docs/DESIGN.md
+        # §6.2.2/§7.4, M7) — a repeated pause, or a resume this
+        # iteration hasn't observed yet, still gets its own audit
+        # entry written rather than waiting for some later unrelated
+        # state change. Reassigning to a fresh list (not .clear())
+        # before the loop below means a pause/resume call arriving
+        # mid-drain appends to the *new* list, never the one already
+        # being iterated (the same swap-the-reference safety pattern
+        # RulesState.rules reassignment already uses).
+        if daemon_state.pending_control_plane_events:
+            pending = daemon_state.pending_control_plane_events
+            daemon_state.pending_control_plane_events = []
+            for pending_event in pending:
+                await asyncio.to_thread(
+                    state_db.write_control_plane_audit_entry,
+                    ts=now(),
+                    event=pending_event.event,
+                    detail_json=pending_event.detail_json,
+                )
+
         if daemon_state.paused:
             await asyncio.sleep(idle_delay_seconds)
             continue

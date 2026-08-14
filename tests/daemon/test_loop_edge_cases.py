@@ -214,6 +214,110 @@ def test_run_message_loop_sleeps_rather_than_busy_looping_on_an_empty_source(
     assert elapsed >= 0.2  # confirms the sleeps actually elapsed real time
 
 
+def test_run_message_loop_drains_pending_control_plane_events(tmp_path: Path) -> None:
+    """docs/DESIGN.md §6.2.2/§7.4 (M7): a pre-queued PendingAuditEvent
+    is written via state_db.write_control_plane_audit_entry() on the
+    very first iteration, and cleared from the pending list — proven
+    directly against _run_message_loop(), the one code path that's
+    allowed to touch state_db at all."""
+    from spork.daemon.state import PendingAuditEvent
+
+    async def _body(daemon_state: DaemonState) -> None:
+        stop_event = asyncio.Event()
+        source = _CountingEmptySource()
+
+        async def _stop_after(seconds: float) -> None:
+            await asyncio.sleep(seconds)
+            stop_event.set()
+
+        with StateDB(tmp_path / "state.sqlite3") as state_db:
+            await asyncio.gather(
+                _run_message_loop(
+                    source=source,
+                    rules_state=RulesState(rules=[]),
+                    default_unmatched_action=Action(type="escalate"),
+                    executor=ActionExecutor(_StoppingApplier(asyncio.Event())),
+                    state_db=state_db,
+                    ops=PipelineObserver(LoggingAlerter()),
+                    classifier=None,
+                    llm_client=_UnusedLLMClient(),
+                    draft_creator=_UnusedDraftCreator(),
+                    thread_history_reader=_UnusedThreadHistoryReader(),
+                    mailbox_lister=_UnusedMailboxLister(),
+                    tiering=TieringConfig(),
+                    daemon_state=daemon_state,
+                    stop_event=stop_event,
+                    idle_delay_seconds=0.02,
+                    now=lambda: "2026-08-14T00:00:00Z",
+                ),
+                _stop_after(0.1),
+            )
+
+    state = DaemonState()
+    state.pending_control_plane_events.append(
+        PendingAuditEvent(event="daemon_paused", detail_json=None)
+    )
+    asyncio.run(_body(state))
+
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        entries = db.get_audit_entries()
+
+    assert state.pending_control_plane_events == []
+    assert any(e.event == "daemon_paused" and e.jmap_id == "" for e in entries)
+
+
+def test_run_message_loop_drains_pending_events_even_while_paused(tmp_path: Path) -> None:
+    """A pending event still gets written on the very next iteration
+    even when daemon_state.paused is True — otherwise a second
+    "pause" while already paused (or a "resume" that hasn't been
+    observed by the loop yet) would never get its own audit entry
+    written until some later unrelated resume."""
+    from spork.daemon.state import PendingAuditEvent
+
+    async def _body(daemon_state: DaemonState) -> None:
+        stop_event = asyncio.Event()
+        source = _CountingEmptySource()
+
+        async def _stop_after(seconds: float) -> None:
+            await asyncio.sleep(seconds)
+            stop_event.set()
+
+        with StateDB(tmp_path / "state.sqlite3") as state_db:
+            await asyncio.gather(
+                _run_message_loop(
+                    source=source,
+                    rules_state=RulesState(rules=[]),
+                    default_unmatched_action=Action(type="escalate"),
+                    executor=ActionExecutor(_StoppingApplier(asyncio.Event())),
+                    state_db=state_db,
+                    ops=PipelineObserver(LoggingAlerter()),
+                    classifier=None,
+                    llm_client=_UnusedLLMClient(),
+                    draft_creator=_UnusedDraftCreator(),
+                    thread_history_reader=_UnusedThreadHistoryReader(),
+                    mailbox_lister=_UnusedMailboxLister(),
+                    tiering=TieringConfig(),
+                    daemon_state=daemon_state,
+                    stop_event=stop_event,
+                    idle_delay_seconds=0.02,
+                    now=lambda: "2026-08-14T00:00:00Z",
+                ),
+                _stop_after(0.1),
+            )
+
+    state = DaemonState(paused=True)
+    state.pending_control_plane_events.append(
+        PendingAuditEvent(event="daemon_paused", detail_json=None)
+    )
+    asyncio.run(_body(state))
+
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        entries = db.get_audit_entries()
+
+    assert state.pending_control_plane_events == []
+    assert any(e.event == "daemon_paused" and e.jmap_id == "" for e in entries)
+
+
 def test_run_daemon_propagates_a_missing_rules_file_error(tmp_path: Path) -> None:
     """A rules_path that doesn't exist is a clear RulesLoadError,
     propagated as-is — run_daemon() is a library function, not a CLI

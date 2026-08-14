@@ -9,6 +9,9 @@ retry (the default 5-second busy timeout), not a correctness risk.
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
+
 import typer
 
 from spork.core.actions.executor import ActionExecutor
@@ -87,6 +90,15 @@ def _reclassify(message_id: str, config: SporkConfig) -> None:
     default_unmatched_action = Action(type=config.tiering.default_unmatched_action)
 
     with StateDB(config.db_path) as state_db:
+        # Distinct from process_message()'s/escalate_message()'s own
+        # per-message outcome row below (docs/DESIGN.md §7.4, M7) — "an
+        # operator forced this" stays visible even though the outcome
+        # looks the same as an ordinary automatic run.
+        state_db.write_control_plane_audit_entry(
+            ts=datetime.now(UTC).isoformat(),
+            event="reclassify_triggered",
+            detail_json=json.dumps({"message_id": message_id}),
+        )
         verdict = process_message(
             message,
             rules,

@@ -22,6 +22,7 @@ from spork.core.classify.registry import UnknownClassifierError
 from spork.core.config.loader import ConfigLoadError, load_config
 from spork.core.config.schema import SporkConfig
 from spork.core.llm.loader import LLMClientLoadError
+from spork.core.logging_setup import configure_logging
 from spork.core.providers.loader import ProviderLoadError
 from spork.core.rules.loader import RulesLoadError
 from spork.daemon.loop import run_daemon
@@ -31,6 +32,11 @@ def main(
     version: bool = typer.Option(
         False, "--version", help="Show the version and exit.", is_eager=True
     ),
+    log_level: str | None = typer.Option(
+        None,
+        "--log-level",
+        help="Override config.toml's log_level (DEBUG/INFO/WARNING/ERROR/CRITICAL).",
+    ),
 ) -> None:
     """Tiered JMAP email triage daemon. Run as a systemd user service."""
     if version:
@@ -39,9 +45,24 @@ def main(
 
     try:
         config = load_config()
+    except ConfigLoadError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    try:
+        configure_logging(log_level or config.log_level)
+    except ValueError as exc:
+        # Only logging.Logger.setLevel()'s own rejection of a bad
+        # --log-level name is meant to land here — narrowly scoped so
+        # an unrelated ValueError from deeper in the daemon (a real
+        # bug) still surfaces as a traceback, not a swallowed "clean"
+        # error.
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    try:
         asyncio.run(_run_until_signalled(config))
     except (
-        ConfigLoadError,
         RulesLoadError,
         ProviderLoadError,
         AlerterLoadError,

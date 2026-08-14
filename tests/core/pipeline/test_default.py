@@ -8,7 +8,10 @@ clock for deterministic timestamps.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+import pytest
 
 from spork.core.actions.executor import ActionExecutor
 from spork.core.alerts.base import AlertUrgency
@@ -126,6 +129,47 @@ def test_process_message_applies_matched_rule_action_and_marks_processed(
     assert verdict is not None
     assert verdict.matched_rule_id == "file-newsletter"
     assert applier.calls == [(message, Action(type="move", mailbox="Reading"))]
+
+
+def test_process_message_traces_every_stage_it_runs(
+    tmp_path: Path, make_message, caplog: pytest.LogCaptureFixture
+) -> None:
+    """docs/DESIGN.md §9.4/§12.2 (M7): every module build_default_pipeline()
+    composes is wrapped with TracingStage/TracingSelector — a real
+    message's full journey through one pipeline run is reconstructable
+    from logs alone, not just the alert-worthy stages."""
+    caplog.set_level(logging.INFO)
+    applier = _RecordingApplier()
+    message = make_message(message_id="msg-1", from_domain="newsletter.example.com")
+    rules = [
+        Rule(
+            id="file-newsletter",
+            when=Condition(from_domain_in=["newsletter.example.com"]),
+            action=Action(type="move", mailbox="Reading"),
+        )
+    ]
+
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        process_message(
+            message,
+            rules,
+            default_unmatched_action=Action(type="escalate"),
+            executor=ActionExecutor(applier),
+            state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
+            now=lambda: "t1",
+        )
+
+    for stage_name in (
+        "IdempotencyGateSelector",
+        "TimestampFilter",
+        "CorrelationIdFilter",
+        "RuleEvaluationSelector",
+        "ApplyActionFilter",
+        "WriteAuditEntryFilter",
+        "MarkProcessedFilter",
+    ):
+        assert stage_name in caplog.text, f"{stage_name} never traced"
 
 
 def test_process_message_writes_an_audit_entry_for_applied_actions(

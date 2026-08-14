@@ -18,6 +18,29 @@ from dataclasses import dataclass, field
 from spork.core.rules.schema import Rule
 
 
+@dataclass(frozen=True, slots=True)
+class PendingAuditEvent:
+    """One control-plane audit entry queued by an `IpcServer` handler,
+    not yet written (docs/DESIGN.md §6.2.2/§7.4, M7).
+
+    A first-draft design had `pause`/`resume` `await
+    asyncio.to_thread(state_db.write_control_plane_audit_entry, ...)`
+    directly — that doesn't actually serialize against
+    `_run_message_loop()`'s own in-flight `to_thread(process_message,
+    ...)` call, since two independent `to_thread()` calls from two
+    different coroutines can still race the same `state_db` connection
+    object. Queuing here instead means the one code path that already
+    safely, sequentially owns every `state_db` access
+    (`_run_message_loop()`) is the only thing that ever writes one —
+    `event`/`detail_json` are exactly `write_control_plane_audit_entry()`'s
+    own parameters, minus `ts` (stamped at drain time, by
+    `_run_message_loop()`'s own clock, not at enqueue time).
+    """
+
+    event: str
+    detail_json: str | None
+
+
 @dataclass
 class DaemonState:
     """`paused`: toggled by the `pause`/`resume` IPC commands, read by
@@ -28,11 +51,15 @@ class DaemonState:
     fired on, or `None` if it hasn't fired today — a date-equality
     guard rather than a boolean flag, so the alert self-resets across
     midnight without any special-cased reset logic (docs/DESIGN.md
-    §12.3)."""
+    §12.3). `pending_control_plane_events`: queued by `pause`/`resume`
+    (M7, §6.2.2/§7.4), drained once per `_run_message_loop()` iteration
+    — see `PendingAuditEvent`'s own docstring for why this exists
+    rather than a direct write from the IPC handler."""
 
     paused: bool = False
     started_at: str = ""
     budget_exhausted_alert_date: str | None = None
+    pending_control_plane_events: list[PendingAuditEvent] = field(default_factory=list)
 
 
 @dataclass
