@@ -217,14 +217,19 @@ provider/LLM/alerter builders used by daemon, doctor, and reclassify,
 and optional `[llm_recording]` configuration wraps the chosen client.
 The runtime module and changed config/daemon paths have 100% line
 coverage. **M5 is now 11/11 and the full suite is 684 tests, all green.**
+Updated once more for cursor-safe daemon acknowledgement:
+`MessageBatch`/`CheckpointedSource` provide an optional candidate state,
+and the daemon persists it only after a complete batch passes. Empty
+batches advance; processing failures, shutdown, and restart replay
+preserve the prior state. **The full suite is 713 tests, all green.**
 Updated once more for the first live JMAP leaf: `JmapClient.connect()`
 and `fetch_new_messages()` now authenticate through optional `jmapc`,
 baseline current Email state, page `Email/changes`, normalize Inbox
 messages, and return a candidate checkpoint under one `JmapError`
 boundary. The production path was manually verified against Fastmail
 without fetching historical message bodies; CI remains network-free.
-The changed JMAP client has 100% line coverage. **The full suite is 704
-tests, all green.**
+The changed JMAP client has 100% line coverage. That increment brought
+the suite to 704 tests. **The full suite is now 714 tests, all green.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -303,10 +308,11 @@ verified).
 |---|---|---|
 | `jmap.client` session bootstrap (`jmapc`) | ✅ | ✅ — tests 49–50, 640–651; 100% line coverage plus a live Fastmail session/baseline check |
 | Mailbox role resolution + caching | ✅ | ✅ — tests 20–26 (7 tests) |
-| `Email/changes`+`Email/get` batched fetch | ✅ client leaf; daemon acknowledgement still open | ✅ — tests 50, 640–651 |
+| `Email/changes`+`Email/get` batched fetch | ✅ client leaf + cursor-safe daemon acknowledgement | ✅ — tests 50, 640–651, 656–660 |
 | EventSource push listener + backoff | 🟡 stub (listener) / ✅ (backoff math) | ✅ (that it raises) — tests 51, 52 / ✅ (math) — tests 16–19 |
 | Poll-based fallback | ✅ (real, network-free) | ✅ — tests 53–61 (9 tests) |
 | State DB (`push_cursor`, `processed_messages`) | ✅ | ✅ — tests 62–71 (10 tests) |
+| Cursor-safe daemon acknowledgement | ✅ | ✅ — tests 652–660; candidate state is written only after a complete batch succeeds |
 | `spork doctor` | 🟡 stub — CLI wiring real, connectivity check raises `NotImplementedError` | ✅ (that it raises cleanly) — tests 147–149 |
 
 Five of these are genuinely done: session bootstrap, read-only fetch,
@@ -721,7 +727,7 @@ declared names.
 
 ---
 
-## Full test inventory (704 tests, all passing — 0 xfail)
+## Full test inventory (714 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -3522,3 +3528,39 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
 
 651. **`core/providers/jmap/test_client_edge_cases.py::test_normalization_tolerates_missing_optional_sender_body_and_headers`**
     Optional RFC fields safely normalize to empty pipeline values.
+
+### M1 cursor-safe daemon follow-up (tests 652–660)
+
+652. **`core/providers/jmap/test_provider.py::test_checkpointed_source_exposes_the_clients_candidate_state`**
+    The JMAP source carries the candidate Email state forward between
+    polls while exposing the ordinary Source view.
+
+653. **`core/sources/test_checkpoint.py::test_message_batch_holds_messages_and_a_candidate_checkpoint`**
+    `MessageBatch` keeps messages and a checkpoint together immutably.
+
+654. **`core/sources/test_checkpoint.py::test_checkpointed_source_is_structurally_distinct_from_plain_source`**
+    A source opts into cursor-aware polling through the separate
+    structural protocol.
+
+655. **`core/sources/test_checkpoint.py::test_message_batch_accepts_an_empty_checkpoint_for_non_cursor_sources`**
+    Plain providers can use the batch shape without a cursor.
+
+656. **`daemon/test_loop_edge_cases.py::test_checkpoint_is_acknowledged_after_the_whole_batch_succeeds`**
+    A successful batch persists its candidate state after processing.
+
+657. **`daemon/test_loop_edge_cases.py::test_checkpoint_is_not_acknowledged_when_processing_fails`**
+    An action failure leaves the cursor unchanged.
+
+658. **`daemon/test_loop_edge_cases.py::test_checkpoint_is_not_acknowledged_when_shutdown_interrupts_a_batch`**
+    Shutdown between messages does not acknowledge a partial batch.
+
+659. **`daemon/test_loop_edge_cases.py::test_empty_checkpointed_batches_are_acknowledged`**
+    A no-message state transition is still persisted.
+
+660. **`daemon/test_loop_edge_cases.py::test_failed_batch_leaves_the_previous_cursor_for_a_restart`**
+    Restart-visible state remains at the prior checkpoint so the failed
+    batch is replayable.
+
+661. **`core/providers/jmap/test_provider.py::test_provider_builds_a_checkpointed_source_and_exposes_account_id`**
+    Covers the provider capability used by daemon composition to load the
+    account cursor before readiness.
