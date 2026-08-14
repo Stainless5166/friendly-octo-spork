@@ -9,9 +9,9 @@ loudly rather than silently ignored.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class BackendSpec(BaseModel):
@@ -28,6 +28,24 @@ class BackendSpec(BaseModel):
 
     spec: str
     kwargs: dict[str, Any] = Field(default_factory=dict)
+    secret_kwargs: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def disallow_overlapping_kwargs(self) -> Self:
+        """Keep each constructor argument in one unambiguous source."""
+        overlap = self.kwargs.keys() & self.secret_kwargs.keys()
+        if overlap:
+            joined = ", ".join(sorted(overlap))
+            raise ValueError(f"kwargs and secret_kwargs overlap: {joined}")
+        return self
+
+
+class LLMRecordingConfig(BaseModel):
+    """Select the private corpus path for recorded LLM exchanges."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    corpus_path: Path
 
 
 class TieringConfig(BaseModel):
@@ -70,6 +88,7 @@ class SporkConfig(BaseModel):
     provider: BackendSpec
     llm: BackendSpec
     alerts: BackendSpec
+    llm_recording: LLMRecordingConfig | None = None
     rules_path: Path
     db_path: Path
     socket_path: Path | None = None

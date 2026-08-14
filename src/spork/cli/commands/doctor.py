@@ -17,14 +17,17 @@ from dataclasses import dataclass
 
 import typer
 
+from spork.core.alerts.loader import AlerterLoadError
 from spork.core.classify import registry as classify_registry
 from spork.core.classify.registry import UnknownClassifierError
 from spork.core.config.loader import ConfigLoadError, load_config
 from spork.core.config.paths import resolve_secretspec_path
 from spork.core.config.schema import SporkConfig
-from spork.core.providers.loader import ProviderLoadError, load_provider
+from spork.core.llm.loader import LLMClientLoadError
+from spork.core.providers.loader import ProviderLoadError
 from spork.core.rules.loader import RulesLoadError, load_rules
-from spork.core.secrets import SecretsError, resolve_secrets
+from spork.core.runtime import build_alerter, build_llm_client, build_provider
+from spork.core.secrets import Secrets, SecretsError, resolve_secrets
 from spork.core.systemd.unit import check_unit_status
 
 
@@ -53,10 +56,13 @@ def doctor() -> None:
 
 def _run_checks() -> list[DoctorCheck]:
     config_check, config = _check_config()
+    secrets_check, secrets = _check_secrets()
     return [
-        _check_secrets(),
+        secrets_check,
         config_check,
-        _check_provider(config),
+        _check_provider(config, secrets),
+        _check_llm(config, secrets),
+        _check_alerter(config, secrets),
         _check_rules(config),
         _check_classifier(config),
         _check_jmap_connectivity(),
@@ -64,14 +70,14 @@ def _run_checks() -> list[DoctorCheck]:
     ]
 
 
-def _check_secrets() -> DoctorCheck:
+def _check_secrets() -> tuple[DoctorCheck, Secrets | None]:
     """The `secretspec check` equivalent (§7.3): every secret declared
     in the installed `secretspec.toml` actually resolves."""
     try:
-        resolve_secrets(resolve_secretspec_path(), reason="spork doctor")
+        secrets = resolve_secrets(resolve_secretspec_path(), reason="spork doctor")
     except SecretsError as exc:
-        return DoctorCheck("secrets", False, str(exc))
-    return DoctorCheck("secrets", True, "all declared secrets resolved")
+        return DoctorCheck("secrets", False, str(exc)), None
+    return DoctorCheck("secrets", True, "all declared secrets resolved"), secrets
 
 
 def _check_config() -> tuple[DoctorCheck, SporkConfig | None]:
@@ -84,14 +90,40 @@ def _check_config() -> tuple[DoctorCheck, SporkConfig | None]:
     return DoctorCheck("config", True, "loaded and validated"), config
 
 
-def _check_provider(config: SporkConfig | None) -> DoctorCheck:
+def _check_provider(config: SporkConfig | None, secrets: Secrets | None) -> DoctorCheck:
     if config is None:
         return DoctorCheck("provider", False, "skipped — config failed to load")
+    if secrets is None:
+        return DoctorCheck("provider", False, "skipped — secrets failed to resolve")
     try:
-        load_provider(config.provider.spec, **config.provider.kwargs)
-    except ProviderLoadError as exc:
+        build_provider(config, secrets)
+    except (ProviderLoadError, SecretsError) as exc:
         return DoctorCheck("provider", False, str(exc))
     return DoctorCheck("provider", True, f"loaded {config.provider.spec}")
+
+
+def _check_llm(config: SporkConfig | None, secrets: Secrets | None) -> DoctorCheck:
+    if config is None:
+        return DoctorCheck("LLM client", False, "skipped — config failed to load")
+    if secrets is None:
+        return DoctorCheck("LLM client", False, "skipped — secrets failed to resolve")
+    try:
+        build_llm_client(config, secrets)
+    except (LLMClientLoadError, SecretsError) as exc:
+        return DoctorCheck("LLM client", False, str(exc))
+    return DoctorCheck("LLM client", True, f"loaded {config.llm.spec}")
+
+
+def _check_alerter(config: SporkConfig | None, secrets: Secrets | None) -> DoctorCheck:
+    if config is None:
+        return DoctorCheck("alerter", False, "skipped — config failed to load")
+    if secrets is None:
+        return DoctorCheck("alerter", False, "skipped — secrets failed to resolve")
+    try:
+        build_alerter(config, secrets)
+    except (AlerterLoadError, SecretsError) as exc:
+        return DoctorCheck("alerter", False, str(exc))
+    return DoctorCheck("alerter", True, f"loaded {config.alerts.spec}")
 
 
 def _check_rules(config: SporkConfig | None) -> DoctorCheck:

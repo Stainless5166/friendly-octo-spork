@@ -25,6 +25,7 @@ from spork.core.llm.loader import LLMClientLoadError
 from spork.core.logging_setup import configure_logging
 from spork.core.providers.loader import ProviderLoadError
 from spork.core.rules.loader import RulesLoadError
+from spork.core.secrets import SecretsError
 from spork.daemon.loop import run_daemon
 
 
@@ -68,6 +69,7 @@ def main(
         AlerterLoadError,
         UnknownClassifierError,
         LLMClientLoadError,
+        SecretsError,
     ) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
