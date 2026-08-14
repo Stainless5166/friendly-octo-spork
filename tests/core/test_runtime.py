@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from spork.core.config.schema import BackendSpec, LLMRecordingConfig, SporkConfig
+from spork.core.llm.base import LLMCallUsage, LLMResult, Verdict, VerdictRequest
 from spork.core.runtime import (
     build_alerter,
     build_llm_client,
@@ -11,9 +13,6 @@ from spork.core.runtime import (
     materialize_backend_kwargs,
     resolve_runtime_secrets,
 )
-
-from spork.core.config.schema import BackendSpec, LLMRecordingConfig, SporkConfig
-from spork.core.llm.base import LLMCallUsage, LLMResult, Verdict, VerdictRequest
 from spork.core.secrets import Secrets
 
 
