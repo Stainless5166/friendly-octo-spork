@@ -29,8 +29,10 @@ files. Dependencies are managed with [UV](https://docs.astral.sh/uv/).
 
 ## Status
 
-M0, M2, M3, and M5 are complete; M4 is 2/3 (daemon-health alerts still
-open); M1 is done except for the pieces that genuinely need a live
+M0, M2, M3, and M5 are complete; M4 is 2.5/3 (the daily-LLM-budget-
+exhausted daemon-health alert is done; JMAP push disconnected is still
+open, genuinely blocked on a live EventSource connection); M1 is done
+except for the pieces that genuinely need a live
 Fastmail account (JMAP session bootstrap, the real push listener) —
 everything buildable without one, including the whole
 `Provider`/`Source` abstraction proven against a second, fully real

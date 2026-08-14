@@ -298,18 +298,27 @@ follow-up behind the same `Alerter` protocol, not built this round.
       and `RecordBudgetExhaustedFilter` always alert;
       `ApplyVerdictActionFilter` alerts on `autoact_alert` or
       `verdict.urgency == "high"` regardless of band. **Daemon health
-      is still NOT done, but is no longer blocked** — JMAP push
-      disconnected/crash-looping are `sporkd` lifecycle events, not a
-      `Payload`/`Pipeline.run()` for any message, so there's nothing
-      for a *pipeline* module to attach to (that part of the reasoning
-      still holds); what's changed is the M5 daemon loop this used to
-      wait on now exists (`spork.daemon.loop.run_daemon()`,
-      `PipelineObserver`/`Alerter` already threaded through it for
-      per-message alerts) — wiring daemon-lifecycle alerts (push
-      disconnected timer, crash-loop detection around the
-      `asyncio.TaskGroup()`) is real, buildable, currently-untracked
-      follow-up work, not something any M5 item did as a side effect.
-      See docs/TEST_COVERAGE.md tests 318–346.
+      is now 1/2 done.** Of the two daemon-lifecycle signals actually
+      in scope here (crash-loop detection was re-scoped to M6/systemd
+      below, not this loop's job — a daemon babysitting its own
+      restart count duplicates what systemd's `Restart=`/
+      `StartLimitBurst` already does):
+      - [x] **Daily LLM budget exhausted at the daemon level**
+        (docs/DESIGN.md §12.3) — a one-shot-per-day critical alert,
+        distinct from `RecordBudgetExhaustedFilter`'s existing
+        per-message alert, wired into `_run_message_loop()` right
+        after each escalation. Needed no live network to build
+        honestly (it's a `StateDB` read `BudgetGateSelector` already
+        does per message, asked once more from the loop), so it's the
+        one daemon-health signal this item was actually blocked on
+        M5's daemon loop for, not on anything else. See
+        docs/TEST_COVERAGE.md tests 503–508.
+      - [ ] **JMAP push disconnected > N minutes** — still genuinely
+        blocked: detecting "disconnected" needs a live JMAP
+        EventSource connection to have something to time out on in
+        the first place (docs/ROADMAP.md M1). The design-gap comment
+        lives directly on the stub it blocks:
+        `spork.core.providers.jmap.push.JmapPushTrigger`.
 - [ ] Graceful degrade when no DBus session bus is available (e.g. no
       active desktop session — sporkd keeps running, alerts just don't
       display, logged instead) (S) — moot for now: `LoggingAlerter`

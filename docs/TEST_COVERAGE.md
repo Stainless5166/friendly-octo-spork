@@ -167,7 +167,15 @@ traceback for exactly the kind of misconfiguration this CLI otherwise
 always catches cleanly. Also corrected several stale "blocked on the
 M5 daemon loop, which doesn't exist" claims (daemon-health alerts,
 cross-tier correlation-ID stitching, `spork doctor`'s secrets/config
-checks) now that it does.
+checks) now that it does. Updated once more for M4's daemon-health
+item's first half: a daemon-level daily-budget-exhausted alert
+(docs/DESIGN.md §12.3) — a one-shot-per-day critical alert distinct
+from `RecordBudgetExhaustedFilter`'s existing per-message alert,
+self-resetting across date rollover by a date-equality guard rather
+than a boolean flag. **M4 is now 2.5/3** (JMAP push disconnected still
+genuinely blocked on a live EventSource connection; crash-loop
+detection re-scoped to M6/systemd, not this loop's job — see
+docs/ROADMAP.md).
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -421,12 +429,12 @@ duplicate that idempotency check; the scheduling decision needs a live
 JMAP session to know what's actually pending (M5, same blocker M1's
 daemon loop has), and isn't invented here.
 
-### M4 — Alerting — 2/3
+### M4 — Alerting — 2.5/3
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `Alerter` protocol + `LoggingAlerter` | ✅ | ✅ — tests 303–317 (15 tests), 100% line coverage |
-| Alert triggers wired to confidence bands + VIP rules + daemon health | ✅ pipeline-visible portion only — VIP escalation, alert_only, autoact_alert + urgency=="high", budget exhausted; ❌ daemon health (no `Payload`/`Pipeline.run()` for a lifecycle event to attach to; the M5 daemon loop this used to wait on now exists, so this is unblocked, untracked follow-up, not still-blocked work) | ✅ pipeline-visible portion — tests 318–346 (29 tests: `from_in` prerequisite 318–322, `PipelineObserver`/`CorrelationIdFilter`/wiring 323–346), 100% line coverage on the touched modules |
+| Alert triggers wired to confidence bands + VIP rules + daemon health | ✅ pipeline-visible portion — VIP escalation, alert_only, autoact_alert + urgency=="high", budget exhausted; ✅ daemon health, daily-budget-exhausted half (one-shot-per-day critical alert, `_check_daily_budget_alert()`); ❌ daemon health, JMAP-push-disconnected half (still genuinely blocked on a live EventSource connection to time out on — see `spork.core.providers.jmap.push.JmapPushTrigger`'s docstring) | ✅ pipeline-visible portion — tests 318–346 (29 tests: `from_in` prerequisite 318–322, `PipelineObserver`/`CorrelationIdFilter`/wiring 323–346), 100% line coverage on the touched modules; ✅ daily-budget-exhausted alert — tests 503–508 (6 tests), 100% line coverage on `spork.daemon` |
 | Graceful degrade when no DBus session bus is available | — | moot for now — see below |
 
 `spork.core.alerts.base`/`log`/`loader` mirror
@@ -464,14 +472,23 @@ band (the orthogonal dimension, exercised even inside a plain
 `"autoact"` outcome since both bands share this filter);
 `RecordBudgetExhaustedFilter` always alerts at `"critical"` urgency.
 Daemon-health alerts (JMAP push disconnected, LLM budget exhausted at
-the daemon level, crash-looping) are **not** built here — they're
+the daemon level, crash-looping) are **not** pipeline modules — they're
 about `sporkd`'s own lifecycle, not any one message's `Pipeline.run()`,
-so there's no `Payload` for a *pipeline* module to attach to (that
-part still holds). What's changed: the M5 daemon loop this used to
-wait on now exists (`run_daemon()`, `PipelineObserver`/`Alerter`
-already threaded through it for per-message alerts) — wiring
-daemon-lifecycle alerts onto it is real, currently-untracked follow-up
-work now, not still-blocked work. `PipelineObserver`'s correlation-ID
+so there's no `Payload` for a *pipeline* module to attach to. One of
+the three is now built directly on the daemon loop instead:
+`spork.daemon.loop._check_daily_budget_alert()` reads `StateDB` after
+each `escalate_message()` call and fires a one-shot-per-day critical
+alert the same way `BudgetGateSelector` already checks per message —
+distinct from `RecordBudgetExhaustedFilter`'s existing per-message
+alert (that one legitimately fires every time; this one fires once a
+day, guarded by `DaemonState.budget_exhausted_alert_date` — a
+date-equality check, not a boolean flag, so it self-resets across
+midnight with no explicit reset logic). JMAP push disconnected stays
+genuinely blocked (needs a live EventSource connection to time out
+on); crash-loop detection was re-scoped to M6/systemd (`Restart=`/
+`RestartSec=` in the unit file already does this — a daemon
+babysitting its own restart count would duplicate that). See
+docs/ROADMAP.md M4 for the up-to-date split. `PipelineObserver`'s correlation-ID
 mechanism also partially satisfies M7's "per-message tracing" roadmap
 item for the pipeline-internal piece (a known, stated limitation: a
 correlation ID is scoped to one pipeline *run*, not one message's full
@@ -572,7 +589,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (525 tests, all passing — 0 xfail)
+## Full test inventory (531 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -2873,3 +2890,35 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
     2 was wired into the loop — a bad `llm.spec` crashed `sporkd` with
     a raw traceback instead of the clean error every other load
     failure gets. Fixed by adding `LLMClientLoadError` to the tuple.
+
+503. **`daemon/test_loop.py::test_run_daemon_fires_a_daemon_level_alert_when_the_daily_budget_is_exhausted`**
+    `run_daemon()` end to end with `daily_call_budget=0`: the new
+    one-shot daemon-health alert (docs/DESIGN.md §12.3) fires when an
+    escalated message lands on an already-exhausted budget.
+
+504. **`daemon/test_loop.py::test_run_daemon_fires_the_daemon_level_budget_alert_only_once`**
+    Two messages escalate onto the same exhausted budget in one run;
+    the daemon-level alert delivers exactly once (counted via
+    `LoggingAlerter`'s own log records, not raw substring occurrences —
+    a single `PipelineObserver.alert()` call legitimately logs its
+    title twice, once via `trace()` and once via delivery).
+
+505. **`daemon/test_loop.py::test_run_daemon_does_not_fire_the_daemon_level_budget_alert_when_budget_remains`**
+    The ordinary default-budget config never trips the new alert —
+    it's specific to exhaustion, not a side effect of any escalation.
+
+506. **`daemon/test_loop_edge_cases.py::test_check_daily_budget_alert_fires_once_and_stamps_todays_date`**
+    Unit-tests `_check_daily_budget_alert()` directly: fires once
+    against an already-exhausted budget and stamps
+    `DaemonState.budget_exhausted_alert_date`; a second check the same
+    day is a no-op.
+
+507. **`daemon/test_loop_edge_cases.py::test_check_daily_budget_alert_does_nothing_one_call_below_the_limit`**
+    `has_budget_remaining()`'s limit is exclusive (§10.4) — one call
+    short of the budget is still "remaining," not exhausted, so no
+    alert fires.
+
+508. **`daemon/test_loop_edge_cases.py::test_check_daily_budget_alert_fires_again_after_a_date_rollover`**
+    The guard is a date-equality check against `now()`, not a boolean
+    flag: a second exhausted-budget day fires again and re-stamps the
+    date, with no explicit reset step anywhere.
