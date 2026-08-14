@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from spork.core.models import NormalizedMessage
@@ -33,13 +35,63 @@ class DraftCreator(Protocol):
     def create_draft(self, in_reply_to: NormalizedMessage, body: str) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ThreadContext:
+    """Everything `process_tier2_message()`'s `Tier2Meta` needs about a
+    message's thread history (docs/DESIGN.md §9.3, §10.7).
+
+    Deliberately narrow — exactly the two facts Tier 2 consults
+    (`thread_prior_subject`, `thread_user_has_replied`), not a
+    general-purpose thread-search result.
+    """
+
+    prior_subject: str | None
+    user_has_replied: bool
+
+
+class ThreadHistoryReader(Protocol):
+    """Resolves one message's `ThreadContext` — a provider's third read
+    side, alongside `Source` (new mail) and whatever `build_action_applier()`
+    reads to apply an action.
+    """
+
+    def get_thread_context(self, message: NormalizedMessage) -> ThreadContext: ...
+
+
+class MailboxLister(Protocol):
+    """Lists the account's mailbox names, for Tier 2's `available_mailboxes`
+    (§10.1) and `validate_verdict()`'s closed-set check (§10.2).
+    """
+
+    def list_mailboxes(self) -> Sequence[str]: ...
+
+
+class MessageNotFoundError(Exception):
+    """Raised by `MessageLookup.get_message()` when `message_id` has no
+    matching message — a real "not found," not a placeholder default.
+    """
+
+
+class MessageLookup(Protocol):
+    """Resolves one message by id — a provider's fourth read side, for
+    `spork reclassify <id>` (docs/DESIGN.md §7.4/§13), which needs to
+    look up an already-seen message again rather than poll for new
+    ones.
+    """
+
+    def get_message(self, message_id: str) -> NormalizedMessage: ...
+
+
 class Provider(Protocol):
     """What every mail-backend integration (JMAP, IMAP, ...) adapts to.
 
     A provider is the daemon's *entire* relationship to one remote
     source of truth: reading from it (`build_source`), writing an
-    action to it (`build_action_applier`), and writing a draft to it
-    (`build_draft_creator`) are three operations against the same
+    action to it (`build_action_applier`), writing a draft to it
+    (`build_draft_creator`), and answering the three read-side
+    questions Tier 2/`spork reclassify` need
+    (`build_thread_history_reader`, `build_mailbox_lister`,
+    `build_message_lookup`) are six operations against the same
     backend, not separate concerns that happen to share one
     implementation. Anything else backend-specific (mailbox role
     resolution) is reached through whatever a provider hands back, not
@@ -49,3 +101,6 @@ class Provider(Protocol):
     def build_source(self) -> Source: ...
     def build_action_applier(self) -> ActionApplier: ...
     def build_draft_creator(self) -> DraftCreator: ...
+    def build_thread_history_reader(self) -> ThreadHistoryReader: ...
+    def build_mailbox_lister(self) -> MailboxLister: ...
+    def build_message_lookup(self) -> MessageLookup: ...

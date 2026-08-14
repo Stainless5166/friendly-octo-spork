@@ -80,10 +80,21 @@ class StateDB:
     A thin wrapper, not an ORM — the daemon's state needs are small
     enough that hand-written SQL stays more readable than an
     abstraction layer over it would be.
+
+    `check_same_thread=False`: the daemon loop (docs/DESIGN.md §6.2.1)
+    constructs a `StateDB` on the asyncio event loop's thread, but
+    every `process_message()` call touching it runs inside
+    `asyncio.to_thread()`, on whichever worker thread the pool hands
+    out — not necessarily the same one twice. This is safe *only*
+    because that loop never runs two such calls concurrently, one
+    message's full pipeline run (every `StateDB` write included)
+    always completes before the next begins — sequential handoff
+    between threads, never simultaneous access. This flag does not
+    make concurrent multi-thread use of one `StateDB` safe in general.
     """
 
     def __init__(self, db_path: str | Path) -> None:
-        self._conn = sqlite3.connect(str(db_path))
+        self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()

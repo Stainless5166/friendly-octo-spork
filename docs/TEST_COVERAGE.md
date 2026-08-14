@@ -85,7 +85,97 @@ disconnected, crash-looping) remain unbuilt — no `Payload`/
 `Pipeline.run()` exists for them, so they're explicitly deferred to
 the M5 daemon loop, not invented here. **M4 is 2/3** (its "graceful
 degrade" item stays moot until a real desktop backend exists, per the
-note already on M4's table).
+note already on M4's table). Updated once more for M5's first item:
+`spork.core.config` (`schema.py`/`paths.py`/`loader.py`) — a three-tier
+`config.toml` (system enforced/user/system default) settled against
+the real XDG Base Directory Specification v0.8, not invented; deep
+merge is per-key, not whole-file. **M5 is 1/9.** Updated once more for
+M5's second prerequisite: `spork.daemon.loop.run_daemon()` — every
+blocking call (`Source.poll()`, the whole `process_message()` call)
+bridged into the asyncio loop via `asyncio.to_thread()`, since every
+I/O dependency this daemon has is synchronous (confirmed against
+`jmapc` directly). Tier 1 only; Tier 2 daemon-loop chaining is
+tracked as a new, separate roadmap item rather than faked.
+`StateDB` gained `check_same_thread=False` as a required companion
+fix. **M5 is 2/10** (a checklist item was added along with this work,
+not just checked off). Updated once more: `spork.core.ipc`
+(newline-delimited JSON, one request per connection, real Unix
+sockets throughout) plus `DaemonState` and `run_daemon()`'s
+`asyncio.TaskGroup()` now serving it alongside Tier 1 processing, and
+the `spork status`/`spork pause`/`spork resume`/`spork logs` CLI
+commands. A real concurrency bug (an IPC handler racing `StateDB`
+against a `to_thread(process_message, ...)` call) was found and
+designed out before any code was written — `spork status` defers its
+LLM-spend field as a direct, stated consequence rather than accepting
+the race. **M5 is 6/10.** Updated once more for "Wire Tier 2 into the
+daemon loop": `Provider` gained `build_thread_history_reader()`/
+`build_mailbox_lister()` (real against `FileProvider`, settled-shape
+`NotImplementedError` against `JmapProvider`, same split as every
+other JMAP leaf); `run_daemon()`/`_run_message_loop()` now carry an
+escalated message straight into `process_tier2_message()` in the same
+poll cycle via a second, strictly-sequential `asyncio.to_thread()`
+call. `to_addresses` is parsed from real `NormalizedMessage.headers`.
+**M5 is 7/10.** Updated once more for `spork rules list/edit/enable/disable`
+with live reload: `RulesState` (mirrors `DaemonState`) + a new `reload`
+IPC command that reassigns `rules_state.rules` wholesale (never
+mutated in place) on a successful re-`load_rules()`, read fresh by
+`_run_message_loop()` right after every `poll()` call; a
+`RulesLoadError` from a bad hand-edit is reported as `ok=False`
+without touching the daemon's last-known-good rules.
+`spork.core.rules.writer.dump_rules()` is a small purpose-built TOML
+serializer (no new dependency) `enable`/`disable` use to rewrite
+`rules.toml` — real, stated tradeoff: doesn't preserve hand-written
+comments/formatting. Two stale `docs/DESIGN.md` §13 claims were found
+and corrected along the way (`spork status`'s LLM-spend claim, `spork
+rules list`'s "match stats" claim — neither has real backing data).
+**M5 is 8/10.** Updated once more for `spork config show/edit`:
+`spork.core.config.loader.enforced_override_paths()` flattens the
+enforced tier's raw TOML into dotted paths (independent of
+`load_config()`'s merge) so `show` can flag every value the enforced
+tier sets, plus a stated-heuristic credential redaction
+(`token`/`key`/`secret`/`password` substring match) for `kwargs`
+entries. `edit` validates the real merged `load_config()` result on
+save and — deliberately, unlike rules — never pushes a live reload:
+config controls objects `run_daemon()` only builds once at startup.
+Also rebuilt the `spork.cli` §6.4 UML diagram, stale since
+status/pause/resume/logs/rules-list/edit/enable/disable landed and
+were never added to it. **M5 is 9/10.** Updated once more, and last,
+for `spork reclassify <id>`: standalone like `spork logs` (no daemon
+required — safe under SQLite's already-on WAL mode plus
+`sqlite3.connect()`'s unmodified 5-second default busy timeout, a
+bounded retry rather than a correctness risk on the rare write
+collision with a running daemon). `Provider` gained a sixth
+capability, `build_message_lookup()` (real against `FileProvider`,
+settled-shape `NotImplementedError` against `JmapProvider`);
+`process_message()`/`build_default_pipeline()` gained
+`force: bool = False`, omitting `IdempotencyGateSelector` from the
+composed pipeline entirely rather than consulting and overriding it.
+`spork.core.pipeline.tier2.escalate.{escalate_message,
+parse_to_addresses}` were extracted out of what was
+`spork.daemon.loop`'s private helpers — one real implementation, two
+callers (the daemon loop, and `spork reclassify`), not a daemon-only
+helper duplicated for the CLI. **M5 is 10/10 — the milestone is
+complete.** Updated once more for a docs-normalization pass across the
+whole document set (not tied to a single checklist item): found and
+fixed two real bugs it surfaced along the way — `spork.daemon.main`
+never caught `LLMClientLoadError` even though `run_daemon()` has
+constructed an `LLMClient` at startup since Tier 2 was wired in, and
+`spork reclassify` had no exception handling at all around
+`load_provider()`/`load_rules()`/`classify_registry.get()`/
+`load_alerter()`/`load_llm_client()` — both would have printed a raw
+traceback for exactly the kind of misconfiguration this CLI otherwise
+always catches cleanly. Also corrected several stale "blocked on the
+M5 daemon loop, which doesn't exist" claims (daemon-health alerts,
+cross-tier correlation-ID stitching, `spork doctor`'s secrets/config
+checks) now that it does. Updated once more for M4's daemon-health
+item's first half: a daemon-level daily-budget-exhausted alert
+(docs/DESIGN.md §12.3) — a one-shot-per-day critical alert distinct
+from `RecordBudgetExhaustedFilter`'s existing per-message alert,
+self-resetting across date rollover by a date-equality guard rather
+than a boolean flag. **M4 is now 2.5/3** (JMAP push disconnected still
+genuinely blocked on a live EventSource connection; crash-loop
+detection re-scoped to M6/systemd, not this loop's job — see
+docs/ROADMAP.md).
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -339,12 +429,12 @@ duplicate that idempotency check; the scheduling decision needs a live
 JMAP session to know what's actually pending (M5, same blocker M1's
 daemon loop has), and isn't invented here.
 
-### M4 — Alerting — 2/3
+### M4 — Alerting — 2.5/3
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `Alerter` protocol + `LoggingAlerter` | ✅ | ✅ — tests 303–317 (15 tests), 100% line coverage |
-| Alert triggers wired to confidence bands + VIP rules + daemon health | ✅ pipeline-visible portion only — VIP escalation, alert_only, autoact_alert + urgency=="high", budget exhausted; ❌ daemon health (no `Payload`/`Pipeline.run()` for it — M5 daemon loop) | ✅ pipeline-visible portion — tests 318–346 (29 tests: `from_in` prerequisite 318–322, `PipelineObserver`/`CorrelationIdFilter`/wiring 323–346), 100% line coverage on the touched modules |
+| Alert triggers wired to confidence bands + VIP rules + daemon health | ✅ pipeline-visible portion — VIP escalation, alert_only, autoact_alert + urgency=="high", budget exhausted; ✅ daemon health, daily-budget-exhausted half (one-shot-per-day critical alert, `_check_daily_budget_alert()`); ❌ daemon health, JMAP-push-disconnected half (still genuinely blocked on a live EventSource connection to time out on — see `spork.core.providers.jmap.push.JmapPushTrigger`'s docstring) | ✅ pipeline-visible portion — tests 318–346 (29 tests: `from_in` prerequisite 318–322, `PipelineObserver`/`CorrelationIdFilter`/wiring 323–346), 100% line coverage on the touched modules; ✅ daily-budget-exhausted alert — tests 503–508 (6 tests), 100% line coverage on `spork.daemon` |
 | Graceful degrade when no DBus session bus is available | — | moot for now — see below |
 
 `spork.core.alerts.base`/`log`/`loader` mirror
@@ -382,25 +472,124 @@ band (the orthogonal dimension, exercised even inside a plain
 `"autoact"` outcome since both bands share this filter);
 `RecordBudgetExhaustedFilter` always alerts at `"critical"` urgency.
 Daemon-health alerts (JMAP push disconnected, LLM budget exhausted at
-the daemon level, crash-looping) are **not** built here and can't be —
-they're about `sporkd`'s own lifecycle, not any one message's
-`Pipeline.run()`, so there's no `Payload` for a module to attach to;
-that's explicitly M5 daemon-loop work. `PipelineObserver`'s
-correlation-ID mechanism also partially satisfies M7's "per-message
-tracing" roadmap item for the pipeline-internal piece (a known,
-stated limitation: a correlation ID is scoped to one pipeline *run*,
-not one message's full cross-tier lifetime, since nothing calls
-`process_tier2_message()` outside tests until the M5 scheduler
-exists) — M7 still separately owns `sporkd`'s overall structured
-logging setup and audit-trail completeness beyond triage outcomes.
+the daemon level, crash-looping) are **not** pipeline modules — they're
+about `sporkd`'s own lifecycle, not any one message's `Pipeline.run()`,
+so there's no `Payload` for a *pipeline* module to attach to. One of
+the three is now built directly on the daemon loop instead:
+`spork.daemon.loop._check_daily_budget_alert()` reads `StateDB` after
+each `escalate_message()` call and fires a one-shot-per-day critical
+alert the same way `BudgetGateSelector` already checks per message —
+distinct from `RecordBudgetExhaustedFilter`'s existing per-message
+alert (that one legitimately fires every time; this one fires once a
+day, guarded by `DaemonState.budget_exhausted_alert_date` — a
+date-equality check, not a boolean flag, so it self-resets across
+midnight with no explicit reset logic). JMAP push disconnected stays
+genuinely blocked (needs a live EventSource connection to time out
+on); crash-loop detection was re-scoped to M6/systemd (`Restart=`/
+`RestartSec=` in the unit file already does this — a daemon
+babysitting its own restart count would duplicate that). See
+docs/ROADMAP.md M4 for the up-to-date split. `PipelineObserver`'s correlation-ID
+mechanism also partially satisfies M7's "per-message tracing" roadmap
+item for the pipeline-internal piece (a known, stated limitation: a
+correlation ID is scoped to one pipeline *run*, not one message's full
+cross-tier lifetime — `escalate_message()`, the real Tier 2 caller M5
+built, doesn't thread Tier 1's correlation ID into `Tier2Meta`) — M7
+still separately owns `sporkd`'s overall structured logging setup and
+audit-trail completeness beyond triage outcomes.
 
-### M5–M7
+### M5 — CLI + daemon control surface — 10/10 (complete)
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `spork.core.config` | ✅ | ✅ — tests 347–374 (28 numbered entries, 51 actual test cases — see note below), 100% line coverage |
+| Daemon event loop assembly | ✅ | ✅ — tests 375–383 (9 tests), 100% line coverage on `spork.daemon.loop` |
+| Wire Tier 2 into the daemon loop | ✅ | ✅ — tests 418–435 + 502 (19 tests), 100% line coverage on the touched `spork.core.providers.*`/`spork.daemon.loop` code |
+| IPC protocol + Unix socket server | ✅ | ✅ — tests 384–399 + 400–403 (20 tests), 99–100% line coverage on `spork.core.ipc` |
+| `spork status` | ✅ | ✅ — tests 404–407 (4 tests), including a full end-to-end test against a real `sporkd` subprocess |
+| `spork pause`/`resume` | ✅ | ✅ — tests 408–410 (3 tests), including a full pause→status→resume→status round trip |
+| `spork rules list/edit/enable/disable` w/ live reload | ✅ | ✅ — tests 436–454 (19 tests), 100% line coverage on `spork.core.rules.writer`/`spork.daemon.state`/`spork.cli.commands.rules`, no gaps on the touched part of `spork.daemon.loop` |
+| `spork config show/edit` | ✅ | ✅ — tests 455–478 (24 tests), 100% line coverage on `spork.core.config.*`/`spork.cli.commands.config` |
+| `spork logs` | ✅ | ✅ — tests 411–417 (7 tests) |
+| `spork reclassify <id>` | ✅ | ✅ — tests 479–498 + 499–501 (23 tests), 100% line coverage on `spork.core.providers.*`/`spork.core.pipeline.*`/`spork.daemon.loop`/`spork.cli.commands.reclassify` |
+
+`spork.core.config` (`schema.py`/`paths.py`/`loader.py`) is the first
+of M5's two prerequisite items — settled and documented (§7.2/§6.4)
+against the real XDG Base Directory Specification v0.8 and comparable
+tools (`git`'s system/global scopes, Chromium/Firefox managed policy),
+not invented. Three-tier precedence (system enforced
+`/etc/spork/enforced.toml` > user `$XDG_CONFIG_HOME/spork/config.toml`
+> system default via `$XDG_CONFIG_DIRS`), deep-merged per-key rather
+than whole-file, validated once against `SporkConfig`. The concrete
+exit-criterion test — an enforced-tier value a user's own config.toml
+can't override — is real:
+`test_loader.py::test_load_config_enforced_tier_overrides_user_tier`.
+
+**Test-count note:** the 28 numbered entries below (347–374) represent
+**51 actual pytest test cases** — several are parametrized across a
+spread of realistic Linux path shapes (spaces, unicode, deep nesting,
+multi-entry `XDG_CONFIG_DIRS` strings) per instruction, and this
+file's own numbering convention counts one entry per test *function*,
+not per parametrize instance. The "Full test inventory" header count
+below is the true `pytest --collect-only` total; from here on, the
+highest numbered entry and that true collected count no longer
+coincide — a real, intentional gap (the extra parametrize instances),
+not a numbering error.
+
+`spork.daemon.loop.run_daemon()` (§6.2.1) is the second prerequisite
+— every I/O dependency this daemon has (`jmapc`, and by extension
+anything a live `ActionApplier` does) is synchronous, confirmed
+against the library directly rather than assumed, so the asyncio loop
+bridges every blocking call via `asyncio.to_thread()`. Proven end to
+end against `FileProvider`/`LoggingAlerter`: a matched rule's action
+really applies, both messages land in a real `StateDB`, a VIP-sender
+rule's alert fires through the real `LoggingAlerter` loaded from
+config, and the loop actually stops (bounded `asyncio.wait_for`, not a
+sleep-and-hope) once `stop_event` is set. **Tier 1 only** — chaining
+an escalated message into `process_tier2_message()` needs a `Provider`
+capability (thread-history/mailbox-listing) that doesn't exist yet,
+tracked as its own new roadmap item rather than faked with placeholder
+values. `StateDB` also gained `check_same_thread=False`, itself
+covered by a dedicated cross-thread test (test 375, `tests/core/state`).
+
+**`spork.core.ipc`** (`protocol.py`/`server.py`/`client.py`) is
+newline-delimited JSON, one request per connection, over the real Unix
+domain control socket — tested against real sockets throughout, never
+mocked. `IpcServer` never crashes or hangs on an unknown command, a
+malformed request line, or a handler that raises; the socket file gets
+0600 permissions (§15) and any stale leftover is removed before
+binding. `send_request()` (the CLI's plain synchronous side) raises
+one `IpcConnectionError` for every "nothing reached the daemon" case —
+no socket file, connection refused, or a listener that accepts and
+closes without responding.
+
+**`DaemonState`** carries only `paused`/`started_at`, deliberately
+never anything derived from `StateDB` — a real concurrency bug (an
+`IpcServer` handler reading `StateDB` from the event-loop thread while
+a `to_thread(process_message, ...)` call touches the same connection
+from a worker thread) was caught and designed out *before* any code
+was written, not found by a flaky test later. `spork status`'s
+LLM-spend field is deferred as a direct consequence — the data is real
+(`StateDB.get_llm_usage()`, since M3) but reporting it safely needs
+either Tier 2 wired into the loop or a `StateDB` synchronization
+mechanism this round doesn't add.
+
+`spork pause`/`spork resume`'s honest caveat is tested, not just
+documented: `test_run_message_loop_never_polls_while_paused` proves
+`Source.poll()` is never called while paused (a real behavioral skip),
+and the full CLI round trip is proven against a real `sporkd`
+subprocess, not simulated.
+
+`spork logs` needed no new `StateDB` query surface — `--tail`/`--since`
+filter the already-returned list client-side; `--message-id` reuses
+`get_audit_entries(jmap_id=...)`'s existing storage-side filter.
+
+### M6–M7
 
 No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (346 tests, all passing — 0 xfail)
+## Full test inventory (531 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -2052,3 +2241,684 @@ injected with a `PipelineObserver`.
 346. **`tier2/test_default.py::test_process_tier2_message_alerts_for_a_low_confidence_verdict`** (Tier 2, end to end)
     A low-confidence verdict through the real `process_tier2_message()`.
     Asserts one alert fires.
+
+### tests/core/config (spork.core.config — three-tier config.toml, §7.2)
+
+One entry per test *function*; several are parametrized (noted inline)
+— see the test-count note under M5's table above for why the numbered
+range (347–374, 28 entries) undercounts the true 51 collected cases.
+
+347. **`test_paths.py::test_resolve_user_config_path_uses_xdg_config_home_when_set`** (parametrized, 8 cases)
+    `XDG_CONFIG_HOME` set to a spread of realistic paths (plain,
+    spaces, unicode, deep nesting, root-level, trailing slash,
+    dashes/underscores/digits). Asserts `.../spork/config.toml` for each.
+
+348. **`test_paths.py::test_resolve_user_config_path_falls_back_to_home_dot_config_when_unset`**
+    No `XDG_CONFIG_HOME`. Asserts `$HOME/.config/spork/config.toml` —
+    the spec's own documented default.
+
+349. **`test_paths.py::test_resolve_system_default_config_paths_uses_xdg_config_dirs_in_order`** (parametrized, 5 cases)
+    A spread of `XDG_CONFIG_DIRS` strings (single dir, multiple,
+    a dir with a space, unicode). Asserts one candidate per entry, in
+    the variable's own preference order.
+
+350. **`test_paths.py::test_resolve_system_default_config_paths_falls_back_to_etc_xdg_when_unset`**
+    No `XDG_CONFIG_DIRS`. Asserts `["/etc/xdg/spork/config.toml"]`.
+
+351. **`test_paths.py::test_resolve_enforced_config_path_is_always_etc_spork_enforced_toml`**
+    `XDG_CONFIG_HOME`/`XDG_CONFIG_DIRS` both set to attacker-controlled-
+    looking values. Asserts `/etc/spork/enforced.toml` regardless —
+    the enforced tier's whole point is that no env var relocates it.
+
+352. **`test_paths.py::test_resolve_socket_path_uses_xdg_runtime_dir_when_set`** (parametrized, 8 cases)
+    Same path spread as 347. Asserts `.../spork/sporkd.sock` for each.
+
+353. **`test_paths_edge_cases.py::test_resolve_user_config_path_treats_relative_or_empty_as_unset`** (parametrized, 3 cases)
+    A relative path, an empty string, and `"./here"`. Asserts all three
+    fall back to `$HOME/.config/...`, same as genuinely unset.
+
+354. **`test_paths_edge_cases.py::test_resolve_system_default_config_paths_drops_relative_entries`**
+    A relative entry mixed between two absolute ones in
+    `XDG_CONFIG_DIRS`. Asserts it's dropped; the absolute entries
+    survive in their original order.
+
+355. **`test_paths_edge_cases.py::test_resolve_system_default_config_paths_skips_empty_segments`** (parametrized, 3 cases)
+    `"/a::/b"`, `"/a:/b:"`, `":/a:/b"` — doubled/leading/trailing
+    colons. Asserts the empty segments are skipped, not treated as
+    `"."` or raising.
+
+356. **`test_paths_edge_cases.py::test_resolve_system_default_config_paths_falls_back_when_entirely_relative`**
+    Every `XDG_CONFIG_DIRS` entry relative. Asserts the spec's own
+    `/etc/xdg` default applies, as if unset.
+
+357. **`test_paths_edge_cases.py::test_resolve_socket_path_falls_back_and_warns_when_xdg_runtime_dir_unset`**
+    No `XDG_RUNTIME_DIR`. Asserts a fallback to `/tmp/spork-<uid>/sporkd.sock`
+    *and* a `UserWarning` mentioning `XDG_RUNTIME_DIR` — the spec's own
+    "fall back and print a warning" guidance for this specific variable.
+
+358. **`test_paths_edge_cases.py::test_resolve_socket_path_falls_back_for_relative_or_empty_too`** (parametrized, 2 cases)
+    A relative path and an empty string. Same fallback-and-warn
+    treatment as 357.
+
+359. **`test_schema.py::test_sporkconfig_constructs_with_all_required_fields`**
+    The five always-required fields (provider/llm/alerts specs,
+    rules_path, db_path) alone construct a valid `SporkConfig`.
+
+360. **`test_schema.py::test_sporkconfig_rejects_unknown_fields`**
+    A typo'd top-level key. Asserts `pydantic.ValidationError`
+    (`extra="forbid"`, same convention as `rules.schema.Condition`).
+
+361. **`test_schema.py::test_sporkconfig_socket_path_defaults_to_none`**
+    Omitting `socket_path`. Asserts `None` — `loader.py`'s job to fill
+    it in via `resolve_socket_path()`, not the schema's.
+
+362. **`test_schema.py::test_sporkconfig_tiering_defaults_when_omitted`**
+    Omitting `[tiering]` entirely. Asserts a full, default-valued
+    `TieringConfig`, not a missing-field error.
+
+363. **`test_schema.py::test_tieringconfig_defaults_match_documented_values`**
+    Asserts every `TieringConfig` default matches §7.2's example
+    config.toml exactly.
+
+364. **`test_schema.py::test_backendspec_kwargs_defaults_to_empty_dict`**
+    A `BackendSpec` with no `kwargs` table. Asserts `{}`.
+
+365. **`test_loader.py::test_load_config_reads_the_user_tier_alone`**
+    Only the user tier's file exists, fully specified. Asserts it
+    loads correctly with no system-default/enforced files present.
+
+366. **`test_loader.py::test_load_config_merges_three_tiers_per_key_not_whole_file`**
+    System-default sets `alert_threshold`+`daily_call_budget`+specs;
+    user overrides only `alert_threshold`. Asserts both the user's
+    override and the system-default's untouched values survive.
+
+367. **`test_loader.py::test_load_config_enforced_tier_overrides_user_tier`**
+    The concrete exit-criterion test: user sets `daily_call_budget=200`,
+    enforced sets `50`. Asserts `50` wins.
+
+368. **`test_loader.py::test_load_config_raises_configloaderror_for_malformed_toml`**
+    Broken TOML syntax. Asserts `ConfigLoadError`, not a raw
+    `tomllib.TOMLDecodeError`.
+
+369. **`test_loader.py::test_load_config_raises_configloaderror_when_required_fields_are_missing`**
+    No tier ever sets `provider`. Asserts `ConfigLoadError`, not a raw
+    `pydantic.ValidationError`.
+
+370. **`test_loader.py::test_load_config_resolves_socket_path_when_not_set_by_any_tier`**
+    `socket_path` omitted everywhere. Asserts it's filled in via
+    `paths.resolve_socket_path()`.
+
+371. **`test_loader_edge_cases.py::test_load_config_raises_configloaderror_for_an_unreadable_path`**
+    The user-tier path is a directory, not a file — deterministic
+    regardless of the running user's privilege level (unlike
+    chmod-based permission denial, meaningless when tests run as
+    root). Asserts `ConfigLoadError`, not a raw `OSError`.
+
+372. **`test_loader_edge_cases.py::test_load_config_treats_an_empty_but_present_tier_file_as_a_noop`**
+    A 0-byte enforced-tier file. Asserts it contributes zero
+    overrides, same as a missing file — not a parse error.
+
+373. **`test_loader_edge_cases.py::test_load_config_deep_merges_nested_backendspec_kwargs`**
+    System-default sets two `provider.kwargs` entries; user overrides
+    only one. Asserts both survive — the recursive merge goes deeper
+    than one level, not just `[tiering]`.
+
+374. **`test_loader_edge_cases.py::test_load_config_system_default_uses_first_existing_match_only`**
+    Three `system_default_config_paths` candidates, only the middle one
+    exists. Asserts it's the one read — later real candidates are
+    ignored, matching `XDG_CONFIG_DIRS`'s first-match-wins precedence.
+
+### tests/core/state + tests/daemon (the asyncio daemon loop, §6.2.1)
+
+375. **`state/test_db.py::test_state_db_usable_from_a_different_thread_than_it_was_created_on`**
+    `StateDB` created on the test's thread, then used (via a spawned
+    `threading.Thread`, joined before asserting) from another thread.
+    Asserts no `sqlite3.ProgrammingError` — the exact sequential
+    cross-thread pattern `asyncio.to_thread(process_message, ...)`
+    relies on.
+
+376. **`daemon/test_loop.py::test_run_daemon_applies_a_matched_rules_action`**
+    A message matching a catch-all rule, run through `run_daemon()`
+    against a real `FileProvider`. Asserts the action lands in
+    `FileProvider`'s real JSON-lines actions log.
+
+377. **`daemon/test_loop.py::test_run_daemon_marks_processed_messages_in_state_db`**
+    Asserts both fixture messages end up `has_processed() == True` in
+    a real `StateDB` after running through the real asyncio loop.
+
+378. **`daemon/test_loop.py::test_run_daemon_fires_a_vip_alert_through_pipeline_observer`**
+    A VIP-sender rule's `alert_immediately`. Asserts the alert fires
+    through the real `LoggingAlerter` loaded from `config.alerts.spec`
+    — not a hand-constructed `PipelineObserver`.
+
+379. **`daemon/test_loop.py::test_run_daemon_stops_promptly_after_stop_event_is_set`**
+    Asserts `run_daemon()` actually returns once `stop_event` is set,
+    via a bounded `asyncio.wait_for()` that would itself fail the test
+    if the loop never stopped.
+
+380. **`daemon/test_loop_edge_cases.py::test_run_message_loop_stops_mid_batch_without_processing_the_rest`**
+    A fake `ActionApplier` sets `stop_event` as a side effect of
+    applying the first of two messages in one batch. Asserts the
+    second message is never processed.
+
+381. **`daemon/test_loop_edge_cases.py::test_run_message_loop_sleeps_rather_than_busy_looping_on_an_empty_source`**
+    An always-empty `Source` with a short `idle_delay_seconds`, run
+    for a fixed wall-clock window. Asserts a bounded `poll()` call
+    count (proving `asyncio.sleep()` actually elapsed, not a spin) and
+    separately asserts real wall-clock time actually passed.
+
+382. **`daemon/test_loop_edge_cases.py::test_run_daemon_propagates_a_missing_rules_file_error`**
+    A `rules_path` that doesn't exist. Asserts `RulesLoadError`
+    propagates as-is — `run_daemon()` is a library function, not a CLI
+    command, so it doesn't catch/report this itself.
+
+383. **`daemon/test_main.py::test_no_usable_config_produces_a_clean_error_not_a_traceback`**
+    `sporkd` run via subprocess with `XDG_CONFIG_HOME`/`XDG_CONFIG_DIRS`
+    pointed at empty tmp dirs (no config anywhere). Asserts exit code 1,
+    an `"Error:"` message, and no `"Traceback"` in stderr.
+
+### tests/core/ipc + tests/daemon + tests/cli/commands (the control socket, §6.2.2)
+
+384. **`ipc/test_protocol.py::test_ipc_request_defaults_params_to_empty_dict`**
+    A command needing no arguments. Asserts `params == {}`.
+
+385. **`ipc/test_protocol.py::test_ipc_response_defaults_data_and_error`**
+    A bare success response. Asserts `data == {}` and `error is None`.
+
+386. **`ipc/test_protocol.py::test_ipc_request_rejects_unknown_fields`**
+    A typo'd field. Asserts `pydantic.ValidationError` (`extra="forbid"`).
+
+387. **`ipc/test_protocol.py::test_encode_line_produces_one_newline_terminated_json_line`**
+    Asserts the framed bytes end in exactly one `\n` and round-trip
+    back through `IpcRequest.model_validate_json()`.
+
+388. **`ipc/test_protocol.py::test_encode_line_works_for_responses_too`**
+    Same round-trip, for `IpcResponse`.
+
+389. **`ipc/test_server.py::test_ipc_server_dispatches_to_the_registered_handler`**
+    A real connection, over a real Unix socket. Asserts the handler's
+    return value comes back as the response's `data`.
+
+390. **`ipc/test_server.py::test_ipc_server_returns_error_for_an_unknown_command`**
+    No handler registered. Asserts a clear error response, never a hang.
+
+391. **`ipc/test_server.py::test_ipc_server_returns_error_when_a_handler_raises`**
+    A handler that raises `ValueError`. Asserts an error response, not
+    a crashed connection or server.
+
+392. **`ipc/test_server.py::test_ipc_server_removes_a_stale_socket_file_before_binding`**
+    A leftover non-socket file at the target path. Asserts startup
+    still succeeds.
+
+393. **`ipc/test_server.py::test_ipc_server_socket_file_has_restrictive_permissions`**
+    Asserts the bound socket file is mode `0600` (§15).
+
+394. **`ipc/test_server.py::test_ipc_server_stops_promptly_after_stop_event_is_set`**
+    Asserts `serve()` actually returns once `stop_event` is set.
+
+395. **`ipc/test_server_edge_cases.py::test_ipc_server_returns_error_for_a_malformed_request_line`**
+    Garbage bytes (not valid `IpcRequest` JSON) on the wire. Asserts a
+    clear error response.
+
+396. **`ipc/test_client.py::test_send_request_returns_the_servers_response`**
+    A real round trip against a real `IpcServer`. Asserts the
+    handler's data comes back.
+
+397. **`ipc/test_client.py::test_send_request_defaults_params_to_empty_dict`**
+    Calling without `params`. Asserts an empty dict was sent.
+
+398. **`ipc/test_client.py::test_send_request_raises_ipcconnectionerror_when_nothing_is_listening`**
+    No socket file at all. Asserts `IpcConnectionError` — the "daemon
+    not running" signal every CLI command checks for.
+
+399. **`ipc/test_client_edge_cases.py::test_send_request_raises_when_server_closes_without_responding`**
+    A listener that accepts then closes without writing a response.
+    Asserts `IpcConnectionError` either way that failure surfaces.
+
+400. **`daemon/test_loop_ipc.py::test_run_daemon_serves_status_over_the_socket`**
+    A real status request against a real running `run_daemon()`.
+    Asserts `paused is False` and `started_at` is set.
+
+401. **`daemon/test_loop_ipc.py::test_run_daemon_pause_then_status_reports_paused`**
+    pause -> status -> resume -> status, over the real socket. Asserts
+    each step's `paused` value.
+
+402. **`daemon/test_loop_ipc.py::test_run_daemon_still_processes_messages_while_serving_ipc`**
+    A status request during a real Tier 1 run. Asserts the message
+    still gets processed — both `TaskGroup` tasks genuinely coexist.
+
+403. **`daemon/test_loop_ipc.py::test_run_message_loop_never_polls_while_paused`**
+    `daemon_state.paused = True` from the start, against a
+    call-counting fake `Source`. Asserts `poll()` is never called —
+    pause is a real behavioral skip, not just an unread flag.
+
+404. **`cli/commands/test_status.py::test_status_help_works`**
+    `spork status --help`. Asserts exit 0, usage text.
+
+405. **`cli/commands/test_status.py::test_status_with_no_config_produces_a_clean_error`**
+    No config anywhere. Asserts exit 1, a clear `ConfigLoadError`
+    message, no traceback.
+
+406. **`cli/commands/test_status.py::test_status_when_daemon_not_running_produces_a_clear_message`**
+    A valid config, nothing listening. Asserts "not running" messaging.
+
+407. **`cli/commands/test_status.py::test_status_reports_real_daemon_state`**
+    A real `sporkd` subprocess (started, polled for its socket file),
+    then a real `spork status` subprocess against it. Asserts exit 0
+    and `"paused"` in the output.
+
+408. **`cli/commands/test_pause.py::test_pause_and_resume_help_work`**
+    `--help` for both commands. Asserts exit 0, usage text.
+
+409. **`cli/commands/test_pause.py::test_pause_when_daemon_not_running_produces_a_clear_message`**
+    Same "not running" convention as `spork status`.
+
+410. **`cli/commands/test_pause.py::test_pause_then_resume_actually_toggles_daemon_state`**
+    A full end-to-end round trip against a real `sporkd` subprocess,
+    verified via `spork status`'s own output.
+
+411. **`cli/commands/test_logs.py::test_logs_help_works`**
+    Asserts exit 0, usage text.
+
+412. **`cli/commands/test_logs.py::test_logs_with_no_config_produces_a_clean_error`**
+    Asserts exit 1, clean error, no traceback.
+
+413. **`cli/commands/test_logs.py::test_logs_prints_nothing_for_a_fresh_never_run_daemon`**
+    A `StateDB` that's never had anything written to it. Asserts empty
+    output, not an error.
+
+414. **`cli/commands/test_logs.py::test_logs_prints_entries_oldest_first`**
+    Two entries written out of display order. Asserts oldest-first.
+
+415. **`cli/commands/test_logs.py::test_logs_filters_by_message_id`**
+    `--message-id` against two entries for different messages. Asserts
+    only the matching one prints.
+
+416. **`cli/commands/test_logs.py::test_logs_filters_by_since`**
+    `--since` against two entries either side of the cutoff. Asserts
+    only the later one prints.
+
+417. **`cli/commands/test_logs.py::test_logs_tail_shows_only_the_last_n_entries`**
+    `--tail 2` against five entries. Asserts only the last two print,
+    in order.
+
+418. **`core/providers/jmap/test_client.py::test_get_thread_context_raises_not_implemented`**
+    `JmapClient.get_thread_context()` is a settled-shape stub, same
+    pattern as `connect()`/`fetch_new_messages()`/etc.
+
+419. **`core/providers/jmap/test_client.py::test_list_mailboxes_raises_not_implemented`**
+    Same, for `JmapClient.list_mailboxes()`.
+
+420. **`core/providers/jmap/test_provider.py::test_build_thread_history_reader_returns_something_that_can_get_context`**
+    `JmapProvider.build_thread_history_reader()` returns an object
+    satisfying `ThreadHistoryReader`; calling it raises
+    `NotImplementedError`, propagated from `JmapClient`.
+
+421. **`core/providers/jmap/test_provider.py::test_thread_history_reader_delegates_to_the_client_directly`**
+    `_JmapThreadHistoryReader` is a real delegation to
+    `JmapClient.get_thread_context()`, not a second placeholder.
+
+422. **`core/providers/jmap/test_provider.py::test_build_mailbox_lister_returns_something_that_can_list_mailboxes`**
+    Same shape as 420, for `build_mailbox_lister()`.
+
+423. **`core/providers/jmap/test_provider.py::test_mailbox_lister_delegates_to_the_client_directly`**
+    Same shape as 421, for `_JmapMailboxLister`.
+
+424. **`core/providers/file/test_provider.py::test_build_thread_history_reader_returns_no_history_for_a_singleton_thread`**
+    A message alone in its thread: `prior_subject is None`,
+    `user_has_replied is False` — real absence, not a placeholder.
+
+425. **`core/providers/file/test_provider.py::test_thread_history_reader_finds_prior_subject_and_a_reply_already_sent`**
+    Two messages sharing a thread, one with `"Sent"` in `mailbox_ids`.
+    Asserts the later message's context resolves the earlier one's
+    subject and `user_has_replied is True`.
+
+426. **`core/providers/file/test_provider.py::test_build_mailbox_lister_returns_the_explicit_available_mailboxes_when_given`**
+    An explicit `available_mailboxes=` constructor argument wins over
+    anything derived from the messages file.
+
+427. **`core/providers/file/test_provider.py::test_mailbox_lister_derives_the_sorted_union_of_mailbox_ids_when_not_given`**
+    With no `available_mailboxes=`, the list is the sorted union of
+    every message's `mailbox_ids` in the file.
+
+428. **`daemon/test_loop.py::test_run_daemon_runs_an_escalated_message_through_tier2`**
+    End to end against `FileProvider` + `RecordedLLMClient`: the
+    VIP-sender rule's escalation lands `tier_reached="tier2"` with the
+    recorded verdict's action, not stuck at Tier 1's placeholder
+    `"escalate"` row.
+
+429. **`core/providers/file/test_provider_edge_cases.py::test_mailbox_lister_returns_empty_for_an_empty_messages_file`**
+    No `available_mailboxes=`, no messages to derive from — `[]`, not
+    an error.
+
+430. **`core/providers/file/test_provider_edge_cases.py::test_mailbox_lister_respects_an_explicit_empty_list`**
+    `available_mailboxes=[]` is respected as a deliberate empty answer
+    (`is not None`, not truthiness) rather than falling back to
+    derivation from a file that has real mailbox_ids in it.
+
+431. **`core/providers/file/test_provider_edge_cases.py::test_thread_history_reader_ignores_messages_in_other_threads`**
+    A same-subject message in an unrelated thread doesn't leak in as
+    "prior" history.
+
+432. **`core/providers/file/test_provider_edge_cases.py::test_thread_history_reader_raises_a_clean_error_for_a_missing_messages_file`**
+    Same `MessagesLoadError` `build_source()` already raises for a
+    missing file.
+
+433. **`core/pipeline/tier2/test_escalate.py::test_parse_to_addresses_splits_and_strips_a_comma_separated_to_header`**
+    `parse_to_addresses()` unit test: comma-split, whitespace-stripped.
+    Relocated from `daemon/test_loop_edge_cases.py`'s
+    `_parse_to_addresses()` (same assertion) once `spork reclassify
+    <id>` (M5) needed the same function outside the daemon loop —
+    number kept stable, path/name updated to match the real move.
+
+434. **`core/pipeline/tier2/test_escalate.py::test_parse_to_addresses_returns_empty_tuple_when_no_to_header`**
+    No `To:` header at all — `()`, not a `KeyError` or a fabricated
+    address. Relocated alongside entry 433, same reason.
+
+435. **`daemon/test_loop_edge_cases.py::test_run_daemon_propagates_an_unrecorded_tier2_response_error`**
+    An escalated message with no recorded Tier 2 response:
+    `UnrecordedResponseError` propagates through `run_daemon()`'s
+    `asyncio.TaskGroup()` (as an `ExceptionGroup`) rather than being
+    swallowed or silently marking the message processed.
+
+436. **`core/rules/test_writer.py::test_dump_rules_round_trips_a_single_simple_rule`**
+    `dump_rules([rule])`, reparsed via `load_rules()`, reproduces the
+    original `Rule` exactly.
+
+437. **`core/rules/test_writer.py::test_dump_rules_round_trips_multiple_rules_preserving_order`**
+    Two rules (one disabled, one with `alert_immediately`) round-trip
+    in file order.
+
+438. **`core/rules/test_writer.py::test_dump_rules_of_an_empty_list_produces_a_valid_empty_rules_file`**
+    `dump_rules([])` parses back to `[]`, not an error.
+
+439. **`core/rules/test_writer.py::test_dump_rules_escapes_double_quotes_in_string_fields`**
+    A description/reason containing a literal `"` still round-trips —
+    valid TOML, not corrupted output.
+
+440. **`core/rules/test_writer_edge_cases.py::test_toml_value_raises_type_error_for_an_unsupported_python_type`**
+    `_toml_value()` on a `float` (outside the closed bool/str/list[str]
+    set) raises `TypeError` rather than emitting something invalid.
+
+441. **`daemon/test_loop_ipc.py::test_run_daemon_reload_with_a_valid_rewritten_rules_file_returns_ok`**
+    A `rules.toml` rewritten after `sporkd` started: the `reload`
+    command re-reads it and reports `ok=True`.
+
+442. **`daemon/test_loop_ipc.py::test_run_daemon_reload_with_invalid_rules_returns_ok_false_and_keeps_running`**
+    A hand-edit that breaks `rules.toml`: `reload` reports `ok=False`
+    with a real error message, but a subsequent `status` request over
+    the same socket still succeeds — the daemon itself never crashes.
+
+443. **`daemon/test_loop_ipc.py::test_run_message_loop_picks_up_a_reloaded_rules_list_on_the_next_poll_iteration`**
+    A `_MutatingSource` whose second `poll()` call mutates
+    `rules_state.rules` as a side effect: the first batch's message is
+    tagged Inbox (old rule), the second is moved to Archive (new rule)
+    — `rules_state.rules` is read fresh per poll iteration, not
+    captured once at loop start.
+
+444. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_list_prints_id_status_and_action_per_rule`**
+    Two rules (one enabled, one disabled): both ids and both
+    `enabled`/`disabled` labels appear in the output.
+
+445. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_list_with_no_rules_says_so`**
+    An empty `rules.toml`: "no rules" printed, exit 0, not an error.
+
+446. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_list_with_no_config_produces_a_clean_error`**
+    No `config.toml` anywhere: exit 1, clean `Error:`, no traceback.
+
+447. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_edit_with_no_daemon_running_still_saves_and_says_so`**
+    A no-op `$EDITOR`: the still-valid file re-validates fine, and with
+    no `sporkd` reachable the command says "not running" rather than
+    erroring.
+
+448. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_edit_rejects_an_invalid_save`**
+    `$EDITOR` that corrupts the file: `spork rules edit` reports a
+    clean error and never pushes a reload.
+
+449. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_enable_flips_a_disabled_rule_and_rewrites_the_file`**
+    `spork rules enable newsletters` then `spork rules list`: the rule
+    now shows `enabled`.
+
+450. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_disable_flips_an_enabled_rule`**
+    Same, the other direction, for `disable`.
+
+451. **`cli/commands/test_rules_list_edit_enable_disable.py::test_rules_enable_with_an_unknown_id_reports_a_clean_error`**
+    `spork rules enable no-such-rule`: exit 1, error names the unknown
+    id, no traceback.
+
+452. **`cli/commands/test_rules_list_edit_enable_disable_edge_cases.py::test_rules_enable_reports_success_against_a_real_running_sporkd`**
+    End to end: a real `sporkd` subprocess, `spork rules enable`
+    against it — "reloaded" appears in the output, the `_push_reload()`
+    success branch its sibling acceptance tests never reach.
+
+453. **`cli/commands/test_rules_list_edit_enable_disable_edge_cases.py::test_push_reload_reports_a_warning_when_sporkd_rejects_the_reload`**
+    A bare `IpcServer` whose `reload` handler raises: `_push_reload()`
+    prints a warning naming the real error, not a silent success.
+
+454. **`cli/commands/test_rules_list_edit_enable_disable_edge_cases.py::test_push_reload_with_no_socket_path_falls_back_to_resolve_socket_path`**
+    `_push_reload(None)` resolves a socket path itself (same defensive
+    pattern `run_daemon()` uses) rather than crashing on `None`.
+
+455. **`core/config/test_enforced_override_paths.py::test_enforced_override_paths_with_no_enforced_file_is_empty`**
+    No `enforced.toml` at all: an empty set, not an error.
+
+456. **`core/config/test_enforced_override_paths.py::test_enforced_override_paths_includes_flat_top_level_keys`**
+    A flat key (`rules_path`) at the enforced tier's top level appears
+    in the result unqualified.
+
+457. **`core/config/test_enforced_override_paths.py::test_enforced_override_paths_flattens_nested_tables_with_dotted_names`**
+    `[tiering] daily_call_budget = 200` becomes `"tiering.daily_call_budget"`.
+
+458. **`core/config/test_enforced_override_paths.py::test_enforced_override_paths_flattens_doubly_nested_kwargs_tables`**
+    `[provider.kwargs] host = "..."` becomes `"provider.kwargs.host"`.
+
+459. **`core/config/test_enforced_override_paths.py::test_enforced_override_paths_raises_configloaderror_for_malformed_toml`**
+    Invalid TOML in the enforced file: `ConfigLoadError`, same as
+    `load_config()` itself.
+
+460. **`cli/commands/test_config.py::test_config_show_prints_effective_values`**
+    A real merged config: `provider.spec` and a non-secret `kwargs`
+    value both appear in the output.
+
+461. **`cli/commands/test_config.py::test_config_show_redacts_a_token_like_kwarg`**
+    `provider.kwargs.api_token`'s real value never appears in the
+    output; the key itself does.
+
+462. **`cli/commands/test_config.py::test_config_show_with_no_config_produces_a_clean_error`**
+    No `config.toml` anywhere: exit 1, clean `Error:`, no traceback.
+
+463. **`cli/commands/test_config.py::test_config_edit_with_a_noop_editor_saves_and_says_restart`**
+    A no-op `$EDITOR`: exit 0, "restart" appears in the output — never
+    a reload push.
+
+464. **`cli/commands/test_config.py::test_config_edit_rejects_an_invalid_save`**
+    `$EDITOR` that corrupts the user tier's file: exit 1, clean
+    `Error:`, no traceback.
+
+465. **`cli/commands/test_config.py::test_config_group_appears_in_top_level_help`**
+    `spork --help` lists the `config` subcommand group.
+
+466. **`cli/commands/test_config.py::test_format_show_lines_flags_a_path_present_in_the_enforced_set`**
+    `_format_show_lines()` directly: a path in the given enforced set
+    gets exactly one `(enforced)`-suffixed line.
+
+467. **`cli/commands/test_config.py::test_format_show_lines_does_not_flag_paths_outside_the_enforced_set`**
+    An empty enforced set: no line is ever flagged.
+
+468. **`cli/commands/test_config.py::test_format_show_lines_redacts_provider_kwargs_api_token`**
+    `_format_show_lines()` directly: `provider.kwargs.api_token`'s
+    value is redacted regardless of the enforced set.
+
+469. **`cli/commands/test_config.py::test_looks_like_secret_matches_common_credential_key_names`**
+    `_looks_like_secret()` on `api_token`/`API_KEY`/`client_secret`/
+    `password` (all `True`) vs. `host`/an ordinary tiering-style key
+    (both `False`).
+
+470. **`core/config/test_enforced_override_paths_edge_cases.py::test_enforced_override_paths_treats_a_list_value_as_one_leaf_not_recursed_into`**
+    A TOML array (`allowed_categories`) is one leaf path, not something
+    recursed into just because it's a compound type.
+
+471. **`core/config/test_enforced_override_paths_edge_cases.py::test_enforced_override_paths_combines_flat_and_nested_keys_in_one_file`**
+    A flat key and a nested table in the same file both appear
+    correctly in the result.
+
+472. **`core/config/test_enforced_override_paths_edge_cases.py::test_enforced_override_paths_of_an_empty_file_is_empty`**
+    An empty (zero-byte) enforced file: an empty set.
+
+473. **`cli/commands/test_config_edge_cases.py::test_config_show_help_works`**
+    Asserts exit 0, usage text.
+
+474. **`cli/commands/test_config_edge_cases.py::test_config_edit_help_works`**
+    Asserts exit 0, usage text.
+
+475. **`cli/commands/test_config_edge_cases.py::test_config_edit_with_no_config_at_all_never_invokes_the_editor`**
+    No config in any tier: the precondition check fails (exit 1) before
+    `$EDITOR` ever runs — proven by a marker file it would have created
+    never appearing.
+
+476. **`cli/commands/test_config_edge_cases.py::test_format_show_lines_handles_a_none_socket_path_without_crashing`**
+    `socket_path=None` (before `load_config()` would normally resolve
+    it) prints `"socket_path = None"` rather than raising.
+
+477. **`cli/commands/test_config_edge_cases.py::test_format_show_lines_prints_no_kwargs_lines_when_kwargs_is_empty`**
+    An empty `kwargs` dict: no `.kwargs.` lines for that section.
+
+478. **`cli/commands/test_config_edge_cases.py::test_format_show_lines_redacts_across_every_backend_section_independently`**
+    `llm.kwargs.api_key` is redacted too, not just `provider.kwargs.*`
+    — the heuristic applies per-entry, not per-section.
+
+479. **`core/providers/jmap/test_client.py::test_get_message_raises_not_implemented`**
+    `JmapClient.get_message()` is a settled-shape stub, same pattern as
+    its other six methods.
+
+480. **`core/providers/jmap/test_provider.py::test_build_message_lookup_returns_something_that_can_get_a_message`**
+    `JmapProvider.build_message_lookup()` returns an object satisfying
+    `MessageLookup`; calling it raises `NotImplementedError`,
+    propagated from `JmapClient`.
+
+481. **`core/providers/jmap/test_provider.py::test_message_lookup_delegates_to_the_client_directly`**
+    `_JmapMessageLookup` is a real delegation to
+    `JmapClient.get_message()`, not a second placeholder.
+
+482. **`core/providers/file/test_provider.py::test_build_message_lookup_finds_a_message_by_id`**
+    `get_message()` scans the same fixture file `build_source()`
+    replays from and returns the matching `NormalizedMessage`.
+
+483. **`core/providers/file/test_provider.py::test_message_lookup_raises_a_clean_error_for_an_unknown_id`**
+    An unknown `message_id`: `MessageNotFoundError`, not a silent
+    `None` or an unhandled exception.
+
+484. **`core/pipeline/test_default.py::test_process_message_with_force_reprocesses_an_already_processed_message`**
+    `force=True` bypasses `IdempotencyGateSelector` entirely — an
+    already-processed message is evaluated and acted on again, its
+    `processed_messages` row overwritten.
+
+485. **`core/pipeline/tier2/test_escalate.py::test_escalate_message_wires_thread_history_and_mailbox_lister_into_tier2`**
+    `escalate_message()` calls both Provider-supplied reads with the
+    escalated message, and the resulting `Verdict`'s action is
+    actually applied — a real end-to-end call into
+    `process_tier2_message()`, not a passthrough.
+
+486. **`cli/commands/test_reclassify.py::test_reclassify_help_works`**
+    Asserts exit 0, usage text.
+
+487. **`cli/commands/test_reclassify.py::test_reclassify_with_no_config_produces_a_clean_error`**
+    Asserts exit 1, clean error, no traceback.
+
+488. **`cli/commands/test_reclassify.py::test_reclassify_with_an_unknown_message_id_reports_a_clean_error`**
+    Asserts exit 1, the unknown id named in the error, no traceback.
+
+489. **`cli/commands/test_reclassify.py::test_reclassify_reruns_tier1_and_records_the_new_outcome`**
+    A message matching a terminal rule: the new action appears in the
+    output and `processed_messages` (`tier_reached="tier1"`).
+
+490. **`cli/commands/test_reclassify.py::test_reclassify_escalates_through_tier2_when_the_rule_says_so`**
+    A message matching an escalating rule: `processed_messages` ends
+    up `tier_reached="tier2"` with the recorded verdict's action.
+
+491. **`cli/commands/test_reclassify.py::test_reclassify_reprocesses_a_message_already_marked_processed`**
+    The whole point: running `reclassify` twice on the same message
+    both succeed and both record the outcome.
+
+492. **`core/pipeline/test_default_edge_cases.py::test_process_message_with_force_on_a_never_processed_message_behaves_normally`**
+    `force=True` on a message that was never processed to begin with
+    behaves exactly like `force=False` — not double-applied or treated
+    specially.
+
+493. **`core/pipeline/tier2/test_escalate.py::test_escalate_message_returns_none_when_the_daily_budget_is_exhausted`**
+    `escalate_message()` passes `process_tier2_message()`'s
+    None-on-budget-exhausted result straight through.
+
+494. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_help_lists_the_message_id_argument`**
+    `--help` mentions the `message_id` argument.
+
+495. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_reports_budget_exhausted_rather_than_crashing`**
+    A rule that escalates, but the daily call budget is already zero:
+    a clear message, exit 0, not an unhandled exception.
+
+496. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_with_no_message_id_argument_is_a_usage_error`**
+    Omitting the required argument entirely is Typer's own usage error
+    (exit 2), never our own error handling.
+
+497. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_appears_in_top_level_help`**
+    `spork --help` lists the `reclassify` subcommand.
+
+498. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_works_while_a_real_sporkd_is_running`**
+    The real point of being standalone: `reclassify` against the same
+    `StateDB` a running `sporkd` is using, concurrently, without either
+    side failing (docs/DESIGN.md §7.4's WAL-mode reasoning).
+
+499. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_with_an_unloadable_provider_spec_reports_a_clean_error`**
+    A real bug found during a docs-normalization pass: `load_provider()`
+    had no exception handling around it at all — a bad `provider.spec`
+    produced a raw traceback. Fixed (`_reclassify()` now wraps the
+    whole body in one `except (*_LoadError, MessageNotFoundError)`,
+    mirroring `spork.daemon.main`'s tuple).
+
+500. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_with_an_unloadable_rules_file_reports_a_clean_error`**
+    Same bug, `load_rules()` — a malformed `rules.toml` also produced a
+    raw traceback before the fix above.
+
+501. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_with_an_unloadable_llm_spec_reports_a_clean_error_only_when_it_escalates`**
+    Same bug, `load_llm_client()` — only reachable once Tier 1
+    escalates, but still uncaught before the fix.
+
+502. **`daemon/test_main.py::test_an_unloadable_llm_spec_produces_a_clean_error_not_a_traceback`**
+    A second real bug found the same pass: `spork.daemon.main`'s
+    except tuple never included `LLMClientLoadError`, even though
+    `run_daemon()` has constructed an `LLMClient` at startup since Tier
+    2 was wired into the loop — a bad `llm.spec` crashed `sporkd` with
+    a raw traceback instead of the clean error every other load
+    failure gets. Fixed by adding `LLMClientLoadError` to the tuple.
+
+503. **`daemon/test_loop.py::test_run_daemon_fires_a_daemon_level_alert_when_the_daily_budget_is_exhausted`**
+    `run_daemon()` end to end with `daily_call_budget=0`: the new
+    one-shot daemon-health alert (docs/DESIGN.md §12.3) fires when an
+    escalated message lands on an already-exhausted budget.
+
+504. **`daemon/test_loop.py::test_run_daemon_fires_the_daemon_level_budget_alert_only_once`**
+    Two messages escalate onto the same exhausted budget in one run;
+    the daemon-level alert delivers exactly once (counted via
+    `LoggingAlerter`'s own log records, not raw substring occurrences —
+    a single `PipelineObserver.alert()` call legitimately logs its
+    title twice, once via `trace()` and once via delivery).
+
+505. **`daemon/test_loop.py::test_run_daemon_does_not_fire_the_daemon_level_budget_alert_when_budget_remains`**
+    The ordinary default-budget config never trips the new alert —
+    it's specific to exhaustion, not a side effect of any escalation.
+
+506. **`daemon/test_loop_edge_cases.py::test_check_daily_budget_alert_fires_once_and_stamps_todays_date`**
+    Unit-tests `_check_daily_budget_alert()` directly: fires once
+    against an already-exhausted budget and stamps
+    `DaemonState.budget_exhausted_alert_date`; a second check the same
+    day is a no-op.
+
+507. **`daemon/test_loop_edge_cases.py::test_check_daily_budget_alert_does_nothing_one_call_below_the_limit`**
+    `has_budget_remaining()`'s limit is exclusive (§10.4) — one call
+    short of the budget is still "remaining," not exhausted, so no
+    alert fires.
+
+508. **`daemon/test_loop_edge_cases.py::test_check_daily_budget_alert_fires_again_after_a_date_rollover`**
+    The guard is a date-equality check against `now()`, not a boolean
+    flag: a second exhausted-budget day fires again and re-stamps the
+    date, with no explicit reset step anywhere.

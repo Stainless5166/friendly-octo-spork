@@ -1,0 +1,338 @@
+"""Acceptance tests for spork.daemon.loop.run_daemon() (docs/DESIGN.md §6.2.1).
+
+Exercised end to end against FileProvider + LoggingAlerter +
+RecordedLLMClient — real Provider/Alerter/LLMClient backends, no live
+JMAP or Anthropic session needed (docs/DESIGN.md §9.3, §10.5),
+proving the loop's own composition/threading logic works, not any
+particular backend. Tier 1+2: §6.2.1's "Tier 1 only" scope decision is
+resolved — an escalating message now flows straight into
+process_tier2_message() in the same poll cycle.
+
+Plain `asyncio.run()` inside ordinary sync test functions rather than
+`pytest-asyncio` — stdlib is enough here, and this project has been
+deliberately minimal about dependencies (docs/ROADMAP.md M7's tracing
+item rejects a heavier dependency for the same reason).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
+from spork.core.state.db import StateDB
+from spork.daemon.loop import run_daemon
+
+
+def _write_messages(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "message_id": "msg-vip",
+                    "thread_id": "thread-vip",
+                    "from_address": "boss@example.com",
+                    "from_domain": "example.com",
+                    "subject": "Urgent",
+                    "body_text": "Need this today.",
+                },
+                {
+                    "message_id": "msg-plain",
+                    "thread_id": "thread-plain",
+                    "from_address": "newsletter@example.com",
+                    "from_domain": "example.com",
+                    "subject": "Weekly digest",
+                    "body_text": "Stuff happened.",
+                },
+            ]
+        )
+    )
+
+
+def _write_rules(path: Path) -> None:
+    path.write_text(
+        """
+        [[rule]]
+        id = "vip-senders"
+        when = { from_in = ["boss@example.com"] }
+        action = { type = "escalate", reason = "vip_sender", alert_immediately = true }
+
+        [[rule]]
+        id = "catch-all"
+        when = { always = true }
+        action = { type = "tag", mailbox = "Inbox" }
+        """
+    )
+
+
+def _write_responses(path: Path) -> None:
+    """One recorded verdict, keyed by the VIP message's subject ("Urgent")
+    — the only message either test rules.toml file escalates, so this
+    is the only response Tier 2 ever needs to look up. `suggested_action`
+    is "ignore" (mailbox=None) specifically to sidestep §10.2's
+    available_mailboxes validation — this test suite is about the loop's
+    own wiring, not verdict-validation edge cases (those live in
+    tests/core/llm/)."""
+    path.write_text(
+        json.dumps(
+            {
+                "Urgent": {
+                    "category": "needs_reply",
+                    "urgency": "high",
+                    "confidence": 0.95,
+                    "suggested_action": {"type": "ignore"},
+                    "summary": "Needs a reply today.",
+                    "reasoning": "Sender is a VIP and the tone is urgent.",
+                }
+            }
+        )
+    )
+
+
+def _config(tmp_path: Path) -> SporkConfig:
+    messages_path = tmp_path / "messages.json"
+    _write_messages(messages_path)
+    rules_path = tmp_path / "rules.toml"
+    _write_rules(rules_path)
+    responses_path = tmp_path / "responses.json"
+    _write_responses(responses_path)
+
+    return SporkConfig(
+        provider=BackendSpec(
+            spec="spork.core.providers.file.provider:FileProvider",
+            kwargs={
+                "messages_path": str(messages_path),
+                "actions_log_path": str(tmp_path / "actions.jsonl"),
+            },
+        ),
+        llm=BackendSpec(
+            spec="spork.core.llm.clients.recorded:RecordedLLMClient",
+            kwargs={"responses_path": str(responses_path)},
+        ),
+        alerts=BackendSpec(spec="spork.core.alerts.log:LoggingAlerter"),
+        rules_path=rules_path,
+        db_path=tmp_path / "state.sqlite3",
+        socket_path=tmp_path / "sporkd.sock",  # unused this round, still required by callers
+        tiering=TieringConfig(allowed_categories=["needs_reply"]),
+    )
+
+
+async def _run_briefly(config: SporkConfig, *, settle_seconds: float = 0.2) -> None:
+    """Runs run_daemon() for just long enough to process FileProvider's
+    one fixed batch, then stops it cleanly."""
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(run_daemon(config, stop_event=stop_event, idle_delay_seconds=0.02))
+    await asyncio.sleep(settle_seconds)
+    stop_event.set()
+    await asyncio.wait_for(task, timeout=2)
+
+
+def test_run_daemon_applies_a_matched_rules_action(tmp_path: Path) -> None:
+    """The plain message matches catch-all and gets tagged — proving
+    the loop actually runs messages through the real Tier 1 engine and
+    a real ActionApplier (FileProvider's JSON-lines log)."""
+    config = _config(tmp_path)
+
+    asyncio.run(_run_briefly(config))
+
+    actions_log = (tmp_path / "actions.jsonl").read_text().splitlines()
+    entries = [json.loads(line) for line in actions_log]
+    assert {"message_id": "msg-plain", "action_type": "tag", "mailbox": "Inbox"} in entries
+
+
+def test_run_daemon_marks_processed_messages_in_state_db(tmp_path: Path) -> None:
+    """Both messages end up recorded in StateDB — the idempotency
+    guarantee (§11) holds through the real asyncio loop, not just
+    process_message() called directly."""
+    config = _config(tmp_path)
+
+    asyncio.run(_run_briefly(config))
+
+    with StateDB(config.db_path) as db:
+        assert db.has_processed("msg-vip") is True
+        assert db.has_processed("msg-plain") is True
+
+
+def test_run_daemon_fires_a_vip_alert_through_pipeline_observer(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The VIP-sender rule's alert_immediately fires a real alert
+    through the real LoggingAlerter loaded from config — end to end,
+    not PipelineObserver constructed by hand in a test."""
+    caplog.set_level(logging.INFO)
+    config = _config(tmp_path)
+
+    asyncio.run(_run_briefly(config))
+
+    assert "vip_sender" in caplog.text
+
+
+def test_run_daemon_runs_an_escalated_message_through_tier2(tmp_path: Path) -> None:
+    """The VIP-sender rule escalates msg-vip; the loop now carries it
+    straight into process_tier2_message() in the same poll cycle
+    (docs/DESIGN.md §6.2.1) — proven by the row ending up tier_reached
+    == "tier2" with the recorded verdict's action, not stuck at Tier
+    1's placeholder "escalate" row. Raw sqlite3 introspection, same
+    pattern as tests/core/pipeline/tier2/test_integration_with_tier1.py's
+    _row() helper — StateDB itself has no public "get one row" accessor."""
+    config = _config(tmp_path)
+
+    asyncio.run(_run_briefly(config))
+
+    conn = sqlite3.connect(str(config.db_path))
+    row = conn.execute(
+        "SELECT tier_reached, action_taken FROM processed_messages WHERE jmap_id = ?",
+        ("msg-vip",),
+    ).fetchone()
+    conn.close()
+    assert row == ("tier2", "ignore")
+
+
+def _write_two_escalating_messages(path: Path) -> None:
+    """Two messages, both destined to escalate (docs/DESIGN.md §12.3's
+    "fires only once even across multiple escalations" acceptance
+    test needs a second escalation in the same run — one VIP sender
+    isn't enough to prove the daemon-level alert doesn't fire twice)."""
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "message_id": "msg-vip-1",
+                    "thread_id": "thread-vip-1",
+                    "from_address": "boss@example.com",
+                    "from_domain": "example.com",
+                    "subject": "Urgent one",
+                    "body_text": "Need this today.",
+                },
+                {
+                    "message_id": "msg-vip-2",
+                    "thread_id": "thread-vip-2",
+                    "from_address": "boss@example.com",
+                    "from_domain": "example.com",
+                    "subject": "Urgent two",
+                    "body_text": "Need this too.",
+                },
+            ]
+        )
+    )
+
+
+def _write_escalate_all_rules(path: Path) -> None:
+    path.write_text(
+        """
+        [[rule]]
+        id = "vip-senders"
+        when = { from_in = ["boss@example.com"] }
+        action = { type = "escalate", reason = "vip_sender", alert_immediately = true }
+        """
+    )
+
+
+def _config_with_exhausted_budget(tmp_path: Path) -> SporkConfig:
+    """Two escalating messages against a `daily_call_budget=0` — every
+    Tier 2 attempt lands on the budget_exhausted branch without ever
+    calling the (deliberately misconfigured, should-never-be-reached)
+    LLM client, same "budget check happens before any LLM call" fact
+    §10.4/§10.7 already rely on."""
+    messages_path = tmp_path / "messages.json"
+    _write_two_escalating_messages(messages_path)
+    rules_path = tmp_path / "rules.toml"
+    _write_escalate_all_rules(rules_path)
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text("{}")  # never consulted: budget_exhausted skips CallLLMAugment
+
+    return SporkConfig(
+        provider=BackendSpec(
+            spec="spork.core.providers.file.provider:FileProvider",
+            kwargs={
+                "messages_path": str(messages_path),
+                "actions_log_path": str(tmp_path / "actions.jsonl"),
+            },
+        ),
+        llm=BackendSpec(
+            spec="spork.core.llm.clients.recorded:RecordedLLMClient",
+            kwargs={"responses_path": str(responses_path)},
+        ),
+        alerts=BackendSpec(spec="spork.core.alerts.log:LoggingAlerter"),
+        rules_path=rules_path,
+        db_path=tmp_path / "state.sqlite3",
+        socket_path=tmp_path / "sporkd.sock",
+        tiering=TieringConfig(allowed_categories=["needs_reply"], daily_call_budget=0),
+    )
+
+
+def test_run_daemon_fires_a_daemon_level_alert_when_the_daily_budget_is_exhausted(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A daemon-health alert distinct from RecordBudgetExhaustedFilter's
+    existing per-message "Tier 2 skipped" alert (docs/DESIGN.md §12.3)
+    fires once the daily call budget is already gone."""
+    caplog.set_level(logging.INFO)
+    config = _config_with_exhausted_budget(tmp_path)
+
+    asyncio.run(_run_briefly(config))
+
+    assert "Daily LLM budget exhausted" in caplog.text
+
+
+def test_run_daemon_fires_the_daemon_level_budget_alert_only_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Both fixture messages escalate onto an already-exhausted budget
+    in the same run, but the one-shot-per-day daemon alert fires only
+    once — unlike the per-message RecordBudgetExhaustedFilter alert,
+    which fires for each of them.
+
+    Counts actual deliveries (records from LoggingAlerter's own
+    logger), not raw substring occurrences in caplog.text — a single
+    PipelineObserver.alert() call legitimately logs the same title
+    twice (once via trace(), once via the delivery itself), so a
+    plain text.count() would overcount even one real alert."""
+    caplog.set_level(logging.INFO)
+    config = _config_with_exhausted_budget(tmp_path)
+
+    asyncio.run(_run_briefly(config))
+
+    deliveries = [
+        r
+        for r in caplog.records
+        if r.name == "spork.core.alerts.log" and "Daily LLM budget exhausted" in r.getMessage()
+    ]
+    assert len(deliveries) == 1
+
+
+def test_run_daemon_does_not_fire_the_daemon_level_budget_alert_when_budget_remains(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The ordinary VIP-escalation config (default daily_call_budget)
+    never trips the new daemon-health alert — it's specific to
+    exhaustion, not a side effect of any escalation."""
+    caplog.set_level(logging.INFO)
+    config = _config(tmp_path)
+
+    asyncio.run(_run_briefly(config))
+
+    assert "Daily LLM budget exhausted" not in caplog.text
+
+
+def test_run_daemon_stops_promptly_after_stop_event_is_set(tmp_path: Path) -> None:
+    """run_daemon() actually returns once stop_event is set, rather
+    than running forever — proven by awaiting it with a bounded
+    timeout that would otherwise fail the test."""
+    config = _config(tmp_path)
+
+    async def _body() -> None:
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            run_daemon(config, stop_event=stop_event, idle_delay_seconds=0.02)
+        )
+        await asyncio.sleep(0.1)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=2)  # raises TimeoutError if it never stops
+
+    asyncio.run(_body())

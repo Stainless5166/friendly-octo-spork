@@ -24,7 +24,18 @@ files. Dependencies are managed with [UV](https://docs.astral.sh/uv/).
   and LLM integration details, safety model.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — milestones from scaffolding to
   v1.
+- [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md) — test-by-test
+  inventory, cross-checked against the roadmap.
 
 ## Status
 
-Pre-implementation. See `docs/ROADMAP.md` for current milestone.
+M0, M2, M3, and M5 are complete; M4 is 2.5/3 (the daily-LLM-budget-
+exhausted daemon-health alert is done; JMAP push disconnected is still
+open, genuinely blocked on a live EventSource connection); M1 is done
+except for the pieces that genuinely need a live
+Fastmail account (JMAP session bootstrap, the real push listener) —
+everything buildable without one, including the whole
+`Provider`/`Source` abstraction proven against a second, fully real
+adapter (`FileProvider`), is real and tested. M6 (systemd packaging)
+and M7 (hardening/v1 release) haven't started. See `docs/ROADMAP.md`
+for the full milestone breakdown and what's still open within each.

@@ -114,18 +114,23 @@ Two OS processes, one shared library:
 Solid boxes are built and tested today; dashed boxes are planned
 layout for a milestone that hasn't landed yet (M3's `llm/prompts.py`
 — the not-yet-built step that assembles a `VerdictRequest` from a
-message —, a future real desktop-notification `Alerter` backend
-alongside M4's `alerts/log.py`, M5's `ipc/` + most of `cli/commands/`,
-and `config.py`, still needed by anything that reads `config.toml`).
-This is layout orientation only — see §6.4 for what each built
-module's classes actually look like.
+message —, and a future real desktop-notification `Alerter` backend
+alongside M4's `alerts/log.py`). `config/`, `ipc/`, and
+`cli/commands/config.py` are all real as of M5's work on them — no
+longer dashed boxes. This is layout orientation
+only — see §6.4 for what each built module's classes actually look
+like.
 
 ```mermaid
 flowchart TD
     src["src/spork/"] --> core & daemon_pkg & cli_pkg
 
     subgraph core["core/ (shared library)"]
-        config["config.py<br/>load/validate config.toml"]:::planned
+        subgraph config_pkg["config/ (M5)"]
+            config_schema["schema.py<br/>SporkConfig/TieringConfig/<br/>BackendSpec"]
+            config_paths["paths.py<br/>XDG tier-path resolution"]
+            config_loader["loader.py<br/>load_config()"]
+        end
         secrets_mod["secrets.py<br/>secretspec integration"]
         models_mod["models.py<br/>NormalizedMessage"]
 
@@ -139,6 +144,7 @@ flowchart TD
                 tier2_meta["meta.py<br/>Tier2Meta"]
                 tier2_modules["modules.py<br/>13 concrete Filters/Selectors/Augment"]
                 tier2_default["default.py<br/>build_tier2_pipeline() +<br/>process_tier2_message()"]
+                tier2_escalate["escalate.py<br/>escalate_message() +<br/>parse_to_addresses() (M5)"]
             end
         end
 
@@ -170,6 +176,7 @@ flowchart TD
             rules_schema["schema.py<br/>Condition/Action/Rule"]
             rules_engine["engine.py<br/>Tier 1 evaluate()"]
             rules_loader["loader.py<br/>rules.toml parsing"]
+            rules_writer["writer.py<br/>dump_rules() (M5)"]
         end
 
         subgraph classify["classify/"]
@@ -211,22 +218,29 @@ flowchart TD
             state_db["db.py<br/>StateDB + AuditEntry"]
         end
 
-        subgraph ipc["ipc/ (M5)"]
-            ipc_protocol["protocol.py"]:::planned
-            ipc_server["server.py"]:::planned
+        subgraph ipc["ipc/"]
+            ipc_protocol["protocol.py<br/>IpcRequest/IpcResponse"]
+            ipc_server["server.py<br/>IpcServer"]
+            ipc_client["client.py<br/>send_request()"]
         end
     end
 
     subgraph daemon_pkg["daemon/"]
-        daemon_main["main.py<br/>sporkd entrypoint (stub loop)"]
+        daemon_main["main.py<br/>sporkd entrypoint"]
+        daemon_loop["loop.py<br/>run_daemon() (Tier 1+2, §6.2.1)"]
+        daemon_state["state.py<br/>DaemonState + RulesState"]
     end
 
     subgraph cli_pkg["cli/"]
         cli_main["main.py<br/>spork entrypoint"]
         subgraph cli_commands["commands/"]
-            cli_rules["rules.py<br/>spork rules test"]
+            cli_rules["rules.py<br/>spork rules test/list/edit/<br/>enable/disable"]
             cli_doctor["doctor.py<br/>spork doctor (stub)"]
-            cli_status["status.py / config.py / logs.py (M5)"]:::planned
+            cli_status["status.py<br/>spork status"]
+            cli_pause["pause.py<br/>spork pause/resume"]
+            cli_logs["logs.py<br/>spork logs"]
+            cli_config["config.py<br/>spork config show/edit"]
+            cli_reclassify["reclassify.py<br/>spork reclassify (M5)"]
         end
     end
 
@@ -258,6 +272,226 @@ Single-process, asyncio event loop:
 10. Serve the local control socket concurrently for CLI requests
     (status, pause, "reclassify message X", "reload rules").
 
+#### 6.2.1 Bridging synchronous I/O into the asyncio loop
+
+Every I/O dependency this daemon actually has is synchronous:
+[`jmapc`](https://github.com/smkent/jmapc) is built on `requests` (no
+`async def` anywhere in it), and its push mechanism (`Client.events`)
+is a **blocking generator** wrapping `sseclient` — `for event in
+client.events:` blocks the calling thread on each iteration, with no
+async alternative and no built-in reconnect/backoff (confirmed against
+the library directly, not assumed — which is exactly why this
+codebase already built its own `backoff.next_delay()` rather than
+relying on one). `Source.poll()`/`Trigger.wait()`/`ContentFetcher.fetch()`
+(§9.2) are all plain `def` for the same reason: they were designed as
+a synchronous contract from the start, deliberately compatible with a
+library that offers nothing else.
+
+"Asyncio event loop" therefore never means "jmapc yields control to
+the loop" — it can't. It means: the loop's *structure* (task
+lifecycle, cancellation, one coordinated shutdown, concurrent IPC
+serving once that lands) is asyncio-native, and every blocking call —
+`source.poll()`, and the entire `process_message()` call (which itself
+may block on a live `ActionApplier`'s JMAP write) — runs via
+`asyncio.to_thread()`. This needs no persistent listener thread or
+hand-off queue: `Source.poll()` already embodies "block until there's
+something" (`Trigger.wait()` then `ContentFetcher.fetch()`), so
+wrapping each `poll()` call in `to_thread` *is* the bridge — the
+default thread pool executor recycles a worker between calls since
+nothing here runs concurrently with itself.
+
+Three consequences worth stating rather than discovering later:
+
+- **Graceful shutdown latency is bounded by whatever `source.poll()`
+  call is currently in flight**, not instant. Cancelling a
+  `to_thread`-wrapped `asyncio.Task` stops the *coroutine* from
+  awaiting it, but the underlying OS thread keeps running — Python
+  can't forcibly kill a thread. `IntervalTimer.wait()` sleeps via
+  plain `time.sleep()` (uninterruptible mid-sleep); a real
+  `JmapPushTrigger` would need its own SSE connection closed to unblock
+  its generator. A short poll interval keeps this bound small in
+  practice; true instant interruption would mean teaching `Trigger`
+  implementations to accept a cancellation signal, a bigger change not
+  taken on here.
+- **A source that's caught up needs an explicit idle delay, not a
+  busy-loop.** `FileProvider`'s `Source` (`ImmediateTrigger` + an
+  exhausted `SequenceContentFetcher`) returns immediately with `[]`
+  forever once its fixed batch is consumed — correct for its stated
+  "replay a fixture once" purpose (§9.3), but it means the daemon loop
+  itself, not any particular `Source`, is responsible for not spinning
+  a CPU core on an empty result: `await asyncio.sleep(...)` (a real,
+  cancellable asyncio sleep, unlike the thread-wrapped `poll()`) after
+  an empty batch.
+- **`StateDB`'s SQLite connection needs `check_same_thread=False`.**
+  Python's `sqlite3` module refuses to use a connection from any
+  thread but the one that created it by default — and here, the
+  connection is created on the event loop's thread but every
+  `process_message()` call touching it runs inside `to_thread()`, on
+  whichever worker thread the pool hands out (not necessarily the same
+  one twice). This is safe specifically because the loop never awaits
+  two `to_thread(process_message, ...)` calls concurrently — one
+  message's full pipeline run completes (including every `StateDB`
+  write) before the next begins, so two threads never touch the
+  connection at the same instant, only in sequence. `check_same_thread=False`
+  turns off a guard rail Python's own docs describe as unnecessary
+  exactly under that condition; it does not change SQLite's own
+  locking behavior.
+
+**Scope history:** the loop composed **Tier 1 only** through the first
+part of M5. Chaining a freshly-escalated message straight into
+`process_tier2_message()` in the same poll cycle looked initially like
+free extra scope (no live-JMAP blocker prevents it —
+`RecordedLLMClient`/`LoggingAlerter` are both fully real), but
+`Tier2Meta`'s `to_addresses`/`thread_prior_subject`/
+`thread_user_has_replied`/`available_mailboxes` are caller-supplied by
+design (§10.7) and nothing resolved them at the time: `NormalizedMessage`
+has no `to` field, and `Provider` exposed no thread-history or
+mailbox-listing method — inventing placeholder values for either would
+be exactly the "fake data standing in for the real thing" this project
+has repeatedly refused to do elsewhere (§13's `spork rules test`,
+`FileProvider`'s own docstring). That gap is closed now: `Provider`
+gained `build_thread_history_reader()`/`build_mailbox_lister()` (§9.3),
+real against `FileProvider`, `NotImplementedError` against
+`JmapProvider` pending a live account, same split as every other JMAP
+leaf. `to_addresses` comes from parsing `NormalizedMessage.headers["To"]`
+(comma-split, whitespace-stripped — a real `To:` header, not invented).
+
+`_run_message_loop()` now escalates in the same poll cycle:
+`process_message()` (still its own `to_thread`-wrapped call, unchanged)
+returns a `RuleVerdict`; when `verdict.action.type == "escalate"`, the
+loop immediately `await`s a second, separate `asyncio.to_thread()` call
+wrapping `process_tier2_message()` — passing `to_addresses` (parsed
+from headers), the `ThreadContext` from
+`provider.build_thread_history_reader().get_thread_context(message)`,
+and `provider.build_mailbox_lister().list_mailboxes()`. Two `to_thread`
+calls, not one, but still strictly sequential — the loop fully awaits
+Tier 1's call (and every `StateDB` write inside it) before Tier 2's
+call ever starts, so `StateDB`'s sequential-access condition (above)
+still holds regardless of how many `to_thread` calls one message's
+processing takes: what matters is that two worker-thread calls are
+never in flight at once, not that they share one `to_thread` wrapper.
+`run_daemon()` now also constructs an `LLMClient` (`config.llm.spec`
+via `load_llm_client()`, same loader pattern as `provider`/`alerts`)
+and a `DraftCreator` (`provider.build_draft_creator()`) up front,
+threaded into `_run_message_loop()` alongside the Tier-1 dependencies
+it already had.
+
+#### 6.2.2 The IPC protocol
+
+Newline-delimited JSON over the Unix domain control socket — settled
+when M5 was first scoped (docs/ROADMAP.md): no new dependency
+(stdlib `json`), human-inspectable with `nc`/`socat` while debugging,
+and §15 already establishes filesystem permissions (0600, owned by
+the invoking user) as the only access control v1 needs, so nothing
+fancier is warranted. One request per connection — the CLI opens a
+socket, writes one `IpcRequest` line, reads one `IpcResponse` line,
+closes:
+
+```python
+class IpcRequest(BaseModel):
+    command: str
+    params: dict[str, Any] = {}
+
+
+class IpcResponse(BaseModel):
+    ok: bool
+    data: dict[str, Any] = {}
+    error: str | None = None
+```
+
+`IpcServer.serve()` runs alongside `_run_message_loop()` inside
+`run_daemon()`'s `asyncio.TaskGroup()` (§6.2.1) — `asyncio.start_unix_server()`,
+stdlib, no new dependency there either. It removes any stale socket
+file at the same path before binding (a leftover from a killed-not-
+stopped prior run would otherwise block startup) and dispatches each
+connection's one request to a handler registered by command name;
+an unhandled exception in a handler becomes `IpcResponse(ok=False,
+error=str(exc))`, never a raw traceback back to the CLI. The client
+side (`spork.core.ipc.client.send_request()`) is plain synchronous
+`socket` — the CLI is a short-lived process, not another asyncio
+loop — and a connection failure (no socket file, or one nobody's
+listening on) is the "daemon not running" case §6.3 already commits
+to messaging clearly rather than silently doing nothing.
+
+**`DaemonState`** (`spork.daemon.state`) is the small piece of
+mutable state `IpcServer` handlers and `_run_message_loop()` share —
+today `paused: bool` and `started_at: str` (set once, never mutated
+after construction). Deliberately **not** a place to cache anything
+derived from `StateDB`: both fields are only ever read/written from
+coroutine code (the message loop's own control flow, an `IpcServer`
+handler) — never from inside a `to_thread()`-wrapped call — so
+asyncio's single-thread-at-a-time coroutine scheduling makes them safe
+with no lock, by construction, not by convention. `StateDB` access
+stays exactly where §6.2.1 already put it: sequential, inside
+`to_thread(process_message, ...)` calls only. An `IpcServer` handler
+reading `StateDB` directly (an earlier draft of this design did, for
+`spork status`'s LLM-spend field) would run on the event-loop thread
+*concurrently* with an in-flight `to_thread(process_message, ...)` on
+a worker thread — exactly the concurrent access §6.2.1's
+`check_same_thread=False` note says is unsafe. Caught before writing
+any code, not after: `spork status` doesn't report LLM spend this
+round (see below) rather than accepting that risk.
+
+**`RulesState`** (`spork.daemon.state`, alongside `DaemonState`) is
+the same pattern applied to a different problem: `spork rules edit`/
+`enable`/`disable` (§7.5, §13) write a new `rules.toml`, and a running
+`sporkd` needs to notice without a restart. A new `reload` `IpcServer`
+handler re-runs `load_rules(rules_path)` and, on success, assigns the
+result to `rules_state.rules` — a single reference reassignment, not
+an in-place mutation of the list `_run_message_loop()` is reading. That
+distinction is what makes it safe without a lock: `_run_message_loop()`
+reads `rules_state.rules` fresh at the top of every poll iteration
+(never captured once at loop start), and CPython's GIL makes one
+attribute assignment atomic — a `to_thread(process_message, ...)` call
+already in flight received its own list reference as an ordinary
+argument before the reassignment, so it finishes against the rules it
+started with; the *next* iteration picks up the new list. No
+`RulesLoadError` from a bad hand-edit ever reaches the daemon's own
+control flow — the `reload` handler catches it and returns
+`IpcResponse(ok=False, error=...)`, leaving `rules_state.rules`
+untouched, so a running daemon keeps evaluating its last-known-good
+rules rather than crashing or silently going ruleless.
+
+Pause semantics, stated honestly rather than glossed over:
+`Source.poll()` fuses "wait" and "fetch" into one call (§9.2), so
+there's no way yet to "stay connected but not fetch" the way §13's
+`spork pause` comment ("push stays connected") implies for a real push
+backend — while paused, `_run_message_loop()` skips `poll()` entirely
+and just sleeps, re-checking `paused` each idle cycle. A backend that
+reports "new since last successful check" will catch up its backlog
+correctly on resume; one that doesn't (a stream that must stay
+attached to avoid missing events) would need `Trigger`/`Source` split
+further before pause could mean what the CLI comment currently
+implies. Not solved here — stated as a real, current limitation of the
+abstraction, not silently assumed away.
+
+**`spork status`'s fields are honest about what's actually tracked**:
+`paused` and `started_at`, both from `DaemonState`. "Push connection
+state" and "queue depth" from §13's original comment still aren't
+reported (nothing tracks either yet). **LLM spend vs. `daily_call_budget`
+is still deferred**, now for a narrower reason: Tier 2 is wired into
+the loop (§6.2.1) and genuinely accumulates `llm_usage` rows, but
+nothing yet copies that into `DaemonState` for an `IpcServer` handler
+to read safely — an `IpcServer` handler calling `StateDB.get_llm_usage()`
+directly would still run on the event-loop thread concurrently with an
+in-flight `to_thread(process_tier2_message, ...)` on a worker thread,
+the same unsafe access §6.2.1's `check_same_thread=False` note warns
+against. The fix is mechanical once someone needs it — `_run_message_loop()`
+is back on the event-loop thread the instant its `to_thread()` call
+returns, a natural synchronization point, so it could copy that day's
+`LLMUsage` into a new `DaemonState` field there with no lock needed —
+just not built this round.
+
+**`spork logs`** doesn't touch the socket at all — `audit_log` is a
+`StateDB` table, readable directly whether or not `sporkd` is running,
+the same reasoning that already lets rules/config file edits work
+with the daemon stopped (§6.3). `--since`/`--tail`/`--message-id`
+filtering happens client-side in the CLI command after
+`get_audit_entries()` returns everything (`jmap_id=` already filters
+storage-side for `--message-id`) — no new SQL query surface added to
+`StateDB` for a first pass, acceptable at a single mailbox's real
+scale.
+
 ### 6.3 CLI (`spork`)
 
 Talks to the daemon over the Unix socket when the daemon is up; falls
@@ -280,7 +514,7 @@ boilerplate to keep in sync with it by hand. It's built directly on
 Click (so anything Click can do is still reachable if a future command
 needs it) and gets `--install-completion` and Rich-formatted help for
 free. `spork` is a Typer command **group** (`typer.Typer()` with
-`@app.callback()` — subcommands land per §12 as M5 builds them);
+`@app.callback()` — the full §13 subcommand surface landed with M5);
 `sporkd` is a single-command app (`typer.run(main)`) since the daemon
 never has subcommands, just flags.
 
@@ -297,10 +531,87 @@ works with; it isn't a claim that the function is a class. A type
 referenced from another module (e.g. `Source` inside
 `providers.base`'s own diagram) is drawn as an empty box with just its
 stereotype — the full definition lives in that other type's own
-diagram, not duplicated here. Modules with no classes yet (`config.py`,
-`llm/`, `alerts/`, `ipc/`, most of `cli/commands/`) don't get a diagram
-until they have something to diagram, same as the component tree in
-§6.1.
+diagram, not duplicated here. Modules with no classes yet
+(`llm/prompts.py`, `ipc/`, most of `cli/commands/`) don't get a
+diagram until they have something to diagram, same as the component
+tree in §6.1. (This list used to also say `alerts/` and `config.py` —
+stale by the time M4 gave `alerts/` real diagrams; `config/` follows
+the same "settle the shape at design time" precedent below, before any
+of it is actually built.)
+
+#### `spork.core.config`
+
+```mermaid
+classDiagram
+    class BackendSpec {
+        <<pydantic BaseModel, extra=forbid>>
+        +spec: str
+        +kwargs: dict
+    }
+    class TieringConfig {
+        <<pydantic BaseModel, extra=forbid>>
+        +default_unmatched_action: str
+        +alert_threshold: float
+        +autoact_threshold: float
+        +daily_call_budget: int
+        +max_body_chars: int
+        +local_classifier: Optional~str~
+        +allowed_categories: list~str~
+    }
+    class SporkConfig {
+        <<pydantic BaseModel, extra=forbid>>
+        +provider: BackendSpec
+        +llm: BackendSpec
+        +alerts: BackendSpec
+        +rules_path: Path
+        +db_path: Path
+        +socket_path: Path
+        +tiering: TieringConfig
+    }
+    class ConfigLoadError { <<Exception>> }
+
+    SporkConfig *-- BackendSpec : provider, llm, alerts
+    SporkConfig *-- TieringConfig
+
+    class resolve_user_config_path { <<function>> }
+    class resolve_system_default_config_paths { <<function>> }
+    class resolve_enforced_config_path { <<function>> }
+    class resolve_socket_path { <<function>> }
+
+    class load_config {
+        <<function>>
+        +load_config(user_config_override) SporkConfig
+    }
+    class enforced_override_paths {
+        <<function>>
+        +enforced_override_paths() set
+    }
+    load_config ..> resolve_user_config_path : locates user tier
+    load_config ..> resolve_system_default_config_paths : locates system-default tier
+    load_config ..> resolve_enforced_config_path : locates enforced tier
+    load_config ..> resolve_socket_path : default for tiering.socket_path
+    load_config ..> SporkConfig : produces
+    load_config ..> ConfigLoadError : raises
+    enforced_override_paths ..> resolve_enforced_config_path : locates enforced tier
+    enforced_override_paths ..> SporkConfig : dotted paths, for spork config show (§13) to flag
+```
+
+`paths.py` (`resolve_user_config_path`/`resolve_system_default_config_paths`/
+`resolve_enforced_config_path`/`resolve_socket_path`) is deliberately
+free functions, not methods on `SporkConfig` — pure path-resolution
+logic against environment variables, testable in total isolation from
+TOML parsing or pydantic validation (§7.2 settles exactly what each
+one does). `load_config()` is the only thing that calls all four:
+locates each of the three tier files that actually exist, deep-merges
+their raw dicts in ascending precedence (system-default, then user,
+then enforced — each later merge's keys win), and validates the fully
+merged dict against `SporkConfig` once. `ConfigLoadError` wraps every
+failure mode (malformed TOML in any tier, a merged dict that fails
+`SporkConfig` validation, an unreadable file) — one catchable type per
+module boundary, the same convention as `RulesLoadError`/
+`ProviderLoadError`/`AlerterLoadError`. Built as M5's first item, real
+and 100%-covered — this diagram settled the shape before any of it
+was implemented, same as `spork.core.alerts`' had.
 
 #### `spork.core.models`
 
@@ -335,17 +646,43 @@ classDiagram
         <<Protocol>>
         +create_draft(in_reply_to: NormalizedMessage, body: str) None
     }
+    class ThreadContext {
+        <<dataclass, frozen>>
+        +prior_subject: Optional~str~
+        +user_has_replied: bool
+    }
+    class ThreadHistoryReader {
+        <<Protocol>>
+        +get_thread_context(message: NormalizedMessage) ThreadContext
+    }
+    class MailboxLister {
+        <<Protocol>>
+        +list_mailboxes() Sequence
+    }
+    class MessageNotFoundError { <<Exception>> }
+    class MessageLookup {
+        <<Protocol>>
+        +get_message(message_id: str) NormalizedMessage
+    }
     class Provider {
         <<Protocol>>
         +build_source() Source
         +build_action_applier() ActionApplier
         +build_draft_creator() DraftCreator
+        +build_thread_history_reader() ThreadHistoryReader
+        +build_mailbox_lister() MailboxLister
+        +build_message_lookup() MessageLookup
     }
     class Source { <<Protocol>> }
 
     Provider ..> Source : builds
     Provider ..> ActionApplier : builds
     Provider ..> DraftCreator : builds
+    Provider ..> ThreadHistoryReader : builds
+    Provider ..> MailboxLister : builds
+    Provider ..> MessageLookup : builds
+    ThreadHistoryReader ..> ThreadContext : returns
+    MessageLookup ..> MessageNotFoundError : raises, unknown message_id
 ```
 
 `Source` is fully defined in `spork.core.sources`' own diagram below;
@@ -377,6 +714,9 @@ classDiagram
     class Source { <<Protocol>> }
     class ActionApplier { <<Protocol>> }
     class DraftCreator { <<Protocol>> }
+    class ThreadHistoryReader { <<Protocol>> }
+    class MailboxLister { <<Protocol>> }
+    class ThreadContext { <<dataclass, frozen>> }
     class Provider { <<Protocol>> }
 
     class JmapClient {
@@ -386,6 +726,8 @@ classDiagram
         +fetch_new_messages(since_cursor: Optional~str~) Sequence
         +apply_action(message: NormalizedMessage, action: Action) None
         +create_draft(message: NormalizedMessage, body: str) None
+        +get_thread_context(message: NormalizedMessage) ThreadContext
+        +list_mailboxes() Sequence
     }
     class JmapPushTrigger {
         -client: JmapClient
@@ -415,6 +757,8 @@ classDiagram
         +build_source() Source
         +build_action_applier() ActionApplier
         +build_draft_creator() DraftCreator
+        +build_thread_history_reader() ThreadHistoryReader
+        +build_mailbox_lister() MailboxLister
     }
     class _JmapContentFetcher {
         -client: JmapClient
@@ -429,11 +773,21 @@ classDiagram
         -client: JmapClient
         +create_draft(in_reply_to: NormalizedMessage, body: str) None
     }
+    class _JmapThreadHistoryReader {
+        -client: JmapClient
+        +get_thread_context(message: NormalizedMessage) ThreadContext
+    }
+    class _JmapMailboxLister {
+        -client: JmapClient
+        +list_mailboxes() Sequence
+    }
 
     Trigger <|.. JmapPushTrigger : structurally satisfies
     ContentFetcher <|.. _JmapContentFetcher : structurally satisfies
     ActionApplier <|.. _JmapActionApplier : structurally satisfies
     DraftCreator <|.. _JmapDraftCreator : structurally satisfies
+    ThreadHistoryReader <|.. _JmapThreadHistoryReader : structurally satisfies
+    MailboxLister <|.. _JmapMailboxLister : structurally satisfies
     Provider <|.. JmapProvider : structurally satisfies
 
     JmapPushTrigger --> JmapClient : wraps
@@ -445,9 +799,13 @@ classDiagram
     JmapProvider ..> _JmapContentFetcher : builds
     JmapProvider ..> _JmapActionApplier : builds
     JmapProvider ..> _JmapDraftCreator : builds
+    JmapProvider ..> _JmapThreadHistoryReader : builds
+    JmapProvider ..> _JmapMailboxLister : builds
     _JmapContentFetcher --> JmapClient : delegates to
     _JmapActionApplier --> JmapClient : delegates to
     _JmapDraftCreator --> JmapClient : delegates to
+    _JmapThreadHistoryReader --> JmapClient : delegates to
+    _JmapMailboxLister --> JmapClient : delegates to
 ```
 
 `backoff.next_delay()` is a pure function of `(schedule, attempt)`
@@ -462,6 +820,8 @@ classDiagram
     class Provider { <<Protocol>> }
     class ActionApplier { <<Protocol>> }
     class DraftCreator { <<Protocol>> }
+    class ThreadHistoryReader { <<Protocol>> }
+    class MailboxLister { <<Protocol>> }
     class MessagesLoadError { <<Exception>> }
     class load_messages {
         <<function>>
@@ -475,22 +835,37 @@ classDiagram
         -log_path: Path
         +create_draft(in_reply_to: NormalizedMessage, body: str) None
     }
+    class _FileThreadHistoryReader {
+        -messages: Sequence
+        +get_thread_context(message: NormalizedMessage) ThreadContext
+    }
+    class _FileMailboxLister {
+        -mailboxes: Sequence
+        +list_mailboxes() Sequence
+    }
     class FileProvider {
         -messages_path: Path
         -actions_log_path: Path
         -drafts_log_path: Path
+        -available_mailboxes: Optional~Sequence~
         +build_source() Source
         +build_action_applier() ActionApplier
         +build_draft_creator() DraftCreator
+        +build_thread_history_reader() ThreadHistoryReader
+        +build_mailbox_lister() MailboxLister
     }
 
     Provider <|.. FileProvider : structurally satisfies
     ActionApplier <|.. _FileActionApplier : structurally satisfies
     DraftCreator <|.. _FileDraftCreator : structurally satisfies
+    ThreadHistoryReader <|.. _FileThreadHistoryReader : structurally satisfies
+    MailboxLister <|.. _FileMailboxLister : structurally satisfies
     load_messages ..> MessagesLoadError : raises
     FileProvider ..> load_messages : uses
     FileProvider ..> _FileActionApplier : builds
     FileProvider ..> _FileDraftCreator : builds
+    FileProvider ..> _FileThreadHistoryReader : builds
+    FileProvider ..> _FileMailboxLister : builds
 ```
 
 #### `spork.core.sources`
@@ -586,6 +961,10 @@ classDiagram
         <<function>>
         +load_rules(path) list
     }
+    class dump_rules {
+        <<function>>
+        +dump_rules(rules) str
+    }
 
     Rule *-- Condition
     Rule *-- Action
@@ -595,6 +974,7 @@ classDiagram
     evaluate ..> TextClassifier : classify(), lazily, at most once
     load_rules ..> Rule : produces
     load_rules ..> RulesLoadError : raises
+    dump_rules ..> Rule : serializes (round-trips through load_rules)
 ```
 
 #### `spork.core.classify`
@@ -903,6 +1283,64 @@ classDiagram
     StateDB ..> LLMUsage : returns from get_llm_usage()
 ```
 
+The underlying `sqlite3.connect()` call sets `check_same_thread=False`
+— not shown above since it's a constructor implementation detail, not
+part of `StateDB`'s own interface, but load-bearing for §6.2.1's daemon
+loop: the connection is created on the event loop's thread, and every
+`asyncio.to_thread(process_message, ...)` call touching it runs on
+whichever worker thread the pool hands out. Safe specifically because
+the loop never runs two such calls concurrently — each message's
+pipeline run (every `StateDB` write included) completes before the
+next begins, so two threads never touch the connection at the same
+instant, only handed off in sequence. This does not make concurrent
+multi-thread access to one `StateDB` safe in general — it turns off a
+guard rail that's unnecessary under sequential handoff specifically,
+not SQLite's own locking.
+
+#### `spork.core.ipc`
+
+```mermaid
+classDiagram
+    class IpcRequest {
+        <<pydantic BaseModel>>
+        +command: str
+        +params: dict
+    }
+    class IpcResponse {
+        <<pydantic BaseModel>>
+        +ok: bool
+        +data: dict
+        +error: Optional~str~
+    }
+    class IpcServer {
+        -socket_path: Path
+        -handlers: dict
+        +serve(stop_event) None
+    }
+    class send_request {
+        <<function>>
+        +send_request(socket_path, command, params) IpcResponse
+    }
+    class IpcConnectionError { <<Exception>> }
+
+    IpcServer ..> IpcRequest : parses one per connection
+    IpcServer ..> IpcResponse : writes one back
+    send_request ..> IpcRequest : sends
+    send_request ..> IpcResponse : returns
+    send_request ..> IpcConnectionError : raises when nothing's listening
+```
+
+One request per connection (§6.2.2) — `IpcServer` is constructed with
+a `dict[str, Callable[[dict], dict]]` of command-name -> handler
+functions (registered by whoever calls `run_daemon()`'s composition,
+same DI pattern as everything else here) and never itself knows what
+"status" or "pause" mean. `send_request()` (the CLI's side, plain
+synchronous `socket`, no asyncio) raises `IpcConnectionError` — not a
+raw `ConnectionRefusedError`/`FileNotFoundError` — for "nothing's
+listening," the single signal every CLI command that talks to the
+daemon checks for to print "daemon not running" (§6.3) instead of a
+raw traceback.
+
 #### `spork.core.pipeline`
 
 Four diagrams: the generic framework (`core.py`); `observer.py`'s
@@ -1051,11 +1489,11 @@ classDiagram
 
     class build_default_pipeline {
         <<function>>
-        +build_default_pipeline(executor, state_db, ops, now, new_correlation_id) Pipeline
+        +build_default_pipeline(executor, state_db, ops, now, new_correlation_id, force) Pipeline
     }
     class process_message {
         <<function>>
-        +process_message(message, rules, default_unmatched_action, executor, state_db, ops, classifier, now, new_correlation_id) Optional~RuleVerdict~
+        +process_message(message, rules, default_unmatched_action, executor, state_db, ops, classifier, now, new_correlation_id, force) Optional~RuleVerdict~
     }
     build_default_pipeline ..> IdempotencyGateSelector : composes
     build_default_pipeline ..> TimestampFilter : composes
@@ -1234,12 +1672,42 @@ classDiagram
     build_tier2_pipeline ..> WriteAuditEntryFilter : composes
     build_tier2_pipeline ..> MarkProcessedFilter : composes
     process_tier2_message ..> build_tier2_pipeline : builds, then runs
+
+    class NormalizedMessage { <<dataclass, frozen>> }
+    class ThreadHistoryReader { <<Protocol>> }
+    class MailboxLister { <<Protocol>> }
+    class TieringConfig { <<pydantic BaseModel>> }
+    class parse_to_addresses {
+        <<function>>
+        +parse_to_addresses(message) Sequence
+    }
+    class escalate_message {
+        <<function>>
+        +escalate_message(message, thread_history_reader, mailbox_lister, llm_client, executor, draft_creator, state_db, ops, tiering) Optional~Verdict~
+    }
+    escalate_message ..> parse_to_addresses : to_addresses
+    escalate_message ..> ThreadHistoryReader : get_thread_context()
+    escalate_message ..> MailboxLister : list_mailboxes()
+    escalate_message ..> TieringConfig : unpacks into process_tier2_message()'s kwargs
+    escalate_message ..> process_tier2_message : assembles the call, returns its result
+    parse_to_addresses ..> NormalizedMessage : reads .headers["To"]
 ```
 
 `"autoact"`/`"autoact_alert"` route to the same `act` `Pipeline`
 instance (not drawn as two separate branches above — see §10.7's
 prose for why one object under two route keys is the accurate
 picture, not a diagramming simplification).
+
+`escalate_message()`/`parse_to_addresses()` (`spork.core.pipeline.tier2.escalate`,
+M5) are the pieces `docs/ROADMAP.md`'s "wire Tier 2 into the daemon
+loop" item originally built inline in `spork.daemon.loop` as
+`_escalate_to_tier2()`/`_parse_to_addresses()` — extracted into a
+public, importable pair once `spork reclassify <id>` (§13) needed the
+exact same "resolve thread history + mailbox list, then run Tier 2"
+step outside the daemon loop entirely. `daemon/loop.py`'s
+`_run_message_loop()` now calls these instead of defining its own
+copies — one real implementation, two callers, not a daemon-only
+helper duplicated for the CLI.
 
 #### `spork.core.secrets`
 
@@ -1266,7 +1734,13 @@ classDiagram
 ```mermaid
 classDiagram
     class RulesLoadError { <<Exception>> }
+    class ConfigLoadError { <<Exception>> }
     class load_rules { <<function>> }
+    class load_config { <<function>> }
+    class dump_rules { <<function>> }
+    class enforced_override_paths { <<function>> }
+    class send_request { <<function>> }
+    class IpcConnectionError { <<Exception>> }
 
     class app {
         <<Typer App>>
@@ -1276,21 +1750,109 @@ classDiagram
         <<Typer App>>
         rules
     }
+    class config_app {
+        <<Typer App>>
+        config
+    }
     class test {
         <<Typer command>>
         +test(rules_file: Path) None
+    }
+    class list_rules {
+        <<Typer command "list">>
+        +list_rules() None
+    }
+    class rules_edit {
+        <<Typer command "edit">>
+        +edit() None
+    }
+    class enable {
+        <<Typer command>>
+        +enable(rule_id: str) None
+    }
+    class disable {
+        <<Typer command>>
+        +disable(rule_id: str) None
+    }
+    class config_show {
+        <<Typer command "show">>
+        +show() None
+    }
+    class config_edit {
+        <<Typer command "edit">>
+        +edit() None
+    }
+    class status {
+        <<Typer command>>
+        +status() None
+    }
+    class pause {
+        <<Typer command>>
+        +pause() None
+    }
+    class resume {
+        <<Typer command>>
+        +resume() None
+    }
+    class logs {
+        <<Typer command>>
+        +logs(tail, since, message_id) None
     }
     class doctor {
         <<Typer command>>
         +doctor() None
     }
+    class reclassify {
+        <<Typer command>>
+        +reclassify(message_id: str) None
+    }
+    class load_provider { <<function>> }
+    class process_message { <<function>> }
+    class escalate_message { <<function>> }
+    class MessageNotFoundError { <<Exception>> }
 
     app --> rules_app : add_typer("rules")
+    app --> config_app : add_typer("config")
     app --> doctor : command("doctor")
+    app --> status : command("status")
+    app --> pause : command("pause")
+    app --> resume : command("resume")
+    app --> logs : command("logs")
+    app --> reclassify : command("reclassify")
     rules_app --> test : command("test")
+    rules_app --> list_rules : command("list")
+    rules_app --> rules_edit : command("edit")
+    rules_app --> enable : command("enable")
+    rules_app --> disable : command("disable")
+    config_app --> config_show : command("show")
+    config_app --> config_edit : command("edit")
+
     test ..> load_rules : loads/validates rules.toml
     test ..> RulesLoadError : catches, clean CLI error
+    list_rules ..> load_config : locates rules_path
+    list_rules ..> load_rules : id/enabled/action per rule
+    rules_edit ..> load_rules : validates on save
+    rules_edit ..> send_request : pushes "reload" (best-effort)
+    enable ..> load_rules : reads current rules
+    enable ..> dump_rules : rewrites rules.toml
+    enable ..> send_request : pushes "reload" (best-effort)
+    disable ..> load_rules : reads current rules
+    disable ..> dump_rules : rewrites rules.toml
+    disable ..> send_request : pushes "reload" (best-effort)
+    config_show ..> load_config : the effective merged config
+    config_show ..> enforced_override_paths : flags enforced values
+    config_edit ..> load_config : validates the real merged result on save
+    config_edit ..> ConfigLoadError : catches, clean CLI error
+    status ..> send_request : "status"
+    pause ..> send_request : "pause"
+    resume ..> send_request : "resume"
+    send_request ..> IpcConnectionError : "sporkd is not running"
     doctor ..> NotImplementedError : catches JMAP-connectivity stub, clean CLI error
+    reclassify ..> load_config : locates provider/rules/db
+    reclassify ..> load_provider : builds Provider, standalone (§7.4)
+    reclassify ..> MessageNotFoundError : catches, clean CLI error
+    reclassify ..> process_message : force=True, bypasses the idempotency gate
+    reclassify ..> escalate_message : when Tier 1 escalates
 ```
 
 #### `spork.daemon`
@@ -1305,14 +1867,78 @@ classDiagram
         <<function>>
         +run() None
     }
+    class Provider { <<Protocol>> }
+    class Source { <<Protocol>> }
+    class LLMClient { <<Protocol>> }
+    class DraftCreator { <<Protocol>> }
+    class ThreadHistoryReader { <<Protocol>> }
+    class MailboxLister { <<Protocol>> }
+    class ActionExecutor
+    class StateDB
+    class PipelineObserver
+    class process_message { <<function>> }
+    class escalate_message { <<function>> }
+    class IpcServer
+
+    class DaemonState {
+        <<dataclass>>
+        +paused: bool
+        +started_at: str
+    }
+    class RulesState {
+        <<dataclass>>
+        +rules: Sequence
+    }
+    class load_rules { <<function>> }
+    class RulesLoadError { <<Exception>> }
+
+    class run_daemon {
+        <<function>>
+        +run_daemon(config, stop_event) None
+    }
+    class _run_message_loop {
+        <<function>>
+        +_run_message_loop(source, rules_state, executor, state_db, ops, classifier, llm_client, draft_creator, thread_history_reader, mailbox_lister, daemon_state, stop_event) None
+    }
+    class _run_until_signalled {
+        <<function>>
+        +_run_until_signalled(config) None
+    }
 
     run --> main : typer.run(main)
+    main ..> _run_until_signalled : asyncio.run()
+    _run_until_signalled ..> run_daemon : awaits, stop_event set by SIGTERM/SIGINT handlers
+    run_daemon ..> Provider : load_provider() -> build_source()/build_action_applier()/build_draft_creator()/build_thread_history_reader()/build_mailbox_lister()
+    run_daemon ..> LLMClient : load_llm_client()
+    run_daemon --> ActionExecutor : constructs
+    run_daemon --> StateDB : opens
+    run_daemon --> PipelineObserver : constructs
+    run_daemon --> DaemonState : constructs, shared with IpcServer's handlers
+    run_daemon --> RulesState : constructs from load_rules(), shared with IpcServer's reload handler
+    run_daemon --> IpcServer : constructs, registers status/pause/resume/reload handlers
+    run_daemon ..> _run_message_loop : both run inside one asyncio.TaskGroup (§6.2.2)
+    run_daemon ..> IpcServer : .serve(stop_event)
+    _run_message_loop --> Source : polls, via asyncio.to_thread (§6.2.1)
+    _run_message_loop --> DaemonState : skips poll()+processing while paused
+    _run_message_loop --> RulesState : reads .rules fresh every poll iteration (§6.2.2)
+    _run_message_loop ..> process_message : Tier 1, via asyncio.to_thread
+    _run_message_loop ..> escalate_message : Tier 2, when Tier 1 escalates, a second sequential asyncio.to_thread (§6.2.1) — spork.core.pipeline.tier2.escalate (M5), also used by spork reclassify
+    escalate_message ..> ThreadHistoryReader : get_thread_context()
+    escalate_message ..> MailboxLister : list_mailboxes()
+    escalate_message --> DraftCreator : passed through to process_tier2_message
+    IpcServer ..> load_rules : reload handler re-reads rules_path
+    load_rules ..> RulesLoadError : reload handler catches, returns ok=False, RulesState untouched
 ```
 
-Still just the `--version`/`--help` handling plus a settled-shape
-`NotImplementedError` for the real event loop (docs/ROADMAP.md M1) —
-this diagram will grow substantially once the daemon actually wires
-`spork.core`'s pieces together.
+`main.py` is the thin Typer entrypoint (config loading, signal
+handling); `loop.py`'s `run_daemon()`/`_run_message_loop()` are the
+actual composition and are deliberately callable with no Typer/CLI
+involvement at all, so tests drive them directly with an injected
+`stop_event` rather than through a subprocess. `DaemonState`
+(`spork.daemon.state`) is the one piece of mutable state the message
+loop and the IPC handlers both touch — everything else stays
+constructor-injected and effectively read-only per run, the same
+DI convention as the rest of this codebase.
 
 ## 7. Data & configuration
 
@@ -1345,42 +1971,152 @@ the systemd unit and an installed `uv tool install` invoke.
 
 ### 7.2 App config (`config.toml`)
 
-Lives at `$XDG_CONFIG_HOME/spork/config.toml` (default
-`~/.config/spork/config.toml`). Not secret — safe to keep in a dotfiles
-repo.
+Three tiers, following real UNIX/XDG convention rather than an
+invented scheme — settled by checking the [XDG Base Directory
+Specification v0.8](https://specifications.freedesktop.org/basedir/latest/)
+and comparable tools (`git`'s system/global scopes, Chromium/Firefox
+managed policy) before designing this, not guessed:
+
+| Tier | Path | Precedence | Who edits it |
+|---|---|---|---|
+| **System enforced** | `/etc/spork/enforced.toml` — fixed, hardcoded | Highest — always wins | A sysadmin, directly; never via `spork config edit` |
+| **User** | `$XDG_CONFIG_HOME/spork/config.toml` (default `~/.config/spork/config.toml`) | Middle | `spork config edit` |
+| **System default** | first match across `$XDG_CONFIG_DIRS` (colon-separated, preference-ordered, default `/etc/xdg`) + `/spork/config.toml` | Lowest — fills gaps only | A packager/admin, or absent entirely |
+
+`XDG_CONFIG_HOME`/`XDG_CONFIG_DIRS` give the *default* and *user*
+tiers for free — the spec itself says `XDG_CONFIG_HOME` (single-
+valued) outranks every entry in `XDG_CONFIG_DIRS` (an ordered list,
+first entry most important), which is exactly "user overrides
+system-default." Neither variable has any concept of "enforced" —
+that's deliberate on the spec's part, so the **enforced** tier
+intentionally sits outside the XDG search entirely: a fixed `/etc`
+path a user can't relocate by setting an environment variable (the
+same reason `git`'s *system* scope is the compile-time-fixed
+`/etc/gitconfig` rather than something `XDG_CONFIG_DIRS`-influenced,
+and the same reason Chromium's managed policy lives at a fixed
+`/etc/opt/chrome/policies/managed/`). Spork doesn't enforce filesystem
+permissions on `/etc/spork/enforced.toml` itself — same trust
+assumption as `/etc/gitconfig`: an admin controls it because normal
+users can't write to `/etc` on a correctly-configured system, not
+because Spork checks anything (§15).
+
+**Merge semantics:** each present tier is parsed as a raw dict, then
+deep-merged table-by-table in ascending precedence (system-default,
+then user, then enforced — each later merge's keys overwrite the
+earlier merge's at the same key, not a whole-file replace), and the
+fully-merged dict is validated against `SporkConfig` exactly once. A
+user's `config.toml` only needs to override the keys it actually
+cares about (`[tiering] alert_threshold = 0.6`, say) without restating
+`[provider]`. There's no clamping/range-enforcement logic — an
+enforced value simply overwrites whatever a lower tier set. That's a
+deliberate scope call: the enforced tier here is about consistency
+across a shared/managed machine, not a privilege boundary within one
+user's own account (the user running `sporkd` already controls their
+own mailbox and secrets, so there's no real attacker being defended
+against by anything fancier). `spork config show` (§13) surfaces the
+fully-merged effective config with a note wherever the enforced tier
+silently overrode a user-tier value, so a confused user isn't left
+guessing why their own edit didn't take effect.
+
+**How `show` knows what's enforced:** `spork.core.config.loader.enforced_override_paths()`
+reads `/etc/spork/enforced.toml` on its own (independent of
+`load_config()`'s merge) and flattens it into dotted key paths — e.g.
+`{"tiering.daily_call_budget", "provider.kwargs.host"}` — every path
+literally present in that file, not just ones that differ from what
+the user set. Presence in the enforced tier is what makes a value
+unchangeable by the user, regardless of whether their own config
+happened to already agree with it. `spork config show` walks
+`SporkConfig`'s known (closed) field set, printing `(enforced)` next
+to any field whose dotted path is in that set.
+
+**Redaction, honestly scoped:** `provider`/`llm`/`alerts` `kwargs` are
+the one place a value resembling a credential could end up in
+`config.toml` (§7.3's secrets model says it shouldn't — `JmapProvider`'s
+`api_token` is meant to come from SecretSpec, not a config key — but
+`show` doesn't get to assume every config file was authored correctly).
+`spork config show` redacts any `kwargs` entry whose key
+case-insensitively contains `token`, `key`, `secret`, or `password` —
+a heuristic name-based check, stated as exactly that, not a guarantee
+against every way a secret could be spelled.
+
+**`spork config edit`, and why it doesn't push a live reload:** opens
+the *user* tier's `config.toml` in `$EDITOR`, then validates by calling
+`load_config()` for real (no path overrides) — the actual merged
+config a running `sporkd` would use, not just "is the user's file
+syntactically valid TOML" — since a user-tier edit can break validation
+in ways that only show up merged (deleting a key only the user tier
+ever set, with no default and nothing else supplying it). A validation
+failure is reported cleanly and nothing is pushed anywhere. Unlike
+`spork rules edit`/`enable`/`disable` (§6.2.2), a successful save
+**does not** push anything to a running daemon — it prints "restart
+sporkd to apply" instead. Rules and config aren't the same kind of
+change: reloading rules only ever swaps `RulesState.rules`, a plain
+list `_run_message_loop()` already re-reads every cycle; config
+controls the `Provider`/`LLMClient`/`Alerter` themselves, objects
+`run_daemon()` constructs once at startup and hands out to both tasks
+in its `TaskGroup()` — swapping those live means tearing down and
+rebuilding a `Source` (and, for `JmapProvider`, a live JMAP session)
+out from under an `asyncio.to_thread()` call that might be using it at
+that exact instant, a different and harder problem than reassigning
+one list reference. Not solved here — "restart to apply" is the
+honest answer until (if ever) that problem gets its own design.
 
 ```toml
-[jmap]
+# ~/.config/spork/config.toml (user tier) — every key below can also
+# appear in the system-default or enforced tiers; this example shows
+# the full schema, not what a typical minimal user file would contain.
+
+[provider]
+spec = "spork.core.providers.jmap.provider:JmapProvider"   # "module:ClassName" — same loader
+                                                              # convention as llm/alerts below (§9.3)
+[provider.kwargs]
 host = "api.fastmail.com"
 account_email = "will@example.com"   # used to resolve the JMAP account ID
-
-[polling]
-push_enabled = true
 fallback_poll_interval_seconds = 300
 reconnect_backoff_seconds = [2, 5, 15, 60, 300]
 
+[llm]
+spec = "spork.core.llm.clients.anthropic:AnthropicLLMClient"   # §10.1
+[llm.kwargs]
+model = "claude-sonnet-5"
+max_tokens = 1024
+
+[alerts]
+spec = "spork.core.alerts.log:LoggingAlerter"   # v1's only real backend — §12.1
+[alerts.kwargs]
+
 [tiering]
-default_unmatched_action = "escalate"   # "escalate" | "notify" | "ignore"
-tier2_confidence_alert_threshold = 0.55  # below this, always alert (Tier 3)
-tier2_confidence_autoact_threshold = 0.85 # above this, act without alert
+default_unmatched_action = "escalate"     # "escalate" | "ignore"
+alert_threshold = 0.55                    # below this, alert_only (Tier 3) — §10.3
+autoact_threshold = 0.85                  # above this, autoact — §10.3
+daily_call_budget = 200                   # hard stop; §10.4
+max_body_chars = 4000                     # §10.5's clean_body() truncation limit
 local_classifier = "keyword_heuristic"    # name registered in classify/registry.py — swap
                                            # to experiment with a different local text-processing
                                            # backend; see §9.1
+allowed_categories = ["needs_reply", "fyi", "newsletter", "spam"]   # §10.2
 
-[llm]
-model = "claude-sonnet-5"
-max_tokens = 1024
-daily_call_budget = 200          # hard stop; degrade to Tier 3-only past this
+db_path = "~/.local/share/spork/state.sqlite3"   # $XDG_DATA_HOME — persistent app data
+rules_path = "~/.config/spork/rules.toml"
 
-[alerts]
-backend = "desktop"              # "desktop" | "webhook" | "none"
-webhook_url_secret = "ALERT_WEBHOOK_URL"   # name of a secretspec entry
+# socket_path is optional — resolve_socket_path() (§6.4) defaults to
+# $XDG_RUNTIME_DIR/spork/sporkd.sock (0700, tmpfs-backed, gone on
+# reboot/logout — exactly right for a control socket per the XDG
+# spec's own lifetime rules for $XDG_RUNTIME_DIR) and falls back to
+# /tmp/spork-$UID/sporkd.sock with a printed warning if
+# $XDG_RUNTIME_DIR isn't set (a real possibility outside a systemd
+# session — the spec itself declines to mandate a default and pushes
+# fallback behavior onto the application).
+# socket_path = "~/.local/state/spork/sporkd.sock"   # only if overriding the default
+```
 
-[state]
-db_path = "~/.local/share/spork/state.sqlite3"
+```toml
+# /etc/spork/enforced.toml (system enforced tier) — a sysadmin-managed
+# machine might ship only this, e.g. to guarantee a spend cap no user
+# config can raise:
 
-[rules]
-path = "~/.config/spork/rules.toml"
+[tiering]
+daily_call_budget = 200
 ```
 
 ### 7.3 Secrets (`secretspec.toml`)
@@ -1414,8 +2150,11 @@ default = "keyring://"
   SDK (not by shelling out to `secretspec run`, since it's a long-lived
   process) and holds them in memory only; they are never written to the
   state DB or logs.
-- `spork doctor` runs the equivalent of `secretspec check` and reports
-  missing/misconfigured secrets in plain language.
+- `spork doctor` is intended to run the equivalent of `secretspec check`
+  and report missing/misconfigured secrets in plain language — not
+  built yet (`spork.core.config`, the piece it was blocked on, landed
+  in M5; wiring this check itself is untracked follow-up, not assumed
+  done here — see `docs/ROADMAP.md` M6).
 - Every secret access is covered by SecretSpec's built-in audit log
   (who/when/outcome) — Spork does not need to build its own.
 
@@ -1436,6 +2175,26 @@ Single file, WAL mode, no external DB dependency. Built tables (final —
   primary key (one row per day, upserted via `record_llm_call()`);
   feeds the daily budget check (§10.4) and makes actual spend visible
   via `spork status` (§7.2, M5).
+
+**Why `spork reclassify <id>` (§13, M5) is a standalone CLI command,
+not daemon-mediated:** it opens its own `StateDB` connection directly,
+the same way `spork logs` already does, and runs whether or not
+`sporkd` is running — no new IPC command, no daemon-side "fetch by ID
+and reprocess" capability to build. This is safe *because* of WAL mode
+(stated above, not a new addition for this item): SQLite's WAL journal
+already lets one writer and multiple readers proceed without blocking
+each other, and even the one case that does contend — `sporkd` and a
+`spork reclassify` process both trying to write at the same instant —
+is a bounded wait, not a corruption risk: `sqlite3.connect()`'s default
+5-second busy timeout (never overridden in `StateDB.__init__`, so it's
+already in effect) means a losing writer retries briefly rather than
+failing outright, and SQLite's own single-writer-at-a-time lock is what
+actually prevents interleaved writes either way. `StateDB` was never
+designed to be safe for genuinely concurrent multi-thread use *within
+one process* (§6.2.1's `check_same_thread=False` note is explicit about
+that) — but two independent connections from two separate processes,
+each only ever writing sequentially on its own, is exactly what SQLite
+in WAL mode is built to support.
 
 Still indicative, not final — not built yet:
 
@@ -1506,6 +2265,22 @@ conditions that don't fit the schema are a signal to write a Sieve rule
 
 `action.type = "escalate"` is what hands a message to Tier 2; everything
 else is a terminal Tier 1 action and never invokes the LLM.
+
+**`spork rules enable/disable <id>`** flips one rule's `enabled` field
+and rewrites the whole file via `spork.core.rules.writer.dump_rules()`
+— a small, purpose-built serializer for this exact closed schema
+(`[[rule]]` blocks, inline `when`/`action` tables), not a general TOML
+library: nothing else in this codebase writes TOML, and the schema is
+simple enough (strings, bools, string lists) that hand-rolling the
+handful of lines it takes is cheaper and more auditable than a new
+dependency. The real, stated tradeoff: `dump_rules()` regenerates the
+file from the validated `Rule` models, so **comments and formatting in
+a hand-edited `rules.toml` don't survive an `enable`/`disable` call** —
+`spork rules edit` (which just opens `$EDITOR` and otherwise leaves the
+file alone) is unaffected. Every write is followed by a best-effort
+`reload` request to a running `sporkd` (§6.2.2) — "sporkd is not
+running, changes will apply on next start" if there's no socket to
+reach, never an error, since the file write itself already succeeded.
 
 ## 8. JMAP integration
 
@@ -1628,9 +2403,12 @@ class TextClassifier(Protocol):
   small fine-tuned classifier) is an additional backend module behind
   the same `Protocol` — added, not swapped in by editing existing code.
 - **No implicit fallback.** An unresolvable/misconfigured classifier name
-  is a startup-time config error (`spork doctor` catches it), not a
-  silent no-op — a rule that references classifier output should never
-  quietly stop firing because a backend failed to load.
+  is a startup-time config error (`UnknownClassifierError`, caught and
+  reported cleanly by `sporkd`/`spork reclassify`) — a rule that
+  references classifier output should never quietly stop firing
+  because a backend failed to load. `spork doctor` surfacing this
+  proactively, before startup, is intended but not built yet
+  (`docs/ROADMAP.md` M6) — today it's caught where it actually happens.
 - This tier is optional: rules that don't reference classifier output
   never invoke it, so it costs nothing for a config that doesn't use it.
 
@@ -1765,22 +2543,57 @@ class DraftCreator(Protocol):
     def create_draft(self, in_reply_to: NormalizedMessage, body: str) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class ThreadContext:
+    """Everything §10.7's `Tier2Meta` needs about a message's thread history.
+
+    Deliberately narrow — exactly the two facts
+    `process_tier2_message()` consults (`thread_prior_subject`,
+    `thread_user_has_replied`), not a general-purpose thread-search
+    result. Keeping it this small means a provider only has to answer
+    the specific question Tier 2 asks, not build a full thread-fetch
+    API this codebase doesn't otherwise need.
+    """
+
+    prior_subject: str | None
+    user_has_replied: bool
+
+
+class ThreadHistoryReader(Protocol):
+    """Resolves one message's `ThreadContext` — a provider's third read side,
+    alongside `Source` (new mail) and whatever `build_action_applier()`
+    reads to apply an action."""
+
+    def get_thread_context(self, message: NormalizedMessage) -> ThreadContext: ...
+
+
+class MailboxLister(Protocol):
+    """Lists the account's mailbox names, for Tier 2's `available_mailboxes`
+    (§10.1) and `validate_verdict()`'s closed-set check (§10.2)."""
+
+    def list_mailboxes(self) -> Sequence[str]: ...
+
+
 class Provider(Protocol):
     """What every mail-backend integration adapts to.
 
     A provider is the daemon's *entire* relationship to one remote
     source of truth — reading from it (`build_source`), writing an
-    action to it (`build_action_applier`), and writing a draft to it
-    (`build_draft_creator`) are three operations against the same
-    backend, not separate concerns that happen to share one. Mailbox
-    role resolution and anything else backend-specific is reached
-    through whatever a provider hands back, not through this Protocol
-    — but every kind of read/write belongs here.
+    action to it (`build_action_applier`), writing a draft to it
+    (`build_draft_creator`), and answering the two read-side questions
+    Tier 2 needs (`build_thread_history_reader`, `build_mailbox_lister`)
+    are five operations against the same backend, not separate concerns
+    that happen to share one. Mailbox role resolution and anything else
+    backend-specific is reached through whatever a provider hands back,
+    not through this Protocol — but every kind of read/write belongs
+    here.
     """
 
     def build_source(self) -> Source: ...
     def build_action_applier(self) -> ActionApplier: ...
     def build_draft_creator(self) -> DraftCreator: ...
+    def build_thread_history_reader(self) -> ThreadHistoryReader: ...
+    def build_mailbox_lister(self) -> MailboxLister: ...
 ```
 
 `spork.core.actions.executor.ActionExecutor` (M2) is the one consumer
@@ -1805,12 +2618,15 @@ generic caller should know how to do itself.
 - **The Adapter: `JmapProvider`.** Wraps `JmapClient` +
   `JmapPushTrigger` (§8) into a `Source` via the existing
   `TriggeredSource` (§9.2) for `build_source()`, and wraps
-  `JmapClient.apply_action()` (one of four `NotImplementedError` stubs
-  alongside `connect()`/`fetch_new_messages()`/`create_draft()`, same
+  `JmapClient.apply_action()` (one of seven `NotImplementedError` stubs
+  alongside `connect()`/`fetch_new_messages()`/`create_draft()`/
+  `get_thread_context()`/`list_mailboxes()`/`get_message()`, same
   reason — a live session is real-network work) for
-  `build_action_applier()`/`build_draft_creator()`. `JmapProvider`
-  doesn't reimplement fetch/push/mutate logic, it composes pieces that
-  already exist into the shape `Provider` promises.
+  `build_action_applier()`/`build_draft_creator()`/
+  `build_thread_history_reader()`/`build_mailbox_lister()`/
+  `build_message_lookup()`. `JmapProvider` doesn't reimplement
+  fetch/push/mutate logic, it composes pieces that already exist into
+  the shape `Provider` promises.
 - **Loadable at runtime: `spork.core.providers.loader`.** A provider is
   named in config as a `"module.path:ClassName"` spec (e.g.
   `"spork.core.providers.jmap.provider:JmapProvider"`) and resolved via
@@ -1823,9 +2639,11 @@ generic caller should know how to do itself.
   itself.
 - **Fails loud on a bad spec.** A malformed spec, an unimportable
   module, a missing class, or a constructor that rejects the given
-  config all raise a single `ProviderLoadError` — `spork doctor` (M5)
-  catches this the same way it catches an unknown classifier name
-  (§9.1).
+  config all raise a single `ProviderLoadError`, caught and reported
+  cleanly wherever `load_provider()` is actually called
+  (`sporkd`/`spork reclassify`) — same as `UnknownClassifierError`
+  (§9.1). `spork doctor` surfacing this proactively, before startup,
+  is intended but not built yet (`docs/ROADMAP.md` M6).
 - **A second, fully real Adapter: `FileProvider`.** `JmapProvider` is
   the only provider spork ships that talks to a live backend, and it's
   still mid-M1 (`connect()`/`fetch_new_messages()`/`apply_action()`/
@@ -1848,7 +2666,23 @@ generic caller should know how to do itself.
   useful: proving, with a real second implementation, that `Provider`'s
   read/write split actually holds for a backend other than JMAP — plus
   a genuinely handy building block for local dev/demo/CI work that
-  wants a Provider without any network dependency.
+  wants a Provider without any network dependency. `build_thread_history_reader()`/
+  `build_mailbox_lister()` are real here too, not stubs: thread context
+  is derived from the *other* messages already present in the same
+  `messages_path` file that share a `thread_id` — `prior_subject` is
+  the earliest such message's subject, `user_has_replied` is whether
+  any of them carries `"Sent"` in `mailbox_ids` (a message spork itself
+  sent into that thread). `list_mailboxes()` returns an explicit
+  `available_mailboxes` constructor argument when given, or falls back
+  to the sorted union of every `mailbox_ids` value across the file —
+  real, inspectable data derived from the same fixture, never invented
+  to fill the method out. `build_message_lookup()` (M5, for `spork
+  reclassify <id>`, §13) is real too: `get_message()` scans the same
+  fixture file for a matching `message_id`, raising `MessageNotFoundError`
+  (named subjects/ids the way `UnrecordedResponseError` does, §10.5) if
+  none matches — a real, if small, index over data that's already
+  there, not a stand-in for `JmapClient.get_message()`'s eventual
+  `Email/get` call.
 
 ### 9.4 Modularity: Filter/Selector/Augment pipeline modules
 
@@ -1971,7 +2805,17 @@ implements the seven concrete Filters/Selectors that reproduce M2's
 `process_message()` behavior exactly:
 
 - **`IdempotencyGateSelector`** — branches `"skip"` (already processed)
-  or `"continue"`.
+  or `"continue"`. `build_default_pipeline()`/`process_message()` both
+  take a `force: bool = False` (M5, for `spork reclassify <id>`, §13):
+  when `True`, the idempotency gate is skipped from the pipeline
+  entirely (`process` runs directly, no `IdempotencyGateSelector`
+  wrapping it) rather than being consulted and overridden — `has_processed()`
+  is never even called, so there's no risk of the gate's own logic
+  drifting out of sync with a bypass flag it would otherwise need to
+  know about. `MarkProcessedFilter`'s existing upsert (built with
+  exactly this in mind, per its own docstring) still runs at the end
+  either way, overwriting whatever `processed_messages` row already
+  existed with the fresh outcome.
 - **`TimestampFilter`** — calls the injected clock exactly once; every
   later module reads the shared `meta.ts` rather than each calling its
   own clock (a real M2 behavior gap this refactor closes: the old
@@ -2608,9 +3452,15 @@ through Tier 1 or Tier 2 and can be wired in as pipeline modules.
 Daemon-health events (JMAP push disconnected, LLM budget exhausted at
 the *daemon* level, crash-looping) are **not** — they're about
 `sporkd`'s own lifecycle, not a `Payload`/`Pipeline.run()` for any one
-message, so they get no module here; they belong to the M5 daemon
-loop once it exists, tracked as their own M4 exit-criterion item, not
-invented in this section.
+message, so they get no module here. The M5 daemon loop
+(`spork.daemon.loop.run_daemon()`) exists now, with `PipelineObserver`/
+`Alerter` already threaded through it for per-message alerts. Of the
+three daemon-health signals, one is wired in directly on the loop
+(§12.3, daily-budget-exhausted); the other two remain real,
+currently-untracked follow-up — JMAP push disconnected still needs a
+live EventSource connection to detect at all (see the comment in
+`spork.core.providers.jmap.push`), and crash-loop detection belongs to
+M6/systemd, not this loop.
 
 **`spork.core.pipeline.observer.PipelineObserver`** is the "combine
 logging and alerting" object: every alert-worthy pipeline outcome
@@ -2673,16 +3523,15 @@ concurrently.
 **Known limitation, stated rather than papered over:** a correlation
 ID is scoped to one pipeline *run*, not one message's full lifetime.
 `process_message()`'s Tier 1 run and a later `process_tier2_message()`
-run for the same (now-escalated) message each get their own — nothing
-today threads Tier 1's ID into `Tier2Meta` the way `to_addresses` or
-`thread_prior_subject` are threaded in, because nothing calls
-`process_tier2_message()` yet outside tests (§10.7: *"deciding which
-escalated message to call this on"* needs the M5 daemon scheduler,
-which doesn't exist). Stitching the two into one cross-tier trace is
-real, wanted work for whenever that scheduler exists — not invented
-here against a caller that doesn't exist yet. This partially satisfies
-`docs/ROADMAP.md` M7's "per-message tracing" item for the
-pipeline-internal portion (the correlation ID + `LoggerAdapter`
+run for the same (now-escalated) message each get their own —
+`escalate_message()` (§6.2.1, M5 — the real caller `process_tier2_message()`
+now has, in `_run_message_loop()` and `spork reclassify` alike) doesn't
+thread Tier 1's correlation ID into `Tier2Meta` the way it threads
+`to_addresses`/`thread_prior_subject` in. Stitching the two into one
+cross-tier trace is real, wanted work — genuinely unbuilt, not blocked
+on anything missing anymore now that a real caller exists. This
+partially satisfies `docs/ROADMAP.md` M7's "per-message tracing" item
+for the pipeline-internal portion (the correlation ID + `LoggerAdapter`
 mechanism); M7 still separately owns wiring `sporkd`'s overall
 structured logging setup (handlers, level, journal output) and
 audit-trail completeness beyond triage outcomes.
@@ -2719,26 +3568,114 @@ side effect alongside the existing one, same shape as adding
 rewrite of `build_default_pipeline()`/`build_tier2_pipeline()`'s
 existing stages.
 
+### 12.3 Daemon-level daily-budget-exhausted alert
+
+The first of §12.2's three daemon-health signals to get wired in
+(docs/ROADMAP.md M4's "Alert triggers" item) — chosen over the other
+two because it's the only one that needs no live network to build
+honestly: it's a `StateDB` read, the same one `BudgetGateSelector`
+(§10.7) already does per Tier-2-eligible message, just asked once more
+from the daemon loop itself. The other two — JMAP push disconnected,
+daemon crash-looping — stay genuinely blocked (see the comment in
+`spork.core.providers.jmap.push` for the former; the latter is M6/
+systemd's job, not this loop's).
+
+**Distinct from `RecordBudgetExhaustedFilter` (§12.2's table):** that
+filter alerts *per skipped message* — "this one didn't get a Tier 2
+opinion" — every single time Tier 1 escalates while the budget is
+already gone, which is by design (§10's documented policy: never
+silently drop budget-exhausted mail). This is a different signal at a
+different level: a one-shot-per-day daemon-health notification —
+"sporkd itself has hit its ceiling for today" — meant for an operator
+skimming alerts, not a per-message audit trail. Firing it every time
+would just be `RecordBudgetExhaustedFilter` again under a different
+name; firing it once tells the operator something new.
+
+**Mechanism:**
+
+- `DaemonState` (§6.2.2) gains one field:
+  `budget_exhausted_alert_date: str | None = None` — the ISO date
+  (`YYYY-MM-DD`, matching `StateDB.get_llm_usage(date)`'s existing
+  slicing convention, `now()[:10]`) this alert last fired on, or
+  `None` if it hasn't fired today. Reassignment-only, same
+  no-lock-needed reasoning as `paused`/`started_at`.
+- `_run_message_loop()` gains a `now: Callable[[], str] = _utc_now_iso`
+  DI parameter, mirroring the pattern already used by
+  `process_message()`/`process_tier2_message()`/`CorrelationIdFilter`
+  — production callers never override it, tests inject a fixed clock
+  to control which day's budget row is checked without needing to
+  cross an actual midnight.
+- Right after each `escalate_message()` call (the only place Tier 2
+  calls — and therefore budget spend — happen in the loop), a small
+  helper checks `state_db.get_llm_usage(today)` against
+  `tiering.daily_call_budget` via the existing
+  `spork.core.llm.budget.has_budget_remaining()`. If the budget is
+  gone *and* `daemon_state.budget_exhausted_alert_date != today`, it
+  fires one `ops.alert(..., urgency="critical")` call and sets
+  `daemon_state.budget_exhausted_alert_date = today`. If the budget
+  still has headroom, or today's alert already fired, it's a no-op.
+- **Self-resetting across date rollover, no special-casing:** the
+  guard is an equality check against *today's* date, not a boolean
+  flag — the day after exhaustion, `today` no longer matches the
+  stored date (even though the field is still set from yesterday), so
+  the very next exhausted-budget check fires again and overwrites the
+  field with the new date. No midnight timer, no explicit reset logic
+  anywhere.
+- The alert's `correlation_id` (required by `PipelineObserver.alert()`,
+  §12.2) isn't any one message's — this fires from daemon lifecycle,
+  not a `Pipeline.run()` — so it gets its own fresh one via the same
+  `new_id: Callable[[], str] = lambda: uuid.uuid4().hex` DI pattern
+  `CorrelationIdFilter` uses, not threaded from whichever message
+  happened to trigger the check.
+
 ## 13. CLI command reference (v1 surface)
 
 ```
-spork status                  # daemon up/down, push connection state,
-                               # queue depth, today's LLM spend vs budget
+spork status                  # daemon up/down, paused/started_at only —
+                               # push connection state/queue depth/LLM
+                               # spend vs budget aren't reported yet
+                               # (§6.2.2, honest gaps, not fabricated)
 spork pause / resume          # stop/start Tier 1+2 processing without
-                               # killing the daemon (push stays connected)
+                               # killing the daemon (§6.2.2's honest
+                               # caveat: today this also stops polling,
+                               # not just acting on what's already
+                               # fetched — see the design note)
 
-spork rules list              # show rules.toml, with per-rule match stats
+spork rules list              # show rules.toml: id/enabled/description/
+                               # action per rule. Per-rule match counts
+                               # aren't tracked (§7.4's rule_stats is a
+                               # separate, still-unbuilt item behind a
+                               # different command, spork rules stats)
 spork rules test <file>       # dry-run a candidate rules.toml against
                                # recent mail, no side effects
 spork rules edit              # open rules.toml in $EDITOR, validate on save,
                                # push a reload to sporkd if it's running
-spork rules enable/disable <id>
+                               # (§6.2.2/§7.5)
+spork rules enable/disable <id>  # flip one rule's enabled field,
+                               # rewrite the file, push a reload — real
+                               # tradeoff: this rewrite doesn't preserve
+                               # hand-written comments/formatting (§7.5)
 
-spork config show             # effective config (secrets redacted)
-spork config edit             # open config.toml in $EDITOR, validate on save
+spork config show             # effective (merged) config; kwargs entries whose
+                               # key looks like a credential are redacted
+                               # (heuristic, not a guarantee — §7.2); flags every
+                               # value present in the enforced tier
+spork config edit             # open the *user* tier's config.toml in $EDITOR,
+                               # validate the real merged result on save — never
+                               # pushes a reload (§7.2's "why not," unlike rules):
+                               # restart sporkd to apply. Never touches the
+                               # system-default or enforced tiers; those are
+                               # edited directly with real filesystem permissions
 
-spork logs [--tail] [--since] [--message-id]
-spork reclassify <message-id> # force a message back through the pipeline
+spork logs [--tail] [--since] [--message-id]  # reads StateDB directly,
+                                               # works even if sporkd isn't running
+spork reclassify <message-id> # standalone, like spork logs — works whether
+                               # or not sporkd is running (§7.4's WAL-mode
+                               # reasoning). Looks the message up via
+                               # Provider.build_message_lookup(), forces it
+                               # through Tier 1 (force=True bypasses the
+                               # idempotency gate) and, if it escalates,
+                               # straight into Tier 2 as well
 
 spork doctor                  # secretspec check, JMAP auth check,
                                # systemd unit status, DB migration status
@@ -2802,6 +3739,12 @@ WantedBy=default.target
 - Local control socket is a Unix domain socket with filesystem
   permissions (0600, owned by the invoking user) — not a TCP port, so
   no network exposure and no auth scheme needed for v1.
+- `/etc/spork/enforced.toml` (§7.2's system-enforced config tier) is
+  trusted on the strength of normal `/etc` filesystem permissions, the
+  same assumption `/etc/gitconfig` and Chromium's managed-policy
+  directory make — Spork does not itself verify the file's ownership
+  or mode. A machine where unprivileged users can write to `/etc` has
+  a problem this config tier was never meant to solve.
 - LLM prompts include email content by design (that's the point) — the
   design assumes the user is comfortable with their mail body going to
   the configured LLM provider. This is called out explicitly in the

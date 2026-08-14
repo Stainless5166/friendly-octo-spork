@@ -13,6 +13,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from spork.core.providers.base import MessageNotFoundError
 from spork.core.providers.file.provider import FileProvider
 from spork.core.rules.schema import Action
 from spork.core.sources.triggered import TriggeredSource
@@ -143,6 +146,137 @@ def test_draft_creator_appends_one_jsonl_entry_per_create_draft_call(
     assert [e["in_reply_to_message_id"] for e in entries] == ["msg-1", "msg-2"]
     assert entries[0]["body"] == "Reply one."
     assert entries[1]["body"] == "Reply two."
+
+
+def _write_threaded_messages(path: Path) -> None:
+    """Two messages sharing thread-2: an earlier one spork sent
+    (mailbox_ids includes "Sent"), and a later one that arrived after
+    it — the shape get_thread_context()'s tests exercise."""
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "message_id": "msg-solo",
+                    "thread_id": "thread-1",
+                    "from_address": "a@example.com",
+                    "from_domain": "example.com",
+                    "subject": "Solo",
+                    "body_text": "No thread history.",
+                    "mailbox_ids": ["Inbox"],
+                },
+                {
+                    "message_id": "msg-sent",
+                    "thread_id": "thread-2",
+                    "from_address": "me@example.com",
+                    "from_domain": "example.com",
+                    "subject": "Re: Thursday call",
+                    "body_text": "Friday works.",
+                    "mailbox_ids": ["Sent"],
+                },
+                {
+                    "message_id": "msg-reply",
+                    "thread_id": "thread-2",
+                    "from_address": "them@example.com",
+                    "from_domain": "example.com",
+                    "subject": "Re: Re: Thursday call",
+                    "body_text": "Great, see you then.",
+                    "mailbox_ids": ["Inbox", "Archive"],
+                },
+            ]
+        )
+    )
+
+
+def test_build_thread_history_reader_returns_no_history_for_a_singleton_thread(
+    tmp_path: Path, make_message
+) -> None:
+    """A message alone in its thread has no prior subject and no reply
+    on record — real absence, not a placeholder default standing in
+    for real data."""
+    messages_path = tmp_path / "messages.json"
+    _write_threaded_messages(messages_path)
+    provider = FileProvider(messages_path, tmp_path / "actions.jsonl")
+    reader = provider.build_thread_history_reader()
+
+    context = reader.get_thread_context(make_message(message_id="msg-solo", thread_id="thread-1"))
+
+    assert context.prior_subject is None
+    assert context.user_has_replied is False
+
+
+def test_thread_history_reader_finds_prior_subject_and_a_reply_already_sent(
+    tmp_path: Path, make_message
+) -> None:
+    """Real thread history, derived from the other messages in the same
+    file that share a thread_id — prior_subject from the earlier
+    message, user_has_replied True because one of them carries "Sent"
+    in mailbox_ids (docs/DESIGN.md §9.3)."""
+    messages_path = tmp_path / "messages.json"
+    _write_threaded_messages(messages_path)
+    provider = FileProvider(messages_path, tmp_path / "actions.jsonl")
+    reader = provider.build_thread_history_reader()
+
+    context = reader.get_thread_context(make_message(message_id="msg-reply", thread_id="thread-2"))
+
+    assert context.prior_subject == "Re: Thursday call"
+    assert context.user_has_replied is True
+
+
+def test_build_mailbox_lister_returns_the_explicit_available_mailboxes_when_given(
+    tmp_path: Path,
+) -> None:
+    """An explicit available_mailboxes= constructor argument wins over
+    anything derived from the messages file — a deployment's real
+    mailbox list, not guessed."""
+    messages_path = tmp_path / "messages.json"
+    _write_threaded_messages(messages_path)
+    provider = FileProvider(
+        messages_path,
+        tmp_path / "actions.jsonl",
+        available_mailboxes=["Inbox", "Needs-Review"],
+    )
+    lister = provider.build_mailbox_lister()
+
+    assert lister.list_mailboxes() == ["Inbox", "Needs-Review"]
+
+
+def test_mailbox_lister_derives_the_sorted_union_of_mailbox_ids_when_not_given(
+    tmp_path: Path,
+) -> None:
+    """With no available_mailboxes= given, the mailbox list is derived
+    from real data already in the file — the sorted union of every
+    message's mailbox_ids — rather than an empty/invented default."""
+    messages_path = tmp_path / "messages.json"
+    _write_threaded_messages(messages_path)
+    provider = FileProvider(messages_path, tmp_path / "actions.jsonl")
+    lister = provider.build_mailbox_lister()
+
+    assert lister.list_mailboxes() == ["Archive", "Inbox", "Sent"]
+
+
+def test_build_message_lookup_finds_a_message_by_id(tmp_path: Path) -> None:
+    """get_message() (docs/DESIGN.md §13, for spork reclassify) scans
+    the same fixture file build_source() replays from and returns the
+    matching NormalizedMessage."""
+    messages_path = tmp_path / "messages.json"
+    _write_messages(messages_path)
+    provider = FileProvider(messages_path, tmp_path / "actions.jsonl")
+    lookup = provider.build_message_lookup()
+
+    message = lookup.get_message("msg-2")
+
+    assert message.message_id == "msg-2"
+    assert message.subject == "Hi again"
+
+
+def test_message_lookup_raises_a_clean_error_for_an_unknown_id(tmp_path: Path) -> None:
+    messages_path = tmp_path / "messages.json"
+    _write_messages(messages_path)
+    provider = FileProvider(messages_path, tmp_path / "actions.jsonl")
+    lookup = provider.build_message_lookup()
+
+    with pytest.raises(MessageNotFoundError):
+        lookup.get_message("no-such-message")
 
 
 def test_drafts_log_defaults_next_to_the_actions_log(tmp_path: Path, make_message) -> None:

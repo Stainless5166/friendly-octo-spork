@@ -59,8 +59,11 @@ read-only. No actions taken yet.
       `NotImplementedError`, same blocker as `JmapClient.connect()`
       above, caught and reported as a clean CLI error rather than a
       traceback. Secrets/systemd/DB checks from docs/DESIGN.md §12
-      aren't wired in yet — they need `spork.core.config`, which
-      doesn't exist yet — so this command doesn't pretend to run them.
+      aren't wired in yet — this command doesn't pretend to run them
+      until it does. Originally blocked on `spork.core.config` not
+      existing; that landed in M5, so the secrets/DB-path pieces are
+      unblocked now — tracked as its own M6 item (see M6's checklist)
+      rather than assumed done just because the blocker cleared.
 
 **Exit criteria:** `sporkd` runs, logs each new inbox message's subject
 as it arrives (via push, verified by sending a real test email), survives
@@ -295,11 +298,27 @@ follow-up behind the same `Alerter` protocol, not built this round.
       and `RecordBudgetExhaustedFilter` always alert;
       `ApplyVerdictActionFilter` alerts on `autoact_alert` or
       `verdict.urgency == "high"` regardless of band. **Daemon health
-      is NOT done and can't be yet** — JMAP push disconnected /
-      crash-looping are `sporkd` lifecycle events, not a
-      `Payload`/`Pipeline.run()` for any message, so there's nothing
-      for a pipeline module to attach to; needs the M5 daemon loop
-      first. See docs/TEST_COVERAGE.md tests 318–346.
+      is now 1/2 done.** Of the two daemon-lifecycle signals actually
+      in scope here (crash-loop detection was re-scoped to M6/systemd
+      below, not this loop's job — a daemon babysitting its own
+      restart count duplicates what systemd's `Restart=`/
+      `StartLimitBurst` already does):
+      - [x] **Daily LLM budget exhausted at the daemon level**
+        (docs/DESIGN.md §12.3) — a one-shot-per-day critical alert,
+        distinct from `RecordBudgetExhaustedFilter`'s existing
+        per-message alert, wired into `_run_message_loop()` right
+        after each escalation. Needed no live network to build
+        honestly (it's a `StateDB` read `BudgetGateSelector` already
+        does per message, asked once more from the loop), so it's the
+        one daemon-health signal this item was actually blocked on
+        M5's daemon loop for, not on anything else. See
+        docs/TEST_COVERAGE.md tests 503–508.
+      - [ ] **JMAP push disconnected > N minutes** — still genuinely
+        blocked: detecting "disconnected" needs a live JMAP
+        EventSource connection to have something to time out on in
+        the first place (docs/ROADMAP.md M1). The design-gap comment
+        lives directly on the stub it blocks:
+        `spork.core.providers.jmap.push.JmapPushTrigger`.
 - [ ] Graceful degrade when no DBus session bus is available (e.g. no
       active desktop session — sporkd keeps running, alerts just don't
       display, logged instead) (S) — moot for now: `LoggingAlerter`
@@ -319,20 +338,139 @@ needs M5's daemon loop.
 
 ## M5 — CLI + daemon control surface
 
-**Goal:** the full `spork` command surface from §12 works against a
+**Goal:** the full `spork` command surface from §13 works against a
 running `sporkd` over the control socket.
 
-- [ ] IPC protocol + Unix socket server in `sporkd` (M)
-- [ ] `spork status` (queue depth, push state, today's LLM spend) (M)
-- [ ] `spork pause`/`resume` (S)
-- [ ] `spork rules list/edit/enable/disable` with live reload (M)
-- [ ] `spork config show/edit` with validation on save (S)
-- [ ] `spork logs` (tail, filter by message ID / time range) (S)
-- [ ] `spork reclassify <id>` (S)
+Two prerequisites landed as this milestone's own first items, not
+silently assumed: `spork.core.config` didn't exist at all before this
+milestone (flagged in `DESIGN.md` §6.1's component-tree caption, but
+untracked as work anywhere), and `sporkd`'s event loop was never
+actually assembled — `daemon/main.py` was still M0's `--version`-only
+stub, and M1's own exit criteria said so explicitly ("sporkd runs, logs
+each new inbox message's subject... **Not yet met**" — still true for
+the JMAP-specific path, since that's genuinely blocked on a live
+account, but no longer true of the loop itself). Neither was genuinely
+blocked on a live JMAP account: both were buildable and testable
+against `FileProvider` + `RecordedLLMClient` + `LoggingAlerter`, the
+same "settle the real shape, let only the actual network leaf calls
+stay `NotImplementedError`" pattern M1a/M1b/M3 used — not new scope
+invented for M5, just work that had nowhere else on the roadmap to
+live until M5 needed something to control.
 
-**Exit criteria:** every command in §12 works end-to-end against a live
+- [x] `spork.core.config`: `SporkConfig`/`TieringConfig`/`BackendSpec`
+      pydantic schema + `load_config()` (M) — three-tier precedence
+      (system enforced `/etc/spork/enforced.toml` > user
+      `$XDG_CONFIG_HOME/spork/config.toml` > system default via
+      `$XDG_CONFIG_DIRS`), settled and documented in §7.2/§6.4 against
+      the real XDG Base Directory Specification (v0.8) and comparable
+      tools (`git`'s system/global scopes, Chromium/Firefox managed
+      policy), not invented. `ConfigLoadError` wraps every failure
+      mode, same convention as `RulesLoadError`/`ProviderLoadError`.
+      Exit criterion's enforced-tier-wins test is real: see
+      `docs/TEST_COVERAGE.md`'s `test_load_config_enforced_tier_overrides_user_tier`.
+- [x] Daemon event loop assembly: `daemon/loop.py` composes
+      `load_config()` → `Provider.build_source()` → Tier 1
+      `process_message()` → `PipelineObserver`/`Alerter` → `StateDB`,
+      as a real asyncio loop, blocking calls bridged via
+      `asyncio.to_thread()` (§6.2.1) (M) — proven end-to-end against
+      `FileProvider`; the JMAP-specific path stays the settled-shape
+      `NotImplementedError` it already is (M1) until a live account
+      exists to test against. **Tier 1 only this round** — chaining a
+      freshly-escalated message into `process_tier2_message()` needs
+      `to_addresses`/thread-history/`available_mailboxes` that nothing
+      resolves yet (`NormalizedMessage` has no `to` field; `Provider`
+      exposes no thread-history or mailbox-listing method); see the
+      new item below. Also required: `StateDB`'s SQLite connection
+      gains `check_same_thread=False` (§6.4's `spork.core.state` note)
+      — safe under this loop's sequential (never concurrent)
+      `to_thread` access pattern, not a general concurrency change.
+- [x] Wire Tier 2 into the daemon loop (S) — `to_addresses` parsed
+      from `NormalizedMessage.headers["To"]` (real data, not
+      invented); `Provider` gained `build_thread_history_reader()`/
+      `build_mailbox_lister()` (§9.3) for the two reads
+      `process_tier2_message()` needs, real against `FileProvider`,
+      the same settled-shape `NotImplementedError` as every other
+      `JmapProvider` leaf pending a live account. An escalated message
+      now flows straight into `process_tier2_message()` in the same
+      poll cycle, via a second, strictly-sequential `asyncio.to_thread()`
+      call (§6.2.1) — `spork status`'s LLM-spend field stays deferred
+      regardless (§6.2.2: no synchronization from `StateDB` into
+      `DaemonState` yet, a separate gap from "Tier 2 doesn't run").
+- [x] IPC protocol + Unix socket server in `sporkd` (M) — newline-
+      delimited JSON over the socket (§15's filesystem-permission
+      model already rules out needing an auth scheme; no new
+      dependency, human-inspectable with `nc`/`socat` while debugging).
+      `DaemonState`'s fields are touched only from coroutine code,
+      never from inside `to_thread()`, so no lock is needed — see
+      §6.2.2's note on the concurrent-`StateDB`-access bug this caught
+      before any code was written.
+- [x] `spork status` (M) — reports `paused`/`started_at` only; "queue
+      depth", "push state", and "LLM spend vs budget" are explicitly
+      deferred (§6.2.2), not fabricated with no backing data
+- [x] `spork pause`/`resume` (S) — honest caveat: also stops fetching
+      new mail, not just acting on it (`Source.poll()` fuses wait+fetch,
+      §9.2); a real push connection "staying live" while paused isn't
+      achievable without splitting that abstraction further, not done
+      here
+- [x] `spork rules list/edit/enable/disable` with live reload (M) —
+      `RulesState` (`spork.daemon.state`) mirrors `DaemonState`: a new
+      `reload` IPC command re-runs `load_rules()` and reassigns
+      `rules_state.rules` wholesale on success (a single atomic
+      reference swap, not an in-place mutation — safe with no lock,
+      same reasoning as `DaemonState`), leaving it untouched on a
+      `RulesLoadError` so a bad hand-edit can't take the daemon down.
+      `_run_message_loop()` reads `rules_state.rules` fresh right after
+      every `poll()` call, so a reload takes effect for the very next
+      batch. `enable`/`disable` rewrite the whole file via
+      `spork.core.rules.writer.dump_rules()` — a small purpose-built
+      serializer for this closed schema, not a new dependency; real,
+      stated tradeoff: comments/formatting in a hand-edited
+      `rules.toml` don't survive it (`edit`, which only opens
+      `$EDITOR`, is unaffected). Corrected two stale `docs/DESIGN.md`
+      §13 claims found while building this: `spork status` doesn't
+      actually report LLM spend yet, and `spork rules list` doesn't
+      have per-rule match stats to show (that's `rule_stats`, a
+      separate, still-unbuilt table behind a different command).
+- [x] `spork config show/edit` with validation on save (S) — `show`
+      flags every value the enforced tier sets via a new
+      `spork.core.config.loader.enforced_override_paths()` (flattens
+      the enforced tier's raw TOML into dotted paths, independent of
+      `load_config()`'s merge) and redacts any `kwargs` entry whose key
+      looks like a credential (`token`/`key`/`secret`/`password`
+      substring match — a stated heuristic, not a guarantee). `edit`
+      only ever opens the *user* tier (§7.2), validates the real
+      merged `load_config()` result on save, and — deliberately unlike
+      `spork rules edit`/`enable`/`disable` — never pushes a live
+      reload: config controls the `Provider`/`LLMClient`/`Alerter`
+      objects `run_daemon()` only ever builds once at startup, not a
+      plain list re-read every poll cycle, so "restart sporkd to
+      apply" is the honest answer here.
+- [x] `spork logs` (S) — reads `StateDB` directly, no socket/daemon
+      needed; `--tail`/`--since` filter client-side, `--message-id`
+      storage-side
+- [x] `spork reclassify <id>` (S) — standalone, like `spork logs`: opens
+      its own `Provider`/`StateDB` directly, works whether or not
+      `sporkd` is running, no new IPC command needed. Safe under
+      SQLite's WAL mode (already on, §7.4) plus `sqlite3.connect()`'s
+      unmodified 5-second default busy timeout — a rare write
+      collision with a running daemon is a bounded retry, not a
+      correctness risk. `Provider` gained a sixth capability,
+      `build_message_lookup()` (real against `FileProvider`,
+      settled-shape `NotImplementedError` against `JmapProvider`, same
+      split as the others); `process_message()`/`build_default_pipeline()`
+      gained `force: bool = False`, which omits `IdempotencyGateSelector`
+      from the composed pipeline entirely rather than consulting and
+      overriding it. `spork.core.pipeline.tier2.escalate.{escalate_message,
+      parse_to_addresses}` were extracted out of what was
+      `spork.daemon.loop`'s private helpers, so the daemon loop and
+      `spork reclassify` share one real Tier 2 escalation
+      implementation instead of duplicating it.
+
+**Exit criteria:** every command in §13 works end-to-end against a live
 daemon; editing `rules.toml` via `spork rules edit` takes effect without
-a daemon restart.
+a daemon restart; a value in `/etc/spork/enforced.toml` can't be
+overridden by a user's own `config.toml`, verified by a test that
+tries.
 
 ## M6 — systemd packaging + install flow
 
@@ -345,6 +483,14 @@ an Arch Linux package.
 - [ ] Install helper (`spork install-service` or a documented script) (S)
 - [ ] README quickstart: secretspec setup → config → rules → enable unit (M)
 - [ ] `spork doctor` checks unit install/enabled/active state (S)
+- [ ] `spork doctor` wires in the secrets/config/provider checks
+      docs/DESIGN.md §7.3/§9.1/§9.3 describe (`secretspec check`
+      equivalent, `load_config()`/`load_provider()`/`load_rules()`
+      called eagerly and any `ConfigLoadError`/`ProviderLoadError`/
+      `RulesLoadError`/`UnknownClassifierError` reported in plain
+      language) — no longer blocked on `spork.core.config` not
+      existing (that landed in M5); genuinely new scope, not assumed
+      done by any of M5's items (S)
 - [ ] Arch Linux packaging: a `PKGBUILD` (AUR-style) that builds `spork`/
       `sporkd` and installs the systemd unit, so `makepkg -si` (and later
       an AUR submission) is a supported install path alongside the manual

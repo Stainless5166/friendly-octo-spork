@@ -50,6 +50,7 @@ def build_default_pipeline(
     ops: PipelineObserver,
     now: Callable[[], str] = _utc_now_iso,
     new_correlation_id: Callable[[], str] = _new_correlation_id,
+    force: bool = False,
 ) -> Pipeline[MessageMeta]:
     """Compose the modules that reproduce M2's process_message() behavior.
 
@@ -59,6 +60,15 @@ def build_default_pipeline(
     pipeline that calls Claude first is a change to *what that route
     points at*, never a rewrite of `Pipeline`, `RuleEvaluationSelector`,
     or the "terminal" route.
+
+    `force=True` (M5, for `spork reclassify <id>`, docs/DESIGN.md §9.4)
+    omits `IdempotencyGateSelector` from the composed pipeline entirely
+    — `process` runs directly, so `has_processed()` is never even
+    called, rather than being consulted and then overridden. This
+    keeps the gate's own logic single-purpose (it only ever means
+    "already processed," never "already processed, unless told not to
+    care") and avoids adding a bypass branch it would otherwise need to
+    know about.
     """
     terminal: Pipeline[MessageMeta] = Pipeline(
         [
@@ -79,6 +89,8 @@ def build_default_pipeline(
         selector=RuleEvaluationSelector(),
         routes={"terminal": terminal, "escalate": escalate},
     )
+    if force:
+        return process
     return Pipeline(
         selector=IdempotencyGateSelector(state_db),
         routes={"skip": Pipeline(), "continue": process},
@@ -96,6 +108,7 @@ def process_message(
     classifier: TextClassifier | None = None,
     now: Callable[[], str] = _utc_now_iso,
     new_correlation_id: Callable[[], str] = _new_correlation_id,
+    force: bool = False,
 ) -> RuleVerdict | None:
     """Run one message through the full Tier 1 pipeline.
 
@@ -105,7 +118,9 @@ def process_message(
     now." A message is only marked processed *after* its action
     successfully applies: if a module raises, nothing is recorded, so
     the next poll/push cycle picks the same message back up instead of
-    silently losing it.
+    silently losing it. `force=True` (M5, for `spork reclassify <id>`)
+    skips that idempotency check entirely — see
+    `build_default_pipeline()`'s docstring for why.
 
     An `escalate` verdict is handled per the interim policy in
     docs/DESIGN.md §9: never passed to the action executor (which
@@ -119,6 +134,7 @@ def process_message(
         ops=ops,
         now=now,
         new_correlation_id=new_correlation_id,
+        force=force,
     )
     payload: Payload[MessageMeta] = Payload(
         text="",

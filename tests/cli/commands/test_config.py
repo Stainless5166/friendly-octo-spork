@@ -1,0 +1,186 @@
+"""Acceptance tests for `spork config show/edit` (docs/DESIGN.md §7.2/§13).
+
+Subprocess-based for the CLI surface, matching test_status.py's
+pattern. `_format_show_lines()`/`_looks_like_secret()` are tested
+directly (imported, not through a subprocess) since the "(enforced)"
+flagging they implement depends on the real, fixed
+`/etc/spork/enforced.toml` when reached through `spork config show`
+for real — same reasoning `test_enforced_override_paths.py` gives for
+testing `enforced_override_paths()` with an injectable path instead of
+touching that real file.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from spork.cli.commands.config import _format_show_lines, _looks_like_secret
+from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
+
+
+def _run(*args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "spork.cli.main", "config", *args],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
+    )
+
+
+def _write_config(config_dir: Path, tmp_path: Path) -> None:
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.toml").write_text(
+        f"""
+        rules_path = "{tmp_path / "rules.toml"}"
+        db_path = "{tmp_path / "state.sqlite3"}"
+        socket_path = "{tmp_path / "sporkd.sock"}"
+
+        [provider]
+        spec = "spork.core.providers.jmap.provider:JmapProvider"
+        [provider.kwargs]
+        host = "api.fastmail.com"
+        api_token = "super-secret-value"
+
+        [llm]
+        spec = "spork.core.llm.clients.recorded:RecordedLLMClient"
+        [llm.kwargs]
+        responses_path = "{tmp_path / "responses.json"}"
+
+        [alerts]
+        spec = "spork.core.alerts.log:LoggingAlerter"
+        """
+    )
+
+
+def _env(tmp_path: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "xdg-config-home")
+    env["XDG_CONFIG_DIRS"] = str(tmp_path / "xdg-config-dirs")
+    return env
+
+
+def _fake_editor(tmp_path: Path, script: str) -> str:
+    editor_path = tmp_path / "fake_editor.py"
+    editor_path.write_text(script)
+    return f"{sys.executable} {editor_path}"
+
+
+def test_config_show_prints_effective_values(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    _write_config(tmp_path / "xdg-config-home" / "spork", tmp_path)
+
+    result = _run("show", env=env)
+
+    assert result.returncode == 0
+    assert "spork.core.providers.jmap.provider:JmapProvider" in result.stdout
+    assert "api.fastmail.com" in result.stdout
+
+
+def test_config_show_redacts_a_token_like_kwarg(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    _write_config(tmp_path / "xdg-config-home" / "spork", tmp_path)
+
+    result = _run("show", env=env)
+
+    assert result.returncode == 0
+    assert "super-secret-value" not in result.stdout
+    assert "provider.kwargs.api_token" in result.stdout
+
+
+def test_config_show_with_no_config_produces_a_clean_error(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+
+    result = _run("show", env=env)
+
+    assert result.returncode == 1
+    assert "Error:" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_config_edit_with_a_noop_editor_saves_and_says_restart(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    _write_config(tmp_path / "xdg-config-home" / "spork", tmp_path)
+    env["EDITOR"] = _fake_editor(tmp_path, "")  # does nothing
+
+    result = _run("edit", env=env)
+
+    assert result.returncode == 0
+    assert "restart" in result.stdout.lower()
+
+
+def test_config_edit_rejects_an_invalid_save(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    config_path = tmp_path / "xdg-config-home" / "spork" / "config.toml"
+    _write_config(config_path.parent, tmp_path)
+    corrupt_script = (
+        f"import pathlib; pathlib.Path(r'{config_path}').write_text('this is not [ valid toml')"
+    )
+    env["EDITOR"] = _fake_editor(tmp_path, corrupt_script)
+
+    result = _run("edit", env=env)
+
+    assert result.returncode == 1
+    assert "Error:" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_config_group_appears_in_top_level_help() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "spork.cli.main", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0
+    assert "config" in result.stdout.lower()
+
+
+def _config() -> SporkConfig:
+    return SporkConfig(
+        provider=BackendSpec(
+            spec="spork.core.providers.jmap.provider:JmapProvider",
+            kwargs={"host": "api.fastmail.com", "api_token": "super-secret-value"},
+        ),
+        llm=BackendSpec(spec="spork.core.llm.clients.recorded:RecordedLLMClient"),
+        alerts=BackendSpec(spec="spork.core.alerts.log:LoggingAlerter"),
+        rules_path=Path("/home/will/.config/spork/rules.toml"),
+        db_path=Path("/home/will/.local/share/spork/state.sqlite3"),
+        socket_path=Path("/home/will/.local/state/spork/sporkd.sock"),
+        tiering=TieringConfig(daily_call_budget=200),
+    )
+
+
+def test_format_show_lines_flags_a_path_present_in_the_enforced_set() -> None:
+    lines = _format_show_lines(_config(), {"tiering.daily_call_budget"})
+
+    matching = [line for line in lines if line.startswith("tiering.daily_call_budget")]
+    assert len(matching) == 1
+    assert "(enforced)" in matching[0]
+
+
+def test_format_show_lines_does_not_flag_paths_outside_the_enforced_set() -> None:
+    lines = _format_show_lines(_config(), set())
+
+    assert not any("(enforced)" in line for line in lines)
+
+
+def test_format_show_lines_redacts_provider_kwargs_api_token() -> None:
+    lines = _format_show_lines(_config(), set())
+
+    matching = [line for line in lines if line.startswith("provider.kwargs.api_token")]
+    assert len(matching) == 1
+    assert "super-secret-value" not in matching[0]
+
+
+def test_looks_like_secret_matches_common_credential_key_names() -> None:
+    assert _looks_like_secret("api_token") is True
+    assert _looks_like_secret("API_KEY") is True
+    assert _looks_like_secret("client_secret") is True
+    assert _looks_like_secret("password") is True
+    assert _looks_like_secret("host") is False
+    assert _looks_like_secret("fallback_poll_interval_seconds") is False

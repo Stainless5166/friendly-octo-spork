@@ -12,8 +12,13 @@ from __future__ import annotations
 import typer
 
 from spork import __version__
+from spork.cli.commands.config import app as config_app
 from spork.cli.commands.doctor import doctor
+from spork.cli.commands.logs import logs
+from spork.cli.commands.pause import pause, resume
+from spork.cli.commands.reclassify import reclassify
 from spork.cli.commands.rules import app as rules_app
+from spork.cli.commands.status import status
 
 app = typer.Typer(
     name="spork",
@@ -22,7 +27,13 @@ app = typer.Typer(
     add_completion=False,
 )
 app.add_typer(rules_app, name="rules")
+app.add_typer(config_app, name="config")
 app.command("doctor")(doctor)
+app.command("status")(status)
+app.command("pause")(pause)
+app.command("resume")(resume)
+app.command("logs")(logs)
+app.command("reclassify")(reclassify)
 
 
 @app.callback(invoke_without_command=True)

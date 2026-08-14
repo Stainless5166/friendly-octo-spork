@@ -8,6 +8,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from spork.core.providers.file.messages import MessagesLoadError
 from spork.core.providers.file.provider import FileProvider
 from spork.core.rules.schema import Action
 
@@ -79,6 +82,85 @@ def test_create_draft_with_an_empty_body_is_recorded_as_is(tmp_path: Path, make_
 
     entry = json.loads(drafts_path.read_text().splitlines()[0])
     assert entry["body"] == ""
+
+
+def test_mailbox_lister_returns_empty_for_an_empty_messages_file(tmp_path: Path) -> None:
+    """No available_mailboxes= given, and no messages to derive from —
+    an empty list, not an error and not a guessed default."""
+    messages_path = tmp_path / "messages.json"
+    messages_path.write_text("[]")
+    provider = FileProvider(messages_path, tmp_path / "actions.jsonl")
+
+    assert provider.build_mailbox_lister().list_mailboxes() == []
+
+
+def test_mailbox_lister_respects_an_explicit_empty_list(tmp_path: Path) -> None:
+    """available_mailboxes=[] is a real, deliberately-empty answer —
+    distinct from not passing it at all — so it must not fall back to
+    deriving from the messages file (`is not None`, not truthiness)."""
+    messages_path = tmp_path / "messages.json"
+    messages_path.write_text(
+        json.dumps(
+            [
+                {
+                    "message_id": "msg-1",
+                    "thread_id": "thread-1",
+                    "from_address": "a@example.com",
+                    "from_domain": "example.com",
+                    "subject": "s",
+                    "body_text": "b",
+                    "mailbox_ids": ["Inbox"],
+                }
+            ]
+        )
+    )
+    provider = FileProvider(messages_path, tmp_path / "actions.jsonl", available_mailboxes=[])
+
+    assert provider.build_mailbox_lister().list_mailboxes() == []
+
+
+def test_thread_history_reader_ignores_messages_in_other_threads(
+    tmp_path: Path, make_message
+) -> None:
+    """A message's thread context only ever looks at other messages
+    sharing its exact thread_id — a same-subject message in a
+    different thread doesn't leak in as "prior" history."""
+    messages_path = tmp_path / "messages.json"
+    messages_path.write_text(
+        json.dumps(
+            [
+                {
+                    "message_id": "msg-other-thread",
+                    "thread_id": "thread-unrelated",
+                    "from_address": "a@example.com",
+                    "from_domain": "example.com",
+                    "subject": "Unrelated prior subject",
+                    "body_text": "b",
+                    "mailbox_ids": ["Sent"],
+                }
+            ]
+        )
+    )
+    provider = FileProvider(messages_path, tmp_path / "actions.jsonl")
+    reader = provider.build_thread_history_reader()
+
+    context = reader.get_thread_context(make_message(message_id="msg-1", thread_id="thread-mine"))
+
+    assert context.prior_subject is None
+    assert context.user_has_replied is False
+
+
+def test_thread_history_reader_raises_a_clean_error_for_a_missing_messages_file(
+    tmp_path: Path,
+) -> None:
+    """Same MessagesLoadError build_source() already raises for a
+    missing file (docs/DESIGN.md §9.3) — build_thread_history_reader()
+    reads the same file, so it fails the same clear way, not a raw
+    FileNotFoundError."""
+    provider = FileProvider(tmp_path / "does-not-exist.json", tmp_path / "actions.jsonl")
+
+    with pytest.raises(MessagesLoadError):
+        provider.build_thread_history_reader()
 
 
 def test_pointing_drafts_log_path_at_the_actions_log_path_interleaves_both_shapes(
