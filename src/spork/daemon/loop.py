@@ -11,6 +11,8 @@ the message loop and the IPC control socket as two tasks in one
 from __future__ import annotations
 
 import asyncio
+import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,7 @@ from spork.core.config.paths import resolve_socket_path
 from spork.core.config.schema import SporkConfig, TieringConfig
 from spork.core.ipc.server import IpcServer
 from spork.core.llm.base import LLMClient
+from spork.core.llm.budget import has_budget_remaining
 from spork.core.llm.loader import load_llm_client
 from spork.core.pipeline import process_message
 from spork.core.pipeline.observer import PipelineObserver
@@ -34,6 +37,13 @@ from spork.core.rules.schema import Action
 from spork.core.sources.base import Source
 from spork.core.state.db import StateDB
 from spork.daemon.state import DaemonState, RulesState
+
+
+def _utc_now_iso() -> str:
+    """Default `now` for `_run_message_loop()`'s budget-alert check —
+    same shape as every other `now: Callable[[], str]` DI default in
+    this codebase (`spork.core.pipeline.default`/`tier2.default`)."""
+    return datetime.now(UTC).isoformat()
 
 
 async def run_daemon(
@@ -158,6 +168,44 @@ def _build_ipc_handlers(
     return {"status": _status, "pause": _pause, "resume": _resume, "reload": _reload}
 
 
+def _check_daily_budget_alert(
+    *,
+    daemon_state: DaemonState,
+    state_db: StateDB,
+    tiering: TieringConfig,
+    ops: PipelineObserver,
+    now: Callable[[], str],
+    new_correlation_id: Callable[[], str] = lambda: uuid.uuid4().hex,
+) -> None:
+    """One-shot daemon-health alert when today's daily LLM call budget
+    is exhausted (docs/DESIGN.md §12.3).
+
+    Distinct from `RecordBudgetExhaustedFilter`'s existing per-message
+    "Tier 2 skipped" alert: that one fires every time an escalation
+    lands on an already-exhausted budget, by design (§10's never-drop
+    policy). This one is a daemon-lifecycle signal — "sporkd itself
+    has hit its ceiling for today" — meant to fire at most once per
+    calendar day. The guard is a date-equality check against
+    `daemon_state.budget_exhausted_alert_date`, not a boolean flag, so
+    the alert self-resets the moment `now()` reports a new day, with
+    no midnight timer or explicit reset logic anywhere.
+    """
+    today = now()[:10]
+    if daemon_state.budget_exhausted_alert_date == today:
+        return
+    usage = state_db.get_llm_usage(today)
+    if has_budget_remaining(usage, daily_call_budget=tiering.daily_call_budget):
+        return
+    daemon_state.budget_exhausted_alert_date = today
+    ops.alert(
+        new_correlation_id(),
+        "Daily LLM budget exhausted",
+        f"sporkd has used {usage.calls}/{tiering.daily_call_budget} Tier 2 calls today; "
+        "further escalations are being skipped until the budget resets.",
+        urgency="critical",
+    )
+
+
 async def _run_message_loop(
     *,
     source: Source,
@@ -175,6 +223,7 @@ async def _run_message_loop(
     daemon_state: DaemonState,
     stop_event: asyncio.Event,
     idle_delay_seconds: float,
+    now: Callable[[], str] = _utc_now_iso,
 ) -> None:
     """Repeatedly poll `source` and run each message through Tier 1,
     escalating to Tier 2 in the same cycle when Tier 1 routes
@@ -198,7 +247,13 @@ async def _run_message_loop(
     `rules_state.rules` is read fresh right after each `poll()` call
     (not captured once at loop start), so a `reload` IPC command
     (§6.2.2/§7.5) takes effect for the very next batch, not just a
-    future daemon restart.
+    future daemon restart. After each escalation, `daemon_state` is
+    checked for a one-shot daily-budget-exhausted daemon-health alert
+    (§12.3) — distinct from `RecordBudgetExhaustedFilter`'s existing
+    per-message alert, which fires every time regardless. `now` is
+    injectable the same way it is on `process_message()`/
+    `process_tier2_message()`: production callers never override it,
+    tests use it to control which day's budget row the check reads.
     """
     while not stop_event.is_set():
         if daemon_state.paused:
@@ -244,4 +299,11 @@ async def _run_message_loop(
                     state_db=state_db,
                     ops=ops,
                     tiering=tiering,
+                )
+                _check_daily_budget_alert(
+                    daemon_state=daemon_state,
+                    state_db=state_db,
+                    tiering=tiering,
+                    ops=ops,
+                    now=now,
                 )

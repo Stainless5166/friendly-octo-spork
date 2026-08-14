@@ -23,10 +23,16 @@ class DaemonState:
     """`paused`: toggled by the `pause`/`resume` IPC commands, read by
     `_run_message_loop()` each cycle. `started_at`: set once at
     `run_daemon()` startup, never mutated after — `spork status`'s
-    uptime field."""
+    uptime field. `budget_exhausted_alert_date`: the ISO date
+    (`YYYY-MM-DD`) the daily-budget-exhausted daemon-health alert last
+    fired on, or `None` if it hasn't fired today — a date-equality
+    guard rather than a boolean flag, so the alert self-resets across
+    midnight without any special-cased reset logic (docs/DESIGN.md
+    §12.3)."""
 
     paused: bool = False
     started_at: str = ""
+    budget_exhausted_alert_date: str | None = None
 
 
 @dataclass
