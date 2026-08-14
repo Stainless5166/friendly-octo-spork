@@ -67,12 +67,25 @@ def test_no_usable_config_produces_a_clean_error_not_a_traceback(tmp_path: Path)
 
 def test_log_level_option_appears_in_help() -> None:
     """docs/DESIGN.md §6.2 (M7): --log-level is real CLI surface, not
-    just a config.toml field."""
+    just a config.toml field.
+
+    TERM=dumb forces Typer/Click's Rich help renderer to plain text —
+    with color enabled (as it is on GitHub Actions' runners), Rich
+    inserts an ANSI escape sequence between "--" and "log-level" to
+    style the dashes separately, splitting this exact substring apart
+    even though the visible text is unchanged. Confirmed empirically
+    (reproduced with FORCE_COLOR=1, fixed with TERM=dumb), not guessed
+    — see tests/cli/test_main.py's identical fix for the CLI side.
+    """
+    env = dict(os.environ)
+    env["TERM"] = "dumb"
+
     result = subprocess.run(
         [sys.executable, "-m", "spork.daemon.main", "--help"],
         capture_output=True,
         text=True,
         timeout=10,
+        env=env,
     )
 
     assert result.returncode == 0
