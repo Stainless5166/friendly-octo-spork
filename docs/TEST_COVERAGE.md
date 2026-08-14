@@ -155,7 +155,19 @@ parse_to_addresses}` were extracted out of what was
 `spork.daemon.loop`'s private helpers — one real implementation, two
 callers (the daemon loop, and `spork reclassify`), not a daemon-only
 helper duplicated for the CLI. **M5 is 10/10 — the milestone is
-complete.**
+complete.** Updated once more for a docs-normalization pass across the
+whole document set (not tied to a single checklist item): found and
+fixed two real bugs it surfaced along the way — `spork.daemon.main`
+never caught `LLMClientLoadError` even though `run_daemon()` has
+constructed an `LLMClient` at startup since Tier 2 was wired in, and
+`spork reclassify` had no exception handling at all around
+`load_provider()`/`load_rules()`/`classify_registry.get()`/
+`load_alerter()`/`load_llm_client()` — both would have printed a raw
+traceback for exactly the kind of misconfiguration this CLI otherwise
+always catches cleanly. Also corrected several stale "blocked on the
+M5 daemon loop, which doesn't exist" claims (daemon-health alerts,
+cross-tier correlation-ID stitching, `spork doctor`'s secrets/config
+checks) now that it does.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -414,7 +426,7 @@ daemon loop has), and isn't invented here.
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `Alerter` protocol + `LoggingAlerter` | ✅ | ✅ — tests 303–317 (15 tests), 100% line coverage |
-| Alert triggers wired to confidence bands + VIP rules + daemon health | ✅ pipeline-visible portion only — VIP escalation, alert_only, autoact_alert + urgency=="high", budget exhausted; ❌ daemon health (no `Payload`/`Pipeline.run()` for it — M5 daemon loop) | ✅ pipeline-visible portion — tests 318–346 (29 tests: `from_in` prerequisite 318–322, `PipelineObserver`/`CorrelationIdFilter`/wiring 323–346), 100% line coverage on the touched modules |
+| Alert triggers wired to confidence bands + VIP rules + daemon health | ✅ pipeline-visible portion only — VIP escalation, alert_only, autoact_alert + urgency=="high", budget exhausted; ❌ daemon health (no `Payload`/`Pipeline.run()` for a lifecycle event to attach to; the M5 daemon loop this used to wait on now exists, so this is unblocked, untracked follow-up, not still-blocked work) | ✅ pipeline-visible portion — tests 318–346 (29 tests: `from_in` prerequisite 318–322, `PipelineObserver`/`CorrelationIdFilter`/wiring 323–346), 100% line coverage on the touched modules |
 | Graceful degrade when no DBus session bus is available | — | moot for now — see below |
 
 `spork.core.alerts.base`/`log`/`loader` mirror
@@ -452,17 +464,21 @@ band (the orthogonal dimension, exercised even inside a plain
 `"autoact"` outcome since both bands share this filter);
 `RecordBudgetExhaustedFilter` always alerts at `"critical"` urgency.
 Daemon-health alerts (JMAP push disconnected, LLM budget exhausted at
-the daemon level, crash-looping) are **not** built here and can't be —
-they're about `sporkd`'s own lifecycle, not any one message's
-`Pipeline.run()`, so there's no `Payload` for a module to attach to;
-that's explicitly M5 daemon-loop work. `PipelineObserver`'s
-correlation-ID mechanism also partially satisfies M7's "per-message
-tracing" roadmap item for the pipeline-internal piece (a known,
-stated limitation: a correlation ID is scoped to one pipeline *run*,
-not one message's full cross-tier lifetime, since nothing calls
-`process_tier2_message()` outside tests until the M5 scheduler
-exists) — M7 still separately owns `sporkd`'s overall structured
-logging setup and audit-trail completeness beyond triage outcomes.
+the daemon level, crash-looping) are **not** built here — they're
+about `sporkd`'s own lifecycle, not any one message's `Pipeline.run()`,
+so there's no `Payload` for a *pipeline* module to attach to (that
+part still holds). What's changed: the M5 daemon loop this used to
+wait on now exists (`run_daemon()`, `PipelineObserver`/`Alerter`
+already threaded through it for per-message alerts) — wiring
+daemon-lifecycle alerts onto it is real, currently-untracked follow-up
+work now, not still-blocked work. `PipelineObserver`'s correlation-ID
+mechanism also partially satisfies M7's "per-message tracing" roadmap
+item for the pipeline-internal piece (a known, stated limitation: a
+correlation ID is scoped to one pipeline *run*, not one message's full
+cross-tier lifetime — `escalate_message()`, the real Tier 2 caller M5
+built, doesn't thread Tier 1's correlation ID into `Tier2Meta`) — M7
+still separately owns `sporkd`'s overall structured logging setup and
+audit-trail completeness beyond triage outcomes.
 
 ### M5 — CLI + daemon control surface — 10/10 (complete)
 
@@ -470,14 +486,14 @@ logging setup and audit-trail completeness beyond triage outcomes.
 |---|---|---|
 | `spork.core.config` | ✅ | ✅ — tests 347–374 (28 numbered entries, 51 actual test cases — see note below), 100% line coverage |
 | Daemon event loop assembly | ✅ | ✅ — tests 375–383 (9 tests), 100% line coverage on `spork.daemon.loop` |
-| Wire Tier 2 into the daemon loop | ✅ | ✅ — tests 418–435 (18 tests), 100% line coverage on the touched `spork.core.providers.*`/`spork.daemon.loop` code |
+| Wire Tier 2 into the daemon loop | ✅ | ✅ — tests 418–435 + 502 (19 tests), 100% line coverage on the touched `spork.core.providers.*`/`spork.daemon.loop` code |
 | IPC protocol + Unix socket server | ✅ | ✅ — tests 384–399 + 400–403 (20 tests), 99–100% line coverage on `spork.core.ipc` |
 | `spork status` | ✅ | ✅ — tests 404–407 (4 tests), including a full end-to-end test against a real `sporkd` subprocess |
 | `spork pause`/`resume` | ✅ | ✅ — tests 408–410 (3 tests), including a full pause→status→resume→status round trip |
 | `spork rules list/edit/enable/disable` w/ live reload | ✅ | ✅ — tests 436–454 (19 tests), 100% line coverage on `spork.core.rules.writer`/`spork.daemon.state`/`spork.cli.commands.rules`, no gaps on the touched part of `spork.daemon.loop` |
 | `spork config show/edit` | ✅ | ✅ — tests 455–478 (24 tests), 100% line coverage on `spork.core.config.*`/`spork.cli.commands.config` |
 | `spork logs` | ✅ | ✅ — tests 411–417 (7 tests) |
-| `spork reclassify <id>` | ✅ | ✅ — tests 479–498 (20 tests), 100% line coverage on `spork.core.providers.*`/`spork.core.pipeline.*`/`spork.daemon.loop`/`spork.cli.commands.reclassify` |
+| `spork reclassify <id>` | ✅ | ✅ — tests 479–498 + 499–501 (23 tests), 100% line coverage on `spork.core.providers.*`/`spork.core.pipeline.*`/`spork.daemon.loop`/`spork.cli.commands.reclassify` |
 
 `spork.core.config` (`schema.py`/`paths.py`/`loader.py`) is the first
 of M5's two prerequisite items — settled and documented (§7.2/§6.4)
@@ -556,7 +572,7 @@ No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (521 tests, all passing — 0 xfail)
+## Full test inventory (525 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -2834,3 +2850,26 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
     The real point of being standalone: `reclassify` against the same
     `StateDB` a running `sporkd` is using, concurrently, without either
     side failing (docs/DESIGN.md §7.4's WAL-mode reasoning).
+
+499. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_with_an_unloadable_provider_spec_reports_a_clean_error`**
+    A real bug found during a docs-normalization pass: `load_provider()`
+    had no exception handling around it at all — a bad `provider.spec`
+    produced a raw traceback. Fixed (`_reclassify()` now wraps the
+    whole body in one `except (*_LoadError, MessageNotFoundError)`,
+    mirroring `spork.daemon.main`'s tuple).
+
+500. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_with_an_unloadable_rules_file_reports_a_clean_error`**
+    Same bug, `load_rules()` — a malformed `rules.toml` also produced a
+    raw traceback before the fix above.
+
+501. **`cli/commands/test_reclassify_edge_cases.py::test_reclassify_with_an_unloadable_llm_spec_reports_a_clean_error_only_when_it_escalates`**
+    Same bug, `load_llm_client()` — only reachable once Tier 1
+    escalates, but still uncaught before the fix.
+
+502. **`daemon/test_main.py::test_an_unloadable_llm_spec_produces_a_clean_error_not_a_traceback`**
+    A second real bug found the same pass: `spork.daemon.main`'s
+    except tuple never included `LLMClientLoadError`, even though
+    `run_daemon()` has constructed an `LLMClient` at startup since Tier
+    2 was wired into the loop — a bad `llm.spec` crashed `sporkd` with
+    a raw traceback instead of the clean error every other load
+    failure gets. Fixed by adding `LLMClientLoadError` to the tuple.

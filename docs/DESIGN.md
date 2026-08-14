@@ -514,7 +514,7 @@ boilerplate to keep in sync with it by hand. It's built directly on
 Click (so anything Click can do is still reachable if a future command
 needs it) and gets `--install-completion` and Rich-formatted help for
 free. `spork` is a Typer command **group** (`typer.Typer()` with
-`@app.callback()` — subcommands land per §12 as M5 builds them);
+`@app.callback()` — the full §13 subcommand surface landed with M5);
 `sporkd` is a single-command app (`typer.run(main)`) since the daemon
 never has subcommands, just flags.
 
@@ -2150,8 +2150,11 @@ default = "keyring://"
   SDK (not by shelling out to `secretspec run`, since it's a long-lived
   process) and holds them in memory only; they are never written to the
   state DB or logs.
-- `spork doctor` runs the equivalent of `secretspec check` and reports
-  missing/misconfigured secrets in plain language.
+- `spork doctor` is intended to run the equivalent of `secretspec check`
+  and report missing/misconfigured secrets in plain language — not
+  built yet (`spork.core.config`, the piece it was blocked on, landed
+  in M5; wiring this check itself is untracked follow-up, not assumed
+  done here — see `docs/ROADMAP.md` M6).
 - Every secret access is covered by SecretSpec's built-in audit log
   (who/when/outcome) — Spork does not need to build its own.
 
@@ -2400,9 +2403,12 @@ class TextClassifier(Protocol):
   small fine-tuned classifier) is an additional backend module behind
   the same `Protocol` — added, not swapped in by editing existing code.
 - **No implicit fallback.** An unresolvable/misconfigured classifier name
-  is a startup-time config error (`spork doctor` catches it), not a
-  silent no-op — a rule that references classifier output should never
-  quietly stop firing because a backend failed to load.
+  is a startup-time config error (`UnknownClassifierError`, caught and
+  reported cleanly by `sporkd`/`spork reclassify`) — a rule that
+  references classifier output should never quietly stop firing
+  because a backend failed to load. `spork doctor` surfacing this
+  proactively, before startup, is intended but not built yet
+  (`docs/ROADMAP.md` M6) — today it's caught where it actually happens.
 - This tier is optional: rules that don't reference classifier output
   never invoke it, so it costs nothing for a config that doesn't use it.
 
@@ -2633,9 +2639,11 @@ generic caller should know how to do itself.
   itself.
 - **Fails loud on a bad spec.** A malformed spec, an unimportable
   module, a missing class, or a constructor that rejects the given
-  config all raise a single `ProviderLoadError` — `spork doctor` (M5)
-  catches this the same way it catches an unknown classifier name
-  (§9.1).
+  config all raise a single `ProviderLoadError`, caught and reported
+  cleanly wherever `load_provider()` is actually called
+  (`sporkd`/`spork reclassify`) — same as `UnknownClassifierError`
+  (§9.1). `spork doctor` surfacing this proactively, before startup,
+  is intended but not built yet (`docs/ROADMAP.md` M6).
 - **A second, fully real Adapter: `FileProvider`.** `JmapProvider` is
   the only provider spork ships that talks to a live backend, and it's
   still mid-M1 (`connect()`/`fetch_new_messages()`/`apply_action()`/
@@ -3444,9 +3452,13 @@ through Tier 1 or Tier 2 and can be wired in as pipeline modules.
 Daemon-health events (JMAP push disconnected, LLM budget exhausted at
 the *daemon* level, crash-looping) are **not** — they're about
 `sporkd`'s own lifecycle, not a `Payload`/`Pipeline.run()` for any one
-message, so they get no module here; they belong to the M5 daemon
-loop once it exists, tracked as their own M4 exit-criterion item, not
-invented in this section.
+message, so they get no module here. The M5 daemon loop
+(`spork.daemon.loop.run_daemon()`) exists now, with `PipelineObserver`/
+`Alerter` already threaded through it for per-message alerts — but
+wiring daemon-lifecycle alerts specifically onto it is real,
+currently-untracked follow-up (docs/ROADMAP.md M4's "Alert triggers"
+item), not something built as a side effect of any M5 item, and not
+invented in this section either.
 
 **`spork.core.pipeline.observer.PipelineObserver`** is the "combine
 logging and alerting" object: every alert-worthy pipeline outcome
@@ -3509,16 +3521,15 @@ concurrently.
 **Known limitation, stated rather than papered over:** a correlation
 ID is scoped to one pipeline *run*, not one message's full lifetime.
 `process_message()`'s Tier 1 run and a later `process_tier2_message()`
-run for the same (now-escalated) message each get their own — nothing
-today threads Tier 1's ID into `Tier2Meta` the way `to_addresses` or
-`thread_prior_subject` are threaded in, because nothing calls
-`process_tier2_message()` yet outside tests (§10.7: *"deciding which
-escalated message to call this on"* needs the M5 daemon scheduler,
-which doesn't exist). Stitching the two into one cross-tier trace is
-real, wanted work for whenever that scheduler exists — not invented
-here against a caller that doesn't exist yet. This partially satisfies
-`docs/ROADMAP.md` M7's "per-message tracing" item for the
-pipeline-internal portion (the correlation ID + `LoggerAdapter`
+run for the same (now-escalated) message each get their own —
+`escalate_message()` (§6.2.1, M5 — the real caller `process_tier2_message()`
+now has, in `_run_message_loop()` and `spork reclassify` alike) doesn't
+thread Tier 1's correlation ID into `Tier2Meta` the way it threads
+`to_addresses`/`thread_prior_subject` in. Stitching the two into one
+cross-tier trace is real, wanted work — genuinely unbuilt, not blocked
+on anything missing anymore now that a real caller exists. This
+partially satisfies `docs/ROADMAP.md` M7's "per-message tracing" item
+for the pipeline-internal portion (the correlation ID + `LoggerAdapter`
 mechanism); M7 still separately owns wiring `sporkd`'s overall
 structured logging setup (handlers, level, journal output) and
 audit-trail completeness beyond triage outcomes.

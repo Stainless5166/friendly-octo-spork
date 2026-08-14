@@ -19,10 +19,13 @@ def doctor() -> None:
     call to report anything real (docs/ROADMAP.md M1), so it's a
     settled-shape `NotImplementedError`, caught and reported as a
     clean error rather than a raw traceback, same as `spork rules
-    test`'s live-fetch gap. The other three checks need pieces that
-    don't exist yet either (`spork.core.config` for secrets/DB path
-    resolution, M6 packaging for the systemd unit) — this command
-    doesn't pretend to run them until they do.
+    test`'s live-fetch gap. The other three checks aren't blocked on a
+    missing piece anymore — `spork.core.config` (M5) can resolve
+    secrets/DB paths today — they're just not wired into this command
+    yet (tracked separately, docs/ROADMAP.md M6, alongside the
+    systemd-unit-status check that *is* still genuinely blocked on M6
+    packaging); this command doesn't pretend to run any of the three
+    until it actually does.
     """
     try:
         _check_jmap_connectivity()

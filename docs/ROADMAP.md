@@ -59,8 +59,11 @@ read-only. No actions taken yet.
       `NotImplementedError`, same blocker as `JmapClient.connect()`
       above, caught and reported as a clean CLI error rather than a
       traceback. Secrets/systemd/DB checks from docs/DESIGN.md §12
-      aren't wired in yet — they need `spork.core.config`, which
-      doesn't exist yet — so this command doesn't pretend to run them.
+      aren't wired in yet — this command doesn't pretend to run them
+      until it does. Originally blocked on `spork.core.config` not
+      existing; that landed in M5, so the secrets/DB-path pieces are
+      unblocked now — tracked as its own M6 item (see M6's checklist)
+      rather than assumed done just because the blocker cleared.
 
 **Exit criteria:** `sporkd` runs, logs each new inbox message's subject
 as it arrives (via push, verified by sending a real test email), survives
@@ -295,11 +298,18 @@ follow-up behind the same `Alerter` protocol, not built this round.
       and `RecordBudgetExhaustedFilter` always alert;
       `ApplyVerdictActionFilter` alerts on `autoact_alert` or
       `verdict.urgency == "high"` regardless of band. **Daemon health
-      is NOT done and can't be yet** — JMAP push disconnected /
-      crash-looping are `sporkd` lifecycle events, not a
+      is still NOT done, but is no longer blocked** — JMAP push
+      disconnected/crash-looping are `sporkd` lifecycle events, not a
       `Payload`/`Pipeline.run()` for any message, so there's nothing
-      for a pipeline module to attach to; needs the M5 daemon loop
-      first. See docs/TEST_COVERAGE.md tests 318–346.
+      for a *pipeline* module to attach to (that part of the reasoning
+      still holds); what's changed is the M5 daemon loop this used to
+      wait on now exists (`spork.daemon.loop.run_daemon()`,
+      `PipelineObserver`/`Alerter` already threaded through it for
+      per-message alerts) — wiring daemon-lifecycle alerts (push
+      disconnected timer, crash-loop detection around the
+      `asyncio.TaskGroup()`) is real, buildable, currently-untracked
+      follow-up work, not something any M5 item did as a side effect.
+      See docs/TEST_COVERAGE.md tests 318–346.
 - [ ] Graceful degrade when no DBus session bus is available (e.g. no
       active desktop session — sporkd keeps running, alerts just don't
       display, logged instead) (S) — moot for now: `LoggingAlerter`
@@ -464,6 +474,14 @@ an Arch Linux package.
 - [ ] Install helper (`spork install-service` or a documented script) (S)
 - [ ] README quickstart: secretspec setup → config → rules → enable unit (M)
 - [ ] `spork doctor` checks unit install/enabled/active state (S)
+- [ ] `spork doctor` wires in the secrets/config/provider checks
+      docs/DESIGN.md §7.3/§9.1/§9.3 describe (`secretspec check`
+      equivalent, `load_config()`/`load_provider()`/`load_rules()`
+      called eagerly and any `ConfigLoadError`/`ProviderLoadError`/
+      `RulesLoadError`/`UnknownClassifierError` reported in plain
+      language) — no longer blocked on `spork.core.config` not
+      existing (that landed in M5); genuinely new scope, not assumed
+      done by any of M5's items (S)
 - [ ] Arch Linux packaging: a `PKGBUILD` (AUR-style) that builds `spork`/
       `sporkd` and installs the systemd unit, so `makepkg -si` (and later
       an AUR submission) is a supported install path alongside the manual
