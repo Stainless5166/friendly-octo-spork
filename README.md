@@ -18,6 +18,13 @@ Secrets (JMAP API token, Anthropic API key, etc.) are declared with
 [SecretSpec](https://github.com/cachix/secretspec) rather than `.env`
 files. Dependencies are managed with [UV](https://docs.astral.sh/uv/).
 
+**Privacy note:** when a message doesn't match any Tier 1 rule and
+needs a judgment call, its cleaned body text is sent to Claude (the
+Anthropic API) for classification — that's the whole point of Tier 2.
+Only use `spork` if you're comfortable with ambiguous mail going to
+Claude. Rule-matched mail (Tier 1) never leaves your machine; nothing
+is ever auto-sent to anyone regardless of tier (docs/DESIGN.md §15).
+
 ## Quickstart
 
 Two supported paths: the manual steps below, or — on Arch Linux —

@@ -28,7 +28,7 @@ class SecretsError(Exception):
     """
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class Secrets:
     """The resolved secret values spork needs, held in memory only.
 
@@ -37,9 +37,20 @@ class Secrets:
     LLM client) just need a value by name; provenance/source-provider
     detail is what `spork doctor` (M5/M6) will want from SecretSpec
     directly, not something every consumer needs to carry around.
+
+    `repr=False` (docs/DESIGN.md §15's security review, M7): the
+    dataclass-generated `__repr__` would print every resolved value
+    verbatim — a real leak risk if an instance ever ends up in an
+    uncaught-exception traceback's local-variable dump, a debug log
+    line, or a stray `print()`. `__repr__` below shows only the
+    declared names, never a value, regardless of what `get()`
+    legitimately returns to a caller that actually needs one.
     """
 
     _values: Mapping[str, str]
+
+    def __repr__(self) -> str:
+        return f"Secrets(names={sorted(self._values)})"
 
     def get(self, name: str) -> str:
         """Return the resolved value for `name`.
