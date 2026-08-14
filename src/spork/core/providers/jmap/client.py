@@ -35,7 +35,8 @@ class _JmapcClient(Protocol):
 
     account_id: str
     jmap_session: Any
-    events: Iterable[object]
+    @property
+    def events(self) -> Iterable[object]: ...
 
     def request(self, method: object, *, raise_errors: bool = False) -> object: ...
 
@@ -200,8 +201,7 @@ class JmapClient:
     def event_stream(self) -> Iterable[object]:
         """Return the connected jmapc EventSource stream for push handling."""
         self.connect()
-        if self._client is None:
-            raise JmapError("JMAP client is not connected")
+        assert self._client is not None
         try:
             return self._client.events
         except Exception as exc:
