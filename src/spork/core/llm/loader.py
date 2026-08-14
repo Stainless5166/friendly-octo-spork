@@ -3,8 +3,7 @@
 An LLM client is named in config as a "module.path:ClassName" spec and
 resolved via `importlib` at startup — identical mechanics to
 `spork.core.providers.loader.load_provider`: a client's dependencies
-(the `anthropic` SDK, an eventual other provider's SDK) only get
-imported if that client is the one actually configured.
+(`litellm` today) only get imported if that client is configured.
 """
 
 from __future__ import annotations

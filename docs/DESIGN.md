@@ -112,8 +112,7 @@ Two OS processes, one shared library:
 ### 6.1 Core library (`spork.core`)
 
 Solid boxes are built and tested today; dashed boxes are planned
-layout for a milestone that hasn't landed yet (M3's `llm/prompt.py`,
-`llm/recording.py`, and `llm/clients/litellm.py`, plus a future real
+layout for a milestone that hasn't landed yet (a future real
 desktop-notification `Alerter` backend
 alongside M4's `alerts/log.py`). `config/`, `ipc/`, and
 `cli/commands/config.py` are all real as of M5's work on them — no
@@ -197,15 +196,15 @@ flowchart TD
 
         subgraph llm["llm/ (M3)"]
             llm_clean["clean.py<br/>clean_body()"]
-            llm_prompt["prompt.py<br/>build_prompt() + tool schema"]:::planned
-            llm_recording["recording.py<br/>RecordingLLMClient"]:::planned
+            llm_prompt["prompt.py<br/>build_prompt() + tool schema"]
+            llm_recording["recording.py<br/>RecordingLLMClient"]
             llm_base["base.py<br/>LLMClient +<br/>VerdictRequest/Verdict/<br/>LLMResult/LLMCallUsage"]
             llm_validate["validate.py<br/>validate_verdict()"]
             llm_confidence["confidence.py<br/>confidence_band()"]
             llm_budget["budget.py<br/>has_budget_remaining()"]
             llm_loader["loader.py<br/>load_llm_client()"]
             subgraph llm_clients["clients/"]
-                llm_litellm["litellm.py<br/>LiteLLMClient"]:::planned
+                llm_litellm["litellm.py<br/>LiteLLMClient"]
                 llm_recorded["recorded.py<br/>RecordedLLMClient"]
             end
         end
@@ -593,7 +592,7 @@ referenced from another module (e.g. `Source` inside
 `providers.base`'s own diagram) is drawn as an empty box with just its
 stereotype — the full definition lives in that other type's own
 diagram, not duplicated here. Modules with no classes yet
-(`llm/prompts.py`, `ipc/`, most of `cli/commands/`) don't get a
+(`ipc/`, most of `cli/commands/`) don't get a
 diagram until they have something to diagram, same as the component
 tree in §6.1. (This list used to also say `alerts/` and `config.py` —
 stale by the time M4 gave `alerts/` real diagrams; `config/` follows

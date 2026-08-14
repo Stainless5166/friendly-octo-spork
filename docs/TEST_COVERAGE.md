@@ -203,6 +203,14 @@ remaining four (confidence tuning, rate-limit verification, crash-loop
 verification, tagging v1.0.0) all share the one live-account/live-week
 blocker the milestone's own exit criteria state explicitly, same
 "not yet met" pattern as M1's. 653 tests, all green.
+Updated once more for M3's live-client follow-up: the direct Anthropic
+stub is replaced by an in-process `LiteLLMClient` with forced
+`deliver_verdict` tool calling, an SDK-independent exact prompt
+builder, real per-call token usage, and an append-only private corpus
+recorder. LiteLLM is an optional runtime extra; tests inject the
+upstream completion callable and make no network calls. The changed
+LLM and Tier 2 modules have 100% line coverage. **M3 is now 8/8 and
+the full suite is 670 tests, all green.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -396,12 +404,13 @@ lookup — keeping `Filter`/`Selector` conventionally pure. No concrete
 Augment exists yet (no live lookup backend to call); this is the
 Protocol-level seam M3's prompt-building chain is expected to use.
 
-### M3 — LLM escalation (Tier 2) — 7/7
+### M3 — LLM escalation (Tier 2) — 8/8
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | Body cleaning (HTML strip, quote-chain collapse, truncation) | ✅ | ✅ — tests 150–160 (11 tests), 100% line coverage |
-| Claude client wrapper + verdict schema | ✅ | ✅ — tests 192–210 (19 tests), 100% line coverage |
+| LLM client wrapper + verdict schema | ✅ | ✅ — tests 192–208, 300–301, 611–620, 100% line coverage |
+| Live LiteLLM tool-calling adapter + acceptance corpus recorder | ✅ | ✅ — tests 611–625, 100% line coverage on changed LLM/Tier 2 modules |
 | Verdict validation against configured mailbox/category set | ✅ | ✅ — tests 211–217 (7 tests), 100% line coverage |
 | Confidence-band logic | ✅ | ✅ — tests 218–225 (8 tests), 100% line coverage |
 | `daily_call_budget` + `llm_usage` tracking | ✅ | ✅ — tests 226–239 (14 tests), 100% line coverage |
@@ -415,32 +424,27 @@ quoted-reply chains collapsed at the earliest of several marker
 patterns, truncated on a word boundary with an explicit marker, and
 excess blank lines normalized.
 
-`spork.core.llm.base`/`loader`/`clients.anthropic` ("Claude client
-wrapper + verdict schema") is "done" in the same sense `JmapProvider`
-was under M1: everything buildable without a live API session is real
-and tested (`LLMClient` Protocol, the `VerdictRequest`/`Verdict`
-schema — a pydantic model since it parses untrusted LLM output, same
-reasoning as `rules.schema` — and `load_llm_client()`'s dynamic
-"module:ClassName" loading, mirroring
-`spork.core.providers.loader.load_provider()` exactly), and the one
-piece that isn't — an actual Anthropic API call — is a settled-shape
-`NotImplementedError` on `AnthropicLLMClient.get_verdict()`, same
-treatment as `JmapClient`'s stubs (§9.3). No `anthropic` import
-anywhere, matching `jmapc`'s not-yet-a-dependency status.
+`spork.core.llm.base`/`prompt`/`loader`/`clients.litellm` now provide a
+real live-client path without putting provider-specific response types
+into the pipeline. `build_prompt()` produces the exact messages,
+Verdict-derived tool schema, and forced tool choice; `LiteLLMClient`
+calls the optional SDK in-process and returns an `LLMResult` containing
+the validated `Verdict` plus real token usage. Tests inject a mocked
+completion callable, so they verify Spork's complete request and
+response parsing without a network call.
 
-The remaining five items are all real, no live-account blocker: the
+The other five original items are all real, no live-account blocker: the
 budget/draft items depend on `StateDB`/`Provider`, both fully testable
 without a network call, and `RecordedLLMClient`'s whole point is *not*
-needing one. **M3 is 7/7**, in the same sense M1's JMAP client is
-"complete" — everything buildable without a live Fastmail/Anthropic
-session is real and tested; the genuinely-blocked pieces
+needing one. **M3 is 8/8**: everything buildable without a live
+Fastmail/model-provider session is real and tested; the genuinely-blocked pieces
 (`JmapClient.connect()`/`fetch_new_messages()`/`apply_action()`/
-`create_draft()`, `AnthropicLLMClient.get_verdict()`) are settled-shape
-`NotImplementedError` stubs, not gaps.
+`create_draft()`) remain settled-shape `NotImplementedError` stubs; the
+live LLM adapter itself is no longer one.
 
-**Also done (not a new checklist item — still M3, 7/7):**
+**Also done (not a new checklist item):**
 `spork.core.pipeline.tier2` (docs/DESIGN.md §10.7, tests 262–298)
-wires all seven items above into one runnable pipeline — budget gate,
+wires the seven original items into one runnable pipeline — budget gate,
 LLM call, usage recording, verdict validation, confidence gating,
 action application, draft creation, audit, idempotency — over a new
 `Tier2Meta`, reusing the generic Filter/Selector/Augment/Pipeline
@@ -702,7 +706,7 @@ declared names.
 
 ---
 
-## Full test inventory (653 tests, all passing — 0 xfail)
+## Full test inventory (670 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -1668,13 +1672,11 @@ pipeline) tested against a bare `Payload[MessageMeta]` per module, no
 
 ### tests/core/llm (LLMClient adapter, §10.1)
 
-`spork.core.llm.base` (`VerdictRequest`/`Verdict`/`LLMClient`),
+`spork.core.llm.base` (`VerdictRequest`/`Verdict`/`LLMResult`/`LLMClient`),
 `spork.core.llm.loader` (`load_llm_client()`, tested against a fixture
 class the same way `tests/core/providers/test_loader.py` tests
-`load_provider()`), and `spork.core.llm.clients.anthropic`
-(`AnthropicLLMClient`, tested the same way
-`tests/core/providers/jmap/test_client.py` tests `JmapClient`'s
-settled-shape `NotImplementedError` stubs).
+`load_provider()`), plus the prompt/LiteLLM/recording tests appended as
+stable entries 611–625 below.
 
 192. **`test_base.py::test_verdict_request_holds_the_assembled_prompt_inputs`**
     Constructs a `VerdictRequest` and reads fields back. Asserts they
@@ -1743,15 +1745,13 @@ settled-shape `NotImplementedError` stubs).
     A client whose constructor rejects the given kwargs. Asserts
     `LLMClientLoadError`, not a raw `TypeError`.
 
-209. **`clients/test_anthropic.py::test_get_verdict_raises_not_implemented`**
-    Asserts `AnthropicLLMClient.get_verdict()` raises
-    `NotImplementedError` — a live Anthropic API session isn't
-    something this environment can exercise honestly.
+209. **Retired: `clients/test_anthropic.py::test_get_verdict_raises_not_implemented`**
+    Removed when the settled-shape Anthropic stub was replaced by the
+    real `LiteLLMClient`; number retained and never reused.
 
-210. **`clients/test_anthropic.py::test_constructor_accepts_configured_model_and_max_tokens`**
-    Constructs with non-default `model`/`max_tokens`. Asserts
-    construction itself doesn't raise — only `get_verdict()` is
-    unimplemented.
+210. **Retired: `clients/test_anthropic.py::test_constructor_accepts_configured_model_and_max_tokens`**
+    Removed with the direct Anthropic adapter; equivalent live-client
+    constructor/request behavior is covered by tests 613 and 618.
 
 ### tests/core/llm (verdict validation, §10.2)
 
@@ -1998,7 +1998,7 @@ runnable pipeline over a new `Tier2Meta` — reuses the generic
 Module tests construct a bare `Payload[Tier2Meta]`, same style as
 `tests/core/pipeline/test_modules.py`; `test_default.py`/
 `test_default_edge_cases.py` run `process_tier2_message()` end to end
-against `RecordedLLMClient` — zero live Anthropic API calls anywhere
+against `RecordedLLMClient` — zero live model API calls anywhere
 in this suite.
 
 262. **`test_modules.py::test_timestamp_filter_sets_ts_from_the_injected_clock`**
@@ -2016,11 +2016,12 @@ in this suite.
 
 266. **`test_modules.py::test_call_llm_augment_delegates_to_the_client_and_sets_the_verdict`**
     A stub `LLMClient`. Asserts `.augment()` calls `get_verdict(meta.request)`
-    and stores the result in `meta.verdict` — the pipeline's one I/O
-    stage, proven without a live API.
+    and stores its verdict and per-call usage in metadata — the
+    pipeline's one I/O stage, proven without a live API.
 
 267. **`test_modules.py::test_record_llm_usage_filter_records_one_call`**
-    Asserts one call is recorded against `meta.ts`'s date.
+    Asserts one call and its real input/output token counts are recorded
+    against `meta.ts`'s date.
 
 268. **`test_modules.py::test_validate_verdict_filter_passes_through_a_valid_verdict`**
     A verdict whose category/mailbox are both configured. Asserts it
@@ -2071,7 +2072,7 @@ in this suite.
 287. **`test_modules_edge_cases.py::test_write_audit_entry_filter_raises_when_ts_is_missing`**
 288. **`test_modules_edge_cases.py::test_write_audit_entry_filter_raises_when_audit_event_is_missing`**
 289. **`test_modules_edge_cases.py::test_mark_processed_filter_raises_when_ts_is_missing`**
-    (279–289) Each of the 10 `MissingMetaError` raise branches across
+    (279–289) The original `MissingMetaError` raise branches across
     the 13 modules, run standalone before the module it depends on —
     same pattern as Tier 1's `test_modules_edge_cases.py`.
 
@@ -2131,19 +2132,17 @@ both were correct, neither had been verified until now.
     scenario §10.7 cites as the reason Tier 2 doesn't need its own
     idempotency gate, never exercised end to end before this test.
 
-300. **`llm/test_loader_integration.py::test_load_llm_client_resolves_anthropic_llm_client_by_its_documented_spec`**
+300. **`llm/test_loader_integration.py::test_load_llm_client_resolves_litellm_client_by_its_documented_spec`**
     `load_llm_client()` with the exact spec string §10.1 documents for
-    `config.toml`. Asserts a real `AnthropicLLMClient` is returned.
+    `config.toml`. Asserts a real `LiteLLMClient` is returned.
 
 301. **`llm/test_loader_integration.py::test_load_llm_client_resolves_recorded_llm_client_by_its_documented_spec`**
     Same, for §10.5's `RecordedLLMClient` spec. Asserts the loaded
     client genuinely works (`get_verdict()` returns the recorded
     response), not just that it constructs.
 
-302. **`llm/test_loader_integration.py::test_load_llm_client_propagates_anthropic_client_get_verdict_not_implemented`**
-    A loaded `AnthropicLLMClient`'s `get_verdict()` still raises
-    `NotImplementedError` — the loader doesn't change a class's own
-    behavior.
+302. **Retired: `llm/test_loader_integration.py::test_load_llm_client_propagates_anthropic_client_get_verdict_not_implemented`**
+    Removed with the Anthropic stub; number retained and never reused.
 
 ### tests/core/alerts (the Alerter adapter, §12.1)
 
@@ -3365,3 +3364,60 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
     Security review finding: the default dataclass `__repr__` printed
     every resolved secret's real value verbatim — confirmed
     empirically before fixing.
+
+### M3 LiteLLM follow-up (tests 611–625)
+
+611. **`core/llm/test_prompt.py::test_build_prompt_contains_the_complete_message_context`**
+    Asserts the exact system/user message list contains every cleaned
+    `VerdictRequest` field, including thread and mailbox context.
+
+612. **`core/llm/test_prompt.py::test_build_prompt_forces_one_deliver_verdict_tool_with_the_verdict_schema`**
+    Asserts the tool parameters equal `Verdict.model_json_schema()` and
+    `tool_choice` explicitly names `deliver_verdict`.
+
+613. **`core/llm/clients/test_litellm.py::test_litellm_client_sends_the_exact_prompt_and_forced_tool_choice`**
+    A mocked completion callable receives the configured model, key,
+    token limit, full messages, tool schema, and forced choice.
+
+614. **`core/llm/clients/test_litellm.py::test_litellm_client_parses_the_tool_arguments_and_real_token_usage`**
+    A LiteLLM-shaped response produces a validated `Verdict` and real
+    prompt/completion token counts in `LLMResult`.
+
+615. **`core/llm/test_recording.py::test_recording_client_appends_the_complete_prompt_result_and_usage`**
+    Asserts one JSONL corpus entry contains subject, exact prompt,
+    canonical SHA-256, validated verdict, usage, and timestamp.
+
+616. **`core/llm/test_recording.py::test_live_acceptance_corpus_directory_is_gitignored`**
+    Protects potentially unpublishable live mail under
+    `tests/fixtures/corpus/` from accidental commits.
+
+617. **`core/llm/clients/test_litellm_edge_cases.py::test_constructor_reports_how_to_install_the_missing_optional_dependency`**
+    A missing SDK raises `LiteLLMClientError` naming `spork[llm]`.
+
+618. **`core/llm/clients/test_litellm_edge_cases.py::test_constructor_loads_the_optional_sdk_completion_when_not_injected`**
+    Covers the real lazy-import path without making a network call.
+
+619. **`core/llm/clients/test_litellm_edge_cases.py::test_upstream_completion_failure_is_wrapped_at_the_client_boundary`**
+    An upstream timeout becomes one catchable client error while
+    retaining the original exception as `__cause__`.
+
+620. **`core/llm/clients/test_litellm_edge_cases.py::test_malformed_tool_responses_fail_closed`**
+    Parametrized across zero/multiple/wrong tool calls, malformed JSON,
+    an invalid Verdict, and missing usage; every case fails closed.
+
+621. **`core/llm/test_recording_edge_cases.py::test_failed_call_is_never_recorded`**
+    A delegated failure creates no corpus file or misleading fixture.
+
+622. **`core/llm/test_recording_edge_cases.py::test_successful_calls_append_independent_json_lines`**
+    Two calls append in order and retain distinct prompt hashes.
+
+623. **`core/llm/test_recording_edge_cases.py::test_prompt_hash_is_stable_but_sensitive_to_message_content`**
+    Identical prompts hash identically; changing only body content
+    changes the hash.
+
+624. **`core/llm/test_recording_edge_cases.py::test_default_recording_clock_writes_a_parseable_utc_timestamp`**
+    Covers the production clock path and confirms timezone awareness.
+
+625. **`core/pipeline/tier2/test_modules_edge_cases.py::test_record_llm_usage_filter_raises_when_call_usage_is_missing`**
+    A timestamp cannot silently invent token counts when
+    `CallLLMAugment` did not populate `meta.llm_usage`.
