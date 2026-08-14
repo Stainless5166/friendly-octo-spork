@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from spork.core.state.db import StateDB
+
 
 def _run(*args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -185,6 +187,25 @@ def test_reclassify_escalates_through_tier2_when_the_rule_says_so(tmp_path: Path
 
     assert result.returncode == 0
     assert _row(db_path, "msg-vip") == ("tier2", "ignore")
+
+
+def test_reclassify_writes_a_control_plane_audit_entry(tmp_path: Path) -> None:
+    """docs/DESIGN.md §7.4/§13 (M7): a "reclassify_triggered"
+    control-plane entry, distinct from the per-message outcome row
+    process_message()'s own WriteAuditEntryFilter already writes — so
+    "an operator forced this" stays visible even though the outcome
+    looks the same as an ordinary automatic run."""
+    env = _env(tmp_path)
+    db_path = _write_config(tmp_path / "xdg-config-home" / "spork", tmp_path)
+
+    _run("msg-newsletter", env=env)
+
+    with StateDB(db_path) as db:
+        entries = [e for e in db.get_audit_entries() if e.event == "reclassify_triggered"]
+
+    assert len(entries) == 1
+    assert entries[0].jmap_id == ""
+    assert "msg-newsletter" in (entries[0].detail_json or "")
 
 
 def test_reclassify_reprocesses_a_message_already_marked_processed(tmp_path: Path) -> None:
