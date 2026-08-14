@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from spork.core.actions.executor import ActionExecutor
+from spork.core.alerts.base import AlertUrgency
 from spork.core.alerts.log import LoggingAlerter
 from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
 from spork.core.llm.base import Verdict, VerdictRequest
@@ -31,7 +32,7 @@ from spork.core.providers.base import ThreadContext
 from spork.core.rules.loader import RulesLoadError
 from spork.core.rules.schema import Action, Condition, Rule
 from spork.core.state.db import StateDB
-from spork.daemon.loop import _run_message_loop, run_daemon
+from spork.daemon.loop import _check_daily_budget_alert, _run_message_loop, run_daemon
 from spork.daemon.state import DaemonState, RulesState
 
 
@@ -284,3 +285,101 @@ def test_run_daemon_propagates_an_unrecorded_tier2_response_error(tmp_path: Path
         assert any(isinstance(exc, UnrecordedResponseError) for exc in exc_info.value.exceptions)
 
     asyncio.run(_body())
+
+
+class _RecordingAlerter:
+    """A real `Alerter` (structurally) that records every `notify()`
+    call instead of delivering anywhere — precise enough to count
+    exact firings, unlike scraping LoggingAlerter's log output."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, AlertUrgency]] = []
+
+    def notify(
+        self, title: str, body: str, *, url: str | None = None, urgency: AlertUrgency = "normal"
+    ) -> None:
+        self.calls.append((title, body, urgency))
+
+
+def test_check_daily_budget_alert_fires_once_and_stamps_todays_date(tmp_path: Path) -> None:
+    """Budget already exhausted (1 call recorded against a budget of
+    1): the first check fires and stamps the date; a second check the
+    same day is a no-op (docs/DESIGN.md §12.3's one-shot-per-day rule)."""
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        db.record_llm_call("2026-01-01", tokens_in=1, tokens_out=1)
+        daemon_state = DaemonState()
+        alerter = _RecordingAlerter()
+        ops = PipelineObserver(alerter)
+        tiering = TieringConfig(daily_call_budget=1)
+
+        _check_daily_budget_alert(
+            daemon_state=daemon_state,
+            state_db=db,
+            tiering=tiering,
+            ops=ops,
+            now=lambda: "2026-01-01T00:00:00+00:00",
+        )
+        assert daemon_state.budget_exhausted_alert_date == "2026-01-01"
+        assert len(alerter.calls) == 1
+
+        _check_daily_budget_alert(
+            daemon_state=daemon_state,
+            state_db=db,
+            tiering=tiering,
+            ops=ops,
+            now=lambda: "2026-01-01T23:59:00+00:00",
+        )
+        assert len(alerter.calls) == 1  # unchanged: already alerted today
+
+
+def test_check_daily_budget_alert_does_nothing_one_call_below_the_limit(tmp_path: Path) -> None:
+    """`has_budget_remaining()`'s limit is exclusive (§10.4) — one call
+    short of the budget is still "remaining", not exhausted."""
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        db.record_llm_call("2026-01-01", tokens_in=1, tokens_out=1)
+        daemon_state = DaemonState()
+        alerter = _RecordingAlerter()
+        ops = PipelineObserver(alerter)
+        tiering = TieringConfig(daily_call_budget=2)
+
+        _check_daily_budget_alert(
+            daemon_state=daemon_state,
+            state_db=db,
+            tiering=tiering,
+            ops=ops,
+            now=lambda: "2026-01-01T00:00:00+00:00",
+        )
+
+        assert daemon_state.budget_exhausted_alert_date is None
+        assert alerter.calls == []
+
+
+def test_check_daily_budget_alert_fires_again_after_a_date_rollover(tmp_path: Path) -> None:
+    """The guard is a date-equality check, not a boolean flag — once
+    `now()` reports a new day, an exhausted budget alerts again with
+    no explicit reset step anywhere (docs/DESIGN.md §12.3)."""
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        db.record_llm_call("2026-01-01", tokens_in=1, tokens_out=1)
+        db.record_llm_call("2026-01-02", tokens_in=1, tokens_out=1)
+        daemon_state = DaemonState()
+        alerter = _RecordingAlerter()
+        ops = PipelineObserver(alerter)
+        tiering = TieringConfig(daily_call_budget=1)
+
+        _check_daily_budget_alert(
+            daemon_state=daemon_state,
+            state_db=db,
+            tiering=tiering,
+            ops=ops,
+            now=lambda: "2026-01-01T00:00:00+00:00",
+        )
+        _check_daily_budget_alert(
+            daemon_state=daemon_state,
+            state_db=db,
+            tiering=tiering,
+            ops=ops,
+            now=lambda: "2026-01-02T00:00:00+00:00",
+        )
+
+        assert daemon_state.budget_exhausted_alert_date == "2026-01-02"
+        assert len(alerter.calls) == 2
