@@ -1,0 +1,15 @@
+[Unit]
+Description=Spork JMAP email triage daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=%h/.local/bin/sporkd
+Restart=on-failure
+RestartSec=5
+# Secrets are resolved by sporkd itself via the SecretSpec SDK at
+# startup — no secret material is passed through the unit file.
+
+[Install]
+WantedBy=default.target
