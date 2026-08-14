@@ -204,6 +204,25 @@ class StateDB:
         )
         self._conn.commit()
 
+    def write_control_plane_audit_entry(
+        self,
+        *,
+        ts: str,
+        event: str,
+        detail_json: str | None = None,
+    ) -> None:
+        """Append one control-plane audit entry — a change to `sporkd`'s
+        own behavior (`spork rules enable/disable`, `spork config edit`,
+        `spork pause`/`resume`, `spork reclassify`), not a per-message
+        triage outcome (docs/DESIGN.md §7.4, M7).
+
+        `jmap_id` is fixed to `""` (never a real JMAP ID, so it's a
+        safe, unambiguous "not about any one message" sentinel) rather
+        than exposed as a parameter here, so a caller can't accidentally
+        write a control-plane entry under a real message's ID.
+        """
+        self.write_audit_entry(ts=ts, jmap_id="", event=event, detail_json=detail_json)
+
     def get_audit_entries(self, *, jmap_id: str | None = None) -> list[AuditEntry]:
         """Return audit entries oldest-first, optionally filtered to
         one message's `jmap_id`."""

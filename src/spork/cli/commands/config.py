@@ -14,15 +14,18 @@ apply" is the honest answer here, not a shortcut.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
+from datetime import UTC, datetime
 
 import typer
 
 from spork.core.config.loader import ConfigLoadError, enforced_override_paths, load_config
 from spork.core.config.paths import resolve_user_config_path
 from spork.core.config.schema import SporkConfig, TieringConfig
+from spork.core.state.db import StateDB
 
 app = typer.Typer(
     name="config",
@@ -115,5 +118,11 @@ def edit() -> None:
     editor = shlex.split(os.environ.get("EDITOR", "vi"))
     subprocess.call([*editor, str(user_config_path)])
 
-    _load_config_or_exit()
+    config = _load_config_or_exit()
+    with StateDB(config.db_path) as db:
+        db.write_control_plane_audit_entry(
+            ts=datetime.now(UTC).isoformat(),
+            event="config_edit",
+            detail_json=json.dumps({"path": str(user_config_path)}),
+        )
     typer.echo("Saved. Restart sporkd to apply.")
