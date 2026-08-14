@@ -35,6 +35,7 @@ class _JmapcClient(Protocol):
 
     account_id: str
     jmap_session: Any
+
     @property
     def events(self) -> Iterable[object]: ...
 
