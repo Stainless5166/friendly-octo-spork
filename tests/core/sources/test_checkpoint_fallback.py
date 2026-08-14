@@ -61,3 +61,23 @@ def test_checkpoint_fallback_does_not_hide_unconfigured_failures() -> None:
 
     with pytest.raises(RuntimeError, match="bug"):
         source.poll_batch()
+
+
+def test_checkpoint_fallback_exposes_the_plain_source_view() -> None:
+    source = CheckpointedFallbackSource(
+        _Source([MessageBatch(messages=(), checkpoint="state-1")]),
+        _Source([MessageBatch(messages=(), checkpoint="state-2")]),
+    )
+
+    assert source.poll() == ()
+
+
+def test_checkpoint_fallback_propagates_secondary_failures() -> None:
+    source = CheckpointedFallbackSource(
+        _Source([JmapPushDisconnectedError("down")]),
+        _Source([RuntimeError("poll failed")]),
+        catch=(JmapPushDisconnectedError,),
+    )
+
+    with pytest.raises(RuntimeError, match="poll failed"):
+        source.poll_batch()

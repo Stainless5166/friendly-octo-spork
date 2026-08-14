@@ -80,3 +80,24 @@ def test_next_wait_retries_push_and_resets_backoff_after_recovery() -> None:
     trigger.wait()
 
     assert sleeps == [2.0]
+
+
+def test_wait_rejects_an_empty_reconnect_schedule() -> None:
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+    trigger = JmapPushTrigger(
+        client,
+        account_id="account-1",
+        events_factory=lambda: (),
+        reconnect_backoff=(),
+    )
+
+    with pytest.raises(JmapPushDisconnectedError, match="must not be empty"):
+        trigger.wait()
+
+
+def test_wait_ignores_events_with_malformed_state_data() -> None:
+    trigger, _ = _trigger(
+        [[_Response(data=_Response(changed=None)), _event("account-1", email=True)]], []
+    )
+
+    trigger.wait()
