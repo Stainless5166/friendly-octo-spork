@@ -851,12 +851,19 @@ classDiagram
         -host: str
         -api_token: str
         +connect() None
-        +fetch_new_messages(since_cursor: Optional~str~) Sequence
+        +account_id: str
+        +fetch_new_messages(since_cursor: Optional~str~) JmapFetchResult
         +apply_action(message: NormalizedMessage, action: Action) None
         +create_draft(message: NormalizedMessage, body: str) None
         +get_thread_context(message: NormalizedMessage) ThreadContext
         +list_mailboxes() Sequence
     }
+    class JmapFetchResult {
+        <<dataclass, frozen>>
+        +messages: tuple~NormalizedMessage~
+        +cursor: str
+    }
+    class JmapError { <<Exception>> }
     class JmapPushTrigger {
         -client: JmapClient
         +wait() None
@@ -919,6 +926,8 @@ classDiagram
     Provider <|.. JmapProvider : structurally satisfies
 
     JmapPushTrigger --> JmapClient : wraps
+    JmapClient ..> JmapFetchResult : returns candidate checkpoint
+    JmapClient ..> JmapError : wraps session/transport/protocol failures
     MailboxResolver ..> MailboxInfo : resolves from
     MailboxResolver ..> UnknownMailboxRoleError : raises
     MailboxResolver ..> AmbiguousMailboxRoleError : raises
@@ -2725,19 +2734,44 @@ reach, never an error, since the file write itself already succeeded.
 
 ## 8. JMAP integration
 
-- **Client library:** [`jmapc`](https://github.com/smkent/jmapc) — has
+- **Client library:** [`jmapc`](https://github.com/smkent/jmapc) 0.3.x,
+  installed through the optional `spork[jmap]` extra — has
   Email query/get/set, EventSource push, and Fastmail-specific methods
-  already wrapped; no need to hand-roll the protocol.
+  already wrapped; no need to hand-roll the protocol. The provider
+  remains dynamically loaded, so a FileProvider installation never
+  imports or needs this optional dependency. `JmapClient` wraps every
+  session, transport, method, and decode failure as `JmapError`; callers
+  do not depend on `requests` or `jmapc` exception hierarchies.
 - **Auth:** bearer API token (from secretspec), scoped to the mail
   account only where Fastmail's token scoping allows it.
 - **Push:** EventSource subscription to the mail account's state
   changes. On disconnect, exponential backoff per `config.toml`, with a
   poll-based fallback so a flaky connection degrades to "slower" rather
   than "silent."
-- **Fetch pattern:** a single JMAP request batches `Email/query`
-  (new/changed IDs since last cursor) and `Email/get` (headers + body
-  for those IDs) using JMAP result references — one HTTP round trip per
-  triage cycle, not N.
+- **Fetch/checkpoint pattern:** the persisted cursor is the Email object
+  state consumed by `Email/changes(sinceState=...)`, not an
+  `Email/query` state or an EventSource ID; those tokens are different
+  JMAP domains and are never interchanged. Each changes page's created
+  IDs is fetched with one `Email/get`, normalized, and filtered to the
+  Inbox-role mailbox. `hasMoreChanges` pages are exhausted before
+  returning. `JmapFetchResult` carries both the messages and the final
+  candidate Email state. The client does not persist it: the daemon
+  acknowledges that state only after every message in the batch has
+  completed, including empty batches. A crash mid-batch therefore
+  replays the old state; `processed_messages` safely skips work that
+  completed before the crash.
+- **First-run behavior:** `since_cursor=None` baselines the account by
+  calling `Email/get(ids=[])` and returns no historical messages plus
+  the current Email state. Spork starts with mail arriving after it was
+  enabled rather than unexpectedly triaging an unbounded existing
+  inbox. A separate explicit import/backfill feature would need its own
+  policy and is not implicit startup behavior.
+- **Connection/readiness:** `connect()` performs authenticated session
+  discovery, resolves the primary account and Inbox-role mailbox, and
+  is idempotent. It is injected with a client factory in contract tests
+  but uses `jmapc.Client.create_with_api_token()` in production. A later
+  daemon-composition unit moves this call before `READY=1`; standalone
+  operations may call it lazily through read methods as well.
 - **Mailboxes as tags:** Fastmail/JMAP allows a message to belong to
   multiple mailboxes. Spork uses this natively for triage buckets
   (`Urgent`, `Needs-Reply`, `FYI`, `Reading`, `Needs-Review`) via

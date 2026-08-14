@@ -33,13 +33,14 @@ read-only. No actions taken yet.
 
 - [ ] `spork.core.providers.jmap.client`: session bootstrap via `jmapc`, secrets
       wired through `secretspec` (M) — shape settled, `connect()` and
-      `fetch_new_messages()` (also covers the `Email/query`+`Email/get`
-      batched fetch item below) deliberately raise `NotImplementedError`:
+      `fetch_new_messages()` (implemented as cursor-correct
+      `Email/changes`+`Email/get`, replacing the earlier inaccurate
+      “Email/query since cursor” wording) deliberately raise `NotImplementedError`:
       a real jmapc session against a live Fastmail account is real-network
       work this environment can't exercise honestly. See
       `tests/core/providers/jmap/test_client.py`.
 - [x] Mailbox role resolution + caching (Inbox, Drafts, custom mailboxes) (S)
-- [ ] ~~`Email/query` + `Email/get` batched fetch of new mail since a cursor (M)~~
+- [ ] ~~`Email/changes` + `Email/get` batched fetch of new mail since a cursor (M)~~
       — folded into `JmapClient.fetch_new_messages()` above, same status.
 - [ ] EventSource push listener with reconnect/backoff (M) — backoff
       *scheduling* is done and tested (`spork.core.providers.jmap.backoff`); the
