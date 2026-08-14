@@ -17,12 +17,20 @@ class _Response:
 
 class _FakeClient:
     account_id = "account-1"
-    events: Iterable[object] = ()
 
     def __init__(self, responses: list[object]) -> None:
         self.jmap_session = _Response(api_url="https://api.example.test/jmap")
         self.responses = responses
         self.requests: list[object] = []
+        self._events: Iterable[object] = ()
+
+    @property
+    def events(self) -> Iterable[object]:
+        return self._events
+
+    @events.setter
+    def events(self, value: Iterable[object]) -> None:
+        self._events = value
 
     def request(self, method: object, *, raise_errors: bool = False) -> object:
         self.requests.append(method)
@@ -123,6 +131,27 @@ def test_event_stream_connects_once_and_returns_the_backend_stream() -> None:
 
     assert tuple(client.event_stream()) == ("event",)
     assert tuple(client.event_stream()) == ("event",)
+
+
+def test_event_stream_wraps_backend_stream_failures() -> None:
+    class _BrokenEventsClient(_FakeClient):
+        @property
+        def events(self) -> Iterable[object]:
+            raise RuntimeError("event source unavailable")
+
+        @events.setter
+        def events(self, value: Iterable[object]) -> None:
+            raise AssertionError("events should not be assigned")
+
+    backend = _BrokenEventsClient([_mailboxes("inbox")])
+    client = JmapClient(
+        "api.fastmail.com",
+        "fake-token",
+        client_factory=lambda host, token: backend,
+    )
+
+    with pytest.raises(JmapError, match="event source unavailable"):
+        client.event_stream()
 
 
 @pytest.mark.parametrize("roles", [(), (None,), ("inbox", "inbox")])
