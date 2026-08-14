@@ -150,6 +150,21 @@ class _CheckpointSource:
         return self.poll_batch().messages
 
 
+class _EmptyCheckpointSource:
+    def __init__(self, stop_event: asyncio.Event) -> None:
+        self._stop_event = stop_event
+        self.calls = 0
+
+    def poll_batch(self) -> MessageBatch:
+        self.calls += 1
+        if self.calls > 1:
+            self._stop_event.set()
+        return MessageBatch(messages=(), checkpoint=f"state-{self.calls}")
+
+    def poll(self) -> Sequence[NormalizedMessage]:
+        return self.poll_batch().messages
+
+
 class _FailingApplier:
     def apply(self, message: NormalizedMessage, action: Action) -> None:
         raise RuntimeError("action failed")
@@ -215,6 +230,58 @@ def test_checkpoint_is_not_acknowledged_when_processing_fails(tmp_path: Path) ->
                     executor=ActionExecutor(_FailingApplier()),
                 )
             assert state_db.get_cursor("account-1") is None
+
+    asyncio.run(_body())
+
+
+def test_checkpoint_is_not_acknowledged_when_shutdown_interrupts_a_batch(
+    tmp_path: Path,
+) -> None:
+    async def _body() -> None:
+        stop_event = asyncio.Event()
+        source = _CheckpointSource([_message("msg-1"), _message("msg-2")], stop_event)
+        with StateDB(tmp_path / "state.sqlite3") as state_db:
+            await _run_checkpoint_loop(
+                source,
+                state_db,
+                stop_event,
+                executor=ActionExecutor(_StoppingApplier(stop_event)),
+            )
+            assert state_db.get_cursor("account-1") is None
+
+    asyncio.run(_body())
+
+
+def test_empty_checkpointed_batches_are_acknowledged(tmp_path: Path) -> None:
+    async def _body() -> None:
+        stop_event = asyncio.Event()
+        source = _EmptyCheckpointSource(stop_event)
+        with StateDB(tmp_path / "state.sqlite3") as state_db:
+            await _run_checkpoint_loop(
+                source,
+                state_db,
+                stop_event,
+                executor=ActionExecutor(_FailingApplier()),
+            )
+            assert state_db.get_cursor("account-1") == "state-2"
+
+    asyncio.run(_body())
+
+
+def test_failed_batch_leaves_the_previous_cursor_for_a_restart(tmp_path: Path) -> None:
+    async def _body() -> None:
+        stop_event = asyncio.Event()
+        source = _CheckpointSource([_message("msg-1")], stop_event)
+        with StateDB(tmp_path / "state.sqlite3") as state_db:
+            state_db.set_cursor("account-1", "state-1")
+            with pytest.raises(RuntimeError, match="action failed"):
+                await _run_checkpoint_loop(
+                    source,
+                    state_db,
+                    stop_event,
+                    executor=ActionExecutor(_FailingApplier()),
+                )
+            assert state_db.get_cursor("account-1") == "state-1"
 
     asyncio.run(_body())
 
