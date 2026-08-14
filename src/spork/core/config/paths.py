@@ -18,6 +18,8 @@ from pathlib import Path
 _APP_DIR_NAME = "spork"
 _CONFIG_FILENAME = "config.toml"
 _SOCKET_FILENAME = "sporkd.sock"
+_SECRETSPEC_FILENAME = "secretspec.toml"
+_SYSTEMD_USER_DIR_NAME = "systemd/user"
 
 # Outside the XDG search entirely, and deliberately so — the whole
 # point of the enforced tier is that no environment variable a user
@@ -96,3 +98,32 @@ def resolve_socket_path() -> Path:
     )
     fallback_dir = Path(_FALLBACK_RUNTIME_DIR_TEMPLATE.format(uid=os.getuid()))
     return fallback_dir / _SOCKET_FILENAME
+
+
+def resolve_secretspec_path() -> Path:
+    """`$XDG_CONFIG_HOME/spork/secretspec.toml`.
+
+    Colocated with `config.toml` under the same per-user config
+    directory (docs/DESIGN.md §7.3) rather than a separate convention
+    — this is the *installed* manifest `spork doctor`'s secrets check
+    resolves against, distinct from the repo-root `secretspec.toml`
+    that only documents what's needed (§7.1). Same fallback as
+    `resolve_user_config_path()` when `XDG_CONFIG_HOME` is unset,
+    empty, or relative.
+    """
+    base = _env_absolute_path("XDG_CONFIG_HOME") or Path.home() / ".config"
+    return base / _APP_DIR_NAME / _SECRETSPEC_FILENAME
+
+
+def resolve_user_unit_path(unit_name: str = "sporkd") -> Path:
+    """`$XDG_CONFIG_HOME/systemd/user/<unit_name>.service`.
+
+    systemd's own real user-unit search path (docs/DESIGN.md §14) —
+    not a spork-specific subdirectory the way `config.toml`/
+    `secretspec.toml` get one, since this path has to match what
+    `systemctl --user` itself looks for. Same fallback as
+    `resolve_user_config_path()` when `XDG_CONFIG_HOME` is unset,
+    empty, or relative.
+    """
+    base = _env_absolute_path("XDG_CONFIG_HOME") or Path.home() / ".config"
+    return base / _SYSTEMD_USER_DIR_NAME / f"{unit_name}.service"

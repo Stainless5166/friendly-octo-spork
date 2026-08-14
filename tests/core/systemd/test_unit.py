@@ -17,7 +17,9 @@ from pathlib import Path
 from spork.core.systemd.unit import UnitStatus, check_unit_status
 
 
-def _completed(stdout: str, *, returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess[str]:
+def _completed(
+    stdout: str, *, returncode: int = 0, stderr: str = ""
+) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         args=["systemctl"], returncode=returncode, stdout=stdout, stderr=stderr
     )
