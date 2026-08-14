@@ -14,6 +14,7 @@ import typer
 from spork import __version__
 from spork.cli.commands.config import app as config_app
 from spork.cli.commands.doctor import doctor
+from spork.cli.commands.install_service import install_service_command
 from spork.cli.commands.logs import logs
 from spork.cli.commands.pause import pause, resume
 from spork.cli.commands.reclassify import reclassify
@@ -34,6 +35,7 @@ app.command("pause")(pause)
 app.command("resume")(resume)
 app.command("logs")(logs)
 app.command("reclassify")(reclassify)
+app.command("install-service")(install_service_command)
 
 
 @app.callback(invoke_without_command=True)

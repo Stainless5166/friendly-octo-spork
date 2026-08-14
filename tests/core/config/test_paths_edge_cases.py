@@ -14,9 +14,11 @@ from pathlib import Path
 import pytest
 
 from spork.core.config.paths import (
+    resolve_secretspec_path,
     resolve_socket_path,
     resolve_system_default_config_paths,
     resolve_user_config_path,
+    resolve_user_unit_path,
 )
 
 
@@ -105,3 +107,31 @@ def test_resolve_socket_path_falls_back_for_relative_or_empty_too(
         result = resolve_socket_path()
 
     assert result == Path("/tmp/spork-1000/sporkd.sock")
+
+
+@pytest.mark.parametrize("xdg_config_home", ["relative/path", "", "./here"])
+def test_resolve_secretspec_path_treats_relative_or_empty_as_unset(
+    monkeypatch: pytest.MonkeyPatch, xdg_config_home: str
+) -> None:
+    """Same "relative/empty counts as unset" rule as
+    resolve_user_config_path()."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", xdg_config_home)
+    monkeypatch.setenv("HOME", "/home/will")
+
+    result = resolve_secretspec_path()
+
+    assert result == Path("/home/will/.config/spork/secretspec.toml")
+
+
+@pytest.mark.parametrize("xdg_config_home", ["relative/path", "", "./here"])
+def test_resolve_user_unit_path_treats_relative_or_empty_as_unset(
+    monkeypatch: pytest.MonkeyPatch, xdg_config_home: str
+) -> None:
+    """Same "relative/empty counts as unset" rule as
+    resolve_user_config_path()."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", xdg_config_home)
+    monkeypatch.setenv("HOME", "/home/will")
+
+    result = resolve_user_unit_path()
+
+    assert result == Path("/home/will/.config/systemd/user/sporkd.service")

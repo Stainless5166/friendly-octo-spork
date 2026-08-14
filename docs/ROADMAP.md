@@ -478,29 +478,90 @@ tries.
 few documented commands — via the manual systemd install flow, or via
 an Arch Linux package.
 
-- [ ] `systemd/sporkd.service` unit file (§14) (S)
-- [ ] `Type=notify` / `sd_notify` on ready (S)
-- [ ] Install helper (`spork install-service` or a documented script) (S)
-- [ ] README quickstart: secretspec setup → config → rules → enable unit (M)
-- [ ] `spork doctor` checks unit install/enabled/active state (S)
-- [ ] `spork doctor` wires in the secrets/config/provider checks
+- [x] `systemd/sporkd.service` unit file (§14) (S) — tracked at the
+      repo root, `Type=notify`/`Restart=on-failure`, no secret
+      material in the unit itself; `spork.core.systemd.template.UNIT_FILE_CONTENT`
+      is a byte-identical copy `install_service()` writes at runtime,
+      drift-guarded by a test rather than read from the tracked file
+      directly (an installed `spork` has no guaranteed-reachable path
+      back to it).
+- [x] `Type=notify` / `sd_notify` on ready (S) — `spork.core.systemd.notify.notify()`
+      hand-rolls the real `AF_UNIX SOCK_DGRAM` wire protocol against
+      the stdlib `socket` module (no new dependency, same call
+      `llm/clean.py`'s hand-rolled `HTMLParser` made); `run_daemon()`
+      calls it once provider/rules/LLM client/alerter/IPC server have
+      all composed successfully, right before opening `StateDB` and
+      starting the message loop.
+- [x] Install helper (`spork install-service` or a documented script) (S) —
+      built as a real command: `spork.core.systemd.install.install_service()`
+      writes the unit file to `resolve_user_unit_path()` (creating
+      `~/.config/systemd/user/` if needed), then `systemctl --user
+      daemon-reload` + (unless `--no-enable-now`) `enable --now`, one
+      `InstallServiceError` wrapping every failure.
+- [x] README quickstart: secretspec setup → config → rules → enable unit (M)
+- [x] `spork doctor` checks unit install/enabled/active state (S) —
+      `spork.core.systemd.unit.check_unit_status()`, reported as one
+      of `spork doctor`'s checks; a missing `systemctl` binary or an
+      unreachable user session bus (confirmed real in this project's
+      own dev sandbox) reports `"unknown"`, never crashes.
+- [x] `spork doctor` wires in the secrets/config/provider checks
       docs/DESIGN.md §7.3/§9.1/§9.3 describe (`secretspec check`
       equivalent, `load_config()`/`load_provider()`/`load_rules()`
       called eagerly and any `ConfigLoadError`/`ProviderLoadError`/
       `RulesLoadError`/`UnknownClassifierError` reported in plain
       language) — no longer blocked on `spork.core.config` not
       existing (that landed in M5); genuinely new scope, not assumed
-      done by any of M5's items (S)
-- [ ] Arch Linux packaging: a `PKGBUILD` (AUR-style) that builds `spork`/
+      done by any of M5's items (S) — `spork doctor` is now seven
+      independent checks (secrets, config, provider, rules, the
+      configured local classifier if any, JMAP connectivity, the
+      systemd unit above), each its own `[ok]`/`[FAIL]` line, unlike
+      every other command in this codebase it never stops at the
+      first failure. One real gap found and fixed along the way:
+      SecretSpec 0.18.0's Python SDK resolves the secrets *provider*
+      from a separate, genuinely global
+      `~/.config/secretspec/config.toml` — the manifest's own
+      `[providers]` table §7.3's example shows is real (what the
+      separate `secretspec` CLI reads) but is silently ignored by the
+      SDK's `resolve()` without an explicit `provider=` argument,
+      confirmed empirically against the installed library, not
+      assumed; `resolve_secretspec_path()` resolves the installed
+      manifest's own location (colocated with `config.toml`), §7.3
+      updated to describe this correctly.
+- [x] Arch Linux packaging: a `PKGBUILD` (AUR-style) that builds `spork`/
       `sporkd` and installs the systemd unit, so `makepkg -si` (and later
       an AUR submission) is a supported install path alongside the manual
       quickstart — not a second, divergent install story, the same
-      package layout and unit file the quickstart uses (M)
+      package layout and unit file the quickstart uses (M) — builds
+      directly from a full source checkout via `uv build --wheel` (a
+      real tagged-release `source=()` tarball is follow-up AUR-submission
+      work, not this round); installs the same tracked unit file to
+      the vendor path (`/usr/lib/systemd/user/`, not
+      `~/.config/systemd/user/`). `python-secretspec` has no known
+      Arch/AUR package as of this writing — noted honestly in the
+      file rather than invented. `makepkg`/`pacman` aren't available
+      in this sandbox (confirmed, Ubuntu) — the same
+      can't-exercise-honestly-here situation `JmapClient.connect()` is
+      in, just for a shell script; what's checkable without Arch
+      tooling (syntax validity, required fields, the unit-file install
+      path) is real and tested.
 
 **Exit criteria:** on a clean machine, following only the README quickstart
 gets `sporkd` running under systemd at login, with `spork status` reporting
 healthy. On Arch Linux, `makepkg -si` from the `PKGBUILD` produces the
-same result.
+same result. **All 7 checklist items above are done in the same sense
+every prior milestone's items are** — everything buildable and testable
+without a live JMAP/Anthropic account or an actual Arch machine is real
+and tested (604 tests, this milestone's own). **The exit criterion
+itself is not yet met**, and can't be until M1 is: `sporkd` under a
+freshly-installed unit still can't stay up against a real Fastmail
+account, because `JmapClient.connect()`/`fetch_new_messages()` are
+still the settled-shape `NotImplementedError` stubs M1 describes — the
+first live poll would raise, taking the daemon down shortly after
+`sd_notify`'s own `READY=1` fires. Every piece of *this* milestone's
+own scope (the unit file, `sd_notify`, the install flow, `spork
+doctor`'s checks, the package) is real; "running healthy against a
+real account" was never this milestone's blocker to unblock — it's
+M1's, same as `spork rules test`'s live-fetch gap always was.
 
 ## M7 — Hardening & v1 release
 

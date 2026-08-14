@@ -36,6 +36,7 @@ from spork.core.rules.loader import load_rules
 from spork.core.rules.schema import Action
 from spork.core.sources.base import Source
 from spork.core.state.db import StateDB
+from spork.core.systemd.notify import notify
 from spork.daemon.state import DaemonState, RulesState
 
 
@@ -52,6 +53,7 @@ async def run_daemon(
     stop_event: asyncio.Event | None = None,
     daemon_state: DaemonState | None = None,
     idle_delay_seconds: float = 1.0,
+    notify_fn: Callable[[str], bool] = notify,
 ) -> None:
     """Compose `config` into a running Tier 1+2 daemon loop + IPC server.
 
@@ -59,10 +61,11 @@ async def run_daemon(
     given, so a caller with no shutdown mechanism yet — `main.py`
     before it wires up signal handlers, e.g. — still gets a valid,
     if-never-externally-stoppable, loop). `daemon_state`/
-    `idle_delay_seconds` are injectable the same way `now`/
+    `idle_delay_seconds`/`notify_fn` are injectable the same way `now`/
     `new_correlation_id` are elsewhere in this codebase — production
     callers never override them; tests use a fresh `DaemonState`/small
-    delay to control and speed up what they exercise.
+    delay/stub notify function to control and speed up what they
+    exercise.
     """
     stop_event = stop_event if stop_event is not None else asyncio.Event()
     daemon_state = daemon_state if daemon_state is not None else DaemonState()
@@ -102,6 +105,13 @@ async def run_daemon(
     ipc_server = IpcServer(
         socket_path, handlers=_build_ipc_handlers(daemon_state, rules_state, config.rules_path)
     )
+
+    # Everything above can fail loudly (a bad provider/rules/llm/alerts
+    # spec); only once composition has actually succeeded is this
+    # process "ready" in any meaningful sense — docs/DESIGN.md §14.
+    # A safe no-op outside a Type=notify unit (every test, every plain
+    # `uv run sporkd`): notify()/notify_fn never raises.
+    notify_fn("READY=1")
 
     with StateDB(config.db_path) as state_db:
         async with asyncio.TaskGroup() as tg:

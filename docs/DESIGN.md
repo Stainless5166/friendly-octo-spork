@@ -117,7 +117,9 @@ layout for a milestone that hasn't landed yet (M3's `llm/prompts.py`
 message —, and a future real desktop-notification `Alerter` backend
 alongside M4's `alerts/log.py`). `config/`, `ipc/`, and
 `cli/commands/config.py` are all real as of M5's work on them — no
-longer dashed boxes. This is layout orientation
+longer dashed boxes. `systemd/` (core) and
+`cli/commands/install_service.py` land with M6 — no longer dashed
+either. This is layout orientation
 only — see §6.4 for what each built module's classes actually look
 like.
 
@@ -223,6 +225,13 @@ flowchart TD
             ipc_server["server.py<br/>IpcServer"]
             ipc_client["client.py<br/>send_request()"]
         end
+
+        subgraph systemd_pkg["systemd/ (M6)"]
+            systemd_notify["notify.py<br/>notify() (sd_notify protocol)"]
+            systemd_unit["unit.py<br/>check_unit_status()"]
+            systemd_template["template.py<br/>UNIT_FILE_CONTENT"]
+            systemd_install["install.py<br/>install_service()"]
+        end
     end
 
     subgraph daemon_pkg["daemon/"]
@@ -235,12 +244,13 @@ flowchart TD
         cli_main["main.py<br/>spork entrypoint"]
         subgraph cli_commands["commands/"]
             cli_rules["rules.py<br/>spork rules test/list/edit/<br/>enable/disable"]
-            cli_doctor["doctor.py<br/>spork doctor (stub)"]
+            cli_doctor["doctor.py<br/>spork doctor"]
             cli_status["status.py<br/>spork status"]
             cli_pause["pause.py<br/>spork pause/resume"]
             cli_logs["logs.py<br/>spork logs"]
             cli_config["config.py<br/>spork config show/edit"]
             cli_reclassify["reclassify.py<br/>spork reclassify (M5)"]
+            cli_install_service["install_service.py<br/>spork install-service (M6)"]
         end
     end
 
@@ -501,7 +511,7 @@ that only touch files on disk work even with the daemon stopped, and
 push a "reload" request to the daemon if it's running so changes take
 effect without a restart.
 
-See §12 for the full command reference.
+See §13 for the full command reference.
 
 **CLI framework: [Typer](https://typer.tiangolo.com/).** Chosen over
 plain Click for the same reason the rest of this codebase leans on
@@ -577,6 +587,8 @@ classDiagram
     class resolve_system_default_config_paths { <<function>> }
     class resolve_enforced_config_path { <<function>> }
     class resolve_socket_path { <<function>> }
+    class resolve_secretspec_path { <<function>> }
+    class resolve_user_unit_path { <<function>> }
 
     class load_config {
         <<function>>
@@ -597,11 +609,18 @@ classDiagram
 ```
 
 `paths.py` (`resolve_user_config_path`/`resolve_system_default_config_paths`/
-`resolve_enforced_config_path`/`resolve_socket_path`) is deliberately
+`resolve_enforced_config_path`/`resolve_socket_path`/
+`resolve_secretspec_path`/`resolve_user_unit_path`) is deliberately
 free functions, not methods on `SporkConfig` — pure path-resolution
 logic against environment variables, testable in total isolation from
 TOML parsing or pydantic validation (§7.2 settles exactly what each
-one does). `load_config()` is the only thing that calls all four:
+one does). `resolve_secretspec_path`/`resolve_user_unit_path` are M6
+additions, not part of `load_config()`'s own merge — they resolve
+where `secretspec.toml` and the installed systemd unit file live,
+respectively, both colocated with `config.toml` under the same
+`$XDG_CONFIG_HOME`-rooted convention (§7.3, §14) rather than inventing
+a new one. `load_config()` is the only thing that calls the first
+four:
 locates each of the three tier files that actually exist, deep-merges
 their raw dicts in ascending precedence (system-default, then user,
 then enforced — each later merge's keys win), and validates the fully
@@ -1729,6 +1748,85 @@ classDiagram
     Secrets ..> SecretsError : raises, on an unresolved get()
 ```
 
+#### `spork.core.systemd`
+
+```mermaid
+classDiagram
+    class InstallServiceError { <<Exception>> }
+    class UnitStatus {
+        <<dataclass, frozen>>
+        +installed: bool
+        +enabled: str
+        +active: str
+    }
+    class notify {
+        <<function>>
+        +notify(state, socket_path, environ) bool
+    }
+    class check_unit_status {
+        <<function>>
+        +check_unit_status(unit_name, unit_path, runner) UnitStatus
+    }
+    class install_service {
+        <<function>>
+        +install_service(unit_name, unit_path, enable_now, runner) Path
+    }
+    class UNIT_FILE_CONTENT {
+        <<constant, str>>
+    }
+    class resolve_user_unit_path { <<function>> }
+
+    check_unit_status ..> resolve_user_unit_path : default unit_path
+    check_unit_status ..> UnitStatus : produces
+    install_service ..> resolve_user_unit_path : default unit_path
+    install_service ..> UNIT_FILE_CONTENT : writes verbatim
+    install_service ..> InstallServiceError : raises
+```
+
+Four small, dependency-free modules rather than one — same reasoning
+as `spork.core.secrets` being its own module rather than folded into
+`config`: `notify()` (the `sd_notify(3)` protocol — a single
+`AF_UNIX SOCK_DGRAM` datagram to `$NOTIFY_SOCKET`, abstract-namespace
+`@`-prefix handled per the real spec) needs nothing but the stdlib
+`socket` module, hand-rolled rather than a new dependency, the same
+"no new dependency for something this small" call `llm/clean.py`'s
+`HTMLParser` subclass made (§10). Returns `False` (a no-op, not an
+error) when `$NOTIFY_SOCKET` isn't set — true whenever `sporkd` isn't
+actually running under a systemd unit with `Type=notify`, e.g. every
+test and every manual `uv run sporkd` invocation — so calling it
+unconditionally is always safe. `check_unit_status()` shells out to
+`systemctl --user is-enabled`/`is-active` (a `runner` callable injected
+the same DI-for-subprocess pattern `spork.cli.commands.config`'s
+`$EDITOR` launch already uses) and treats a missing `systemctl`
+binary, or a "can't connect to the user bus" failure (a real, expected
+case in a container/CI environment with no systemd user session — not
+hypothetical, confirmed against this project's own dev sandbox), as
+`enabled`/`active` == `"unknown"` rather than crashing — `spork
+doctor` (§13) needs a clean "can't tell" answer, not a traceback, when
+the sandbox it's run in has no systemd session at all. `installed` is
+a plain `Path.exists()` check against `resolve_user_unit_path()`,
+independent of whether `systemctl` itself is reachable. `install_service()`
+writes `UNIT_FILE_CONTENT` (below) to that same path, then runs
+`daemon-reload` and, unless `enable_now=False`, `enable --now` — every
+`systemctl` failure (including "no bus") wrapped as one
+`InstallServiceError`, same one-catchable-type-per-boundary convention
+as `RulesLoadError`/`ProviderLoadError`.
+
+`UNIT_FILE_CONTENT` is a plain string constant, not read from the
+repo-root `systemd/sporkd.service` file at runtime (§7.1) — an
+installed `spork` has no guarantee that file is reachable relative to
+wherever its package ended up (a venv, an `uv tool install` location,
+a distro package's site-packages), so the content is duplicated in
+exactly one place a test can hold to the tracked file byte-for-byte
+(`tests/core/systemd/test_template.py`), the same "single logical
+source of truth, drift caught by a test rather than assumed" choice
+this codebase already makes for `rules.writer.dump_rules()`'s
+round-trip guarantee. The tracked `systemd/sporkd.service` file itself
+is what a human reads on GitHub and what the Arch `PKGBUILD` (§14)
+installs directly from a full source checkout — it doesn't need
+`install_service()`'s runtime lookup problem solved, since packaging
+always has the whole repo present.
+
 #### `spork.cli`
 
 ```mermaid
@@ -1806,10 +1904,21 @@ classDiagram
         <<Typer command>>
         +reclassify(message_id: str) None
     }
+    class install_service_command {
+        <<Typer command "install-service">>
+        +install_service_command(enable_now: bool) None
+    }
     class load_provider { <<function>> }
     class process_message { <<function>> }
     class escalate_message { <<function>> }
     class MessageNotFoundError { <<Exception>> }
+    class resolve_secrets { <<function>> }
+    class SecretsError { <<Exception>> }
+    class ProviderLoadError { <<Exception>> }
+    class UnknownClassifierError { <<Exception>> }
+    class check_unit_status { <<function>> }
+    class install_service { <<function>> }
+    class InstallServiceError { <<Exception>> }
 
     app --> rules_app : add_typer("rules")
     app --> config_app : add_typer("config")
@@ -1819,6 +1928,7 @@ classDiagram
     app --> resume : command("resume")
     app --> logs : command("logs")
     app --> reclassify : command("reclassify")
+    app --> install_service_command : command("install-service")
     rules_app --> test : command("test")
     rules_app --> list_rules : command("list")
     rules_app --> rules_edit : command("edit")
@@ -1847,13 +1957,35 @@ classDiagram
     pause ..> send_request : "pause"
     resume ..> send_request : "resume"
     send_request ..> IpcConnectionError : "sporkd is not running"
-    doctor ..> NotImplementedError : catches JMAP-connectivity stub, clean CLI error
+    doctor ..> resolve_secrets : secrets check (§7.3)
+    doctor ..> SecretsError : catches, reported as one failed check
+    doctor ..> load_config : config check
+    doctor ..> ConfigLoadError : catches, reported as one failed check
+    doctor ..> load_provider : provider check (needs config)
+    doctor ..> ProviderLoadError : catches, reported as one failed check
+    doctor ..> load_rules : rules check (needs config)
+    doctor ..> RulesLoadError : catches, reported as one failed check
+    doctor ..> UnknownClassifierError : local_classifier check, catches
+    doctor ..> NotImplementedError : catches JMAP-connectivity stub, one more failed check
+    doctor ..> check_unit_status : systemd unit install/enabled/active check (§14)
     reclassify ..> load_config : locates provider/rules/db
     reclassify ..> load_provider : builds Provider, standalone (§7.4)
     reclassify ..> MessageNotFoundError : catches, clean CLI error
     reclassify ..> process_message : force=True, bypasses the idempotency gate
     reclassify ..> escalate_message : when Tier 1 escalates
+    install_service_command ..> install_service : writes unit file, daemon-reload, enable --now
+    install_service_command ..> InstallServiceError : catches, clean CLI error
 ```
+
+Unlike every other CLI command in this diagram, `doctor` never stops
+at its first failure: it runs each of its seven checks independently
+(secrets, config, provider, rules, the configured local classifier if
+any, JMAP connectivity, the systemd unit), catching each check's own
+specific exception type and printing one `[ok]`/`[FAIL]` line per
+check, only exiting non-zero (still never a raw traceback) once all
+seven have run and at least one failed. The provider/rules/classifier
+checks are skipped (reported, not silently omitted) when the config
+check itself failed — there's no `SporkConfig` to build them from.
 
 #### `spork.daemon`
 
@@ -1944,8 +2076,6 @@ DI convention as the rest of this codebase.
 
 ### 7.1 Project layout (UV-managed)
 
-Dashed boxes are planned, not built yet (`systemd/` lands with M6).
-
 ```mermaid
 flowchart TD
     root["friendly-octo-spork/"] --> pyproject["pyproject.toml<br/>[project.scripts] sporkd + spork"]
@@ -1953,7 +2083,8 @@ flowchart TD
     root --> secretspec["secretspec.toml<br/>declared secrets, §7.3"]
     root --> claudemd["CLAUDE.md<br/>agent guidance"]
     root --> src["src/spork/...<br/>see §6.1"]
-    root --> systemd["systemd/<br/>sporkd.service (M6)"]:::planned
+    root --> systemd["systemd/<br/>sporkd.service (§14, M6)"]
+    root --> pkgbuild["PKGBUILD<br/>Arch package (§14, M6)"]
     root --> tests["tests/<br/>mirrors src/spork/ 1:1"]
     root --> docs["docs/"]
     root --> readme["README.md"]
@@ -1961,8 +2092,6 @@ flowchart TD
     docs --> design["DESIGN.md"]
     docs --> roadmap["ROADMAP.md"]
     docs --> coverage["TEST_COVERAGE.md"]
-
-    classDef planned stroke-dasharray: 4 3,opacity:0.65
 ```
 
 `uv sync` sets up the dev environment; `uv run sporkd` / `uv run spork`
@@ -2150,11 +2279,19 @@ default = "keyring://"
   SDK (not by shelling out to `secretspec run`, since it's a long-lived
   process) and holds them in memory only; they are never written to the
   state DB or logs.
-- `spork doctor` is intended to run the equivalent of `secretspec check`
-  and report missing/misconfigured secrets in plain language — not
-  built yet (`spork.core.config`, the piece it was blocked on, landed
-  in M5; wiring this check itself is untracked follow-up, not assumed
-  done here — see `docs/ROADMAP.md` M6).
+- `spork doctor` (§13, M6) runs the equivalent of `secretspec check`
+  as its first check: `resolve_secrets(resolve_secretspec_path(),
+  reason="spork doctor")`, reporting a missing/malformed manifest or
+  an unresolved required secret as one `[FAIL]` line rather than
+  stopping the rest of the checks — `spork.core.config` (the piece
+  this was blocked on) landed in M5.
+- `resolve_secretspec_path()` (`spork.core.config.paths`, M6) resolves
+  the *installed* `secretspec.toml` to `$XDG_CONFIG_HOME/spork/secretspec.toml`
+  — colocated with `config.toml` (§7.2) under the same per-user config
+  directory, not the repo-root copy this section's example came from
+  (that one ships in the repo purely as the documented, versioned
+  *shape* of what's needed — §7.1 — a real install copies or symlinks
+  it into place as part of the README quickstart, §14).
 - Every secret access is covered by SecretSpec's built-in audit log
   (who/when/outcome) — Spork does not need to build its own.
 
@@ -3677,8 +3814,17 @@ spork reclassify <message-id> # standalone, like spork logs — works whether
                                # idempotency gate) and, if it escalates,
                                # straight into Tier 2 as well
 
-spork doctor                  # secretspec check, JMAP auth check,
-                               # systemd unit status, DB migration status
+spork doctor                  # secretspec check, config/provider/rules/
+                               # local-classifier load checks, JMAP auth
+                               # check, systemd unit install/enabled/
+                               # active state — DB migration status
+                               # isn't wired in yet
+
+spork install-service [--no-enable-now]  # writes the unit file to
+                               # ~/.config/systemd/user/sporkd.service,
+                               # systemctl --user daemon-reload, and
+                               # (unless --no-enable-now) enable --now
+                               # (§14)
 ```
 
 `spork rules test` genuinely requires a live JMAP connection — spork is
@@ -3698,8 +3844,9 @@ it deliberately doesn't have.
 
 ## 14. systemd integration
 
-`systemd/sporkd.service` (user unit, installed to
-`~/.config/systemd/user/sporkd.service`):
+`systemd/sporkd.service` (repo root, §7.1; user unit, installed to
+`~/.config/systemd/user/sporkd.service` — `resolve_user_unit_path()`,
+`spork.core.config.paths`, M6):
 
 ```ini
 [Unit]
@@ -3719,17 +3866,57 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-- `Type=notify` (sd_notify on successful JMAP session establishment) so
-  `systemctl --user status` reflects real readiness, not just
-  process-alive.
+- `Type=notify`: `run_daemon()` (§6.2) calls `spork.core.systemd.notify.notify("READY=1")`
+  once it's finished composing the provider/rules/LLM client/alerter
+  and is about to enter its message loop + serve the IPC socket — the
+  same point `DaemonState.started_at` is stamped — so `systemctl --user
+  status` reflects "this process finished starting up and is ready to
+  work," not just "the process exists." `notify()` is a plain
+  `AF_UNIX SOCK_DGRAM` write to `$NOTIFY_SOCKET` (the real `sd_notify(3)`
+  wire protocol, hand-rolled against the stdlib `socket` module rather
+  than a new dependency) and is a safe no-op — returns `False`, sends
+  nothing — whenever `$NOTIFY_SOCKET` isn't set, which is every test
+  run and every plain `uv run sporkd` invocation outside a `Type=notify`
+  unit. This is **not** gated on a live JMAP session specifically:
+  against a `FileProvider`-backed config (or any config buildable
+  today) it fires once composition succeeds, same as it eventually
+  will once a real `JmapProvider` is part of that composition (M1) —
+  "ready" means "daemon fully assembled and about to serve," not
+  "JMAP push connected," which §12.3/M4's still-open "push disconnected"
+  alert is the actual signal for.
 - `WantedBy=default.target` (not `graphical-session.target`) so it comes
   up on login whether or not a graphical session is present; the desktop
   alert backend degrades to "unavailable, log only" if there's no DBus
   session bus, rather than failing the whole unit.
-- Install flow (`spork install-service` or documented manual steps):
-  copy the unit file, `systemctl --user daemon-reload`,
-  `systemctl --user enable --now sporkd`, `loginctl enable-linger
-  <user>` if the user wants it running even when logged out entirely.
+- **Install flow: `spork install-service [--no-enable-now]`**
+  (`spork.core.systemd.install.install_service()`, M6) — writes the
+  unit file's content (`spork.core.systemd.template.UNIT_FILE_CONTENT`,
+  byte-identical to the tracked `systemd/sporkd.service`) to
+  `resolve_user_unit_path()`, creating parent directories as needed,
+  then runs `systemctl --user daemon-reload` and, unless
+  `--no-enable-now` is passed, `systemctl --user enable --now sporkd`.
+  Every `systemctl` failure — including "not installed" and "can't
+  connect to the user bus," both real, expected outcomes in a
+  container/CI environment with no systemd user session — is caught
+  and reported as one clean `InstallServiceError`, never a raw
+  traceback. `loginctl enable-linger <user>` (wanted so `sporkd` keeps
+  running even fully logged out) is a documented manual step, not run
+  automatically: it needs privileges `spork install-service` has no
+  business assuming it has. `spork doctor` (§13, M6) reports the
+  resulting unit's installed/enabled/active state via the same
+  `spork.core.systemd.unit.check_unit_status()` this command's
+  `daemon-reload`/`enable --now` calls change the answer to.
+- **Arch Linux packaging**: `PKGBUILD` (repo root, §7.1, M6) builds
+  `spork`/`sporkd` (via `uv build`) and installs `systemd/sporkd.service`
+  directly — the same tracked file `spork install-service` embeds a
+  copy of, not a second, divergent unit definition — to
+  `/usr/lib/systemd/user/sporkd.service`, the standard vendor-supplied
+  user-unit search path (distinct from `~/.config/systemd/user/`,
+  where a manual/`pip`-style install places it): a distro package
+  belongs in the package-managed tree, never a user's own config
+  directory, so `makepkg -si` needs no separate "now run
+  `spork install-service`" step — `systemctl --user enable --now
+  sporkd` alone is enough once the package is installed.
 
 ## 15. Security considerations
 

@@ -122,11 +122,16 @@ def _config(tmp_path: Path) -> SporkConfig:
     )
 
 
-async def _run_briefly(config: SporkConfig, *, settle_seconds: float = 0.2) -> None:
+async def _run_briefly(
+    config: SporkConfig, *, settle_seconds: float = 0.2, **kwargs: object
+) -> None:
     """Runs run_daemon() for just long enough to process FileProvider's
-    one fixed batch, then stops it cleanly."""
+    one fixed batch, then stops it cleanly. Extra kwargs pass straight
+    through to run_daemon() (e.g. notify_fn)."""
     stop_event = asyncio.Event()
-    task = asyncio.create_task(run_daemon(config, stop_event=stop_event, idle_delay_seconds=0.02))
+    task = asyncio.create_task(
+        run_daemon(config, stop_event=stop_event, idle_delay_seconds=0.02, **kwargs)
+    )
     await asyncio.sleep(settle_seconds)
     stop_event.set()
     await asyncio.wait_for(task, timeout=2)
@@ -336,3 +341,28 @@ def test_run_daemon_stops_promptly_after_stop_event_is_set(tmp_path: Path) -> No
         await asyncio.wait_for(task, timeout=2)  # raises TimeoutError if it never stops
 
     asyncio.run(_body())
+
+
+def test_run_daemon_signals_readiness_via_notify_fn(tmp_path: Path) -> None:
+    """docs/DESIGN.md §14: once the daemon has finished composing its
+    provider/rules/LLM client/alerter and is about to enter its
+    message loop, it calls notify_fn("READY=1") — proven here via an
+    injected stub rather than a real $NOTIFY_SOCKET (spork.core.systemd.notify
+    already covers the wire protocol itself in isolation)."""
+    config = _config(tmp_path)
+    calls: list[str] = []
+
+    asyncio.run(_run_briefly(config, notify_fn=calls.append))
+
+    assert calls == ["READY=1"]
+
+
+def test_run_daemon_signals_readiness_exactly_once(tmp_path: Path) -> None:
+    """Not once per poll iteration — README/PipelineObserver-consuming
+    documentation only needs one "I'm up" per process lifetime."""
+    config = _config(tmp_path)
+    calls: list[str] = []
+
+    asyncio.run(_run_briefly(config, notify_fn=calls.append, settle_seconds=0.3))
+
+    assert calls.count("READY=1") == 1
