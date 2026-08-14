@@ -134,7 +134,7 @@ flowchart TD
             config_loader["loader.py<br/>load_config()"]
         end
         secrets_mod["secrets.py<br/>secretspec integration"]
-        runtime_mod["runtime.py<br/>secret injection +<br/>backend composition"]:::planned
+        runtime_mod["runtime.py<br/>secret injection +<br/>backend composition"]
         models_mod["models.py<br/>NormalizedMessage"]
         logging_setup_mod["logging_setup.py<br/>configure_logging() (M7)"]
 

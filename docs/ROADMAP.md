@@ -380,7 +380,7 @@ live until M5 needed something to control.
       mode, same convention as `RulesLoadError`/`ProviderLoadError`.
       Exit criterion's enforced-tier-wins test is real: see
       `docs/TEST_COVERAGE.md`'s `test_load_config_enforced_tier_overrides_user_tier`.
-- [ ] Runtime backend composition: `BackendSpec.secret_kwargs` maps
+- [x] Runtime backend composition: `BackendSpec.secret_kwargs` maps
       constructor arguments to SecretSpec names; daemon/doctor/
       reclassify resolve once and share the same provider/LLM/alerter
       builders. Optional `[llm_recording]` wraps the configured client
