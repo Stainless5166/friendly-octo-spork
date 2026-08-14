@@ -45,9 +45,11 @@ read-only. No actions taken yet.
 - [x] ~~`Email/changes` + `Email/get` batched fetch of new mail since a cursor (M)~~
       — folded into `JmapClient.fetch_new_messages()` above, same status.
 - [ ] EventSource push listener with reconnect/backoff (M) — backoff
-      *scheduling* is done and tested (`spork.core.providers.jmap.backoff`); the
-      listener itself (`JmapPushTrigger.wait()`) remains a settled-shape
-      `NotImplementedError` stub. See `tests/core/providers/jmap/test_push.py`.
+      scheduling, account/event filtering, transient disconnect handling,
+      and checkpoint-preserving polling fallback are implemented in the
+      next unit; live Fastmail push/reconnect acceptance remains part of the
+      M1 exit criterion. Disconnect-duration alerting remains separately
+      tracked under M4.
 - [x] Poll-based fallback when push is unavailable/disconnected (S) —
       real, tested implementation (`spork.core.sources.timer.IntervalTimer`
       + `spork.core.sources.fallback.FallbackSource`), pure control flow
