@@ -92,6 +92,24 @@ def test_checkpointed_source_exposes_the_clients_candidate_state(make_message) -
     assert cursors == ["state-1", "state-2"]
 
 
+def test_provider_builds_a_checkpointed_source_and_exposes_account_id() -> None:
+    class _Client(JmapClient):
+        def __init__(self) -> None:
+            pass
+
+        @property
+        def account_id(self) -> str:
+            return "account-1"
+
+    provider = JmapProvider(host="api.fastmail.com", api_token="fake-token")
+    provider._client = _Client()
+
+    source = provider.build_checkpointed_source("state-1")
+
+    assert isinstance(source, _JmapCheckpointedSource)
+    assert provider.account_id() == "account-1"
+
+
 def test_build_action_applier_returns_something_that_can_apply(make_message) -> None:
     """build_action_applier() returns an object satisfying ActionApplier
     (has an .apply() method) — the write half of the Provider contract,
