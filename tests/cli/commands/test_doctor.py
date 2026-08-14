@@ -97,6 +97,22 @@ def _write_full_setup(tmp_path: Path) -> dict[str, str]:
         default = "env://"
         """
     )
+    # SecretSpec's Python SDK resolves the *provider* from a separate,
+    # genuinely global ~/.config/secretspec/config.toml (or
+    # $XDG_CONFIG_HOME/secretspec/config.toml) — verified empirically:
+    # the manifest's own [providers] table above is real and useful
+    # (what the separate `secretspec` CLI tool reads) but the SDK's
+    # resolve() ignores it without an explicit `provider=` argument, so
+    # a from-scratch env needs this too, the same one-time
+    # `secretspec config global init` a real user would run.
+    secretspec_global_dir = xdg_config_home / "secretspec"
+    secretspec_global_dir.mkdir(parents=True)
+    (secretspec_global_dir / "config.toml").write_text(
+        """
+        [defaults]
+        provider = "env://"
+        """
+    )
 
     env = dict(os.environ)
     env["XDG_CONFIG_HOME"] = str(xdg_config_home)
