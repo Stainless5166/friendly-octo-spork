@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -77,3 +78,17 @@ def test_prompt_hash_is_stable_but_sensitive_to_message_content() -> None:
 
     assert prompt_sha256(first) == prompt_sha256(same)
     assert prompt_sha256(first) != prompt_sha256(changed)
+
+
+def test_default_recording_clock_writes_a_parseable_utc_timestamp(tmp_path: Path) -> None:
+    class StubClient:
+        def get_verdict(self, request: VerdictRequest) -> LLMResult:
+            return _result()
+
+    corpus_path = tmp_path / "live.jsonl"
+
+    RecordingLLMClient(StubClient(), corpus_path=corpus_path).get_verdict(_request("Timed"))
+
+    recorded_at = json.loads(corpus_path.read_text())["recorded_at"]
+    timestamp = datetime.fromisoformat(recorded_at)
+    assert timestamp.utcoffset() is not None

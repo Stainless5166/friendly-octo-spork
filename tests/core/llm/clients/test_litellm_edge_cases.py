@@ -44,9 +44,7 @@ def _response(*, tool_calls: object, usage: object | None = None) -> SimpleNames
 
 
 def _tool_call(*, name: str = "deliver_verdict", arguments: str | None = None) -> object:
-    return SimpleNamespace(
-        function=SimpleNamespace(name=name, arguments=arguments or _arguments())
-    )
+    return SimpleNamespace(function=SimpleNamespace(name=name, arguments=arguments or _arguments()))
 
 
 def test_constructor_reports_how_to_install_the_missing_optional_dependency(monkeypatch) -> None:
@@ -57,6 +55,24 @@ def test_constructor_reports_how_to_install_the_missing_optional_dependency(monk
 
     with pytest.raises(LiteLLMClientError, match=r"spork\[llm\]"):
         LiteLLMClient(model="anthropic/test")
+
+
+def test_constructor_loads_the_optional_sdk_completion_when_not_injected(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def completion(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return _response(tool_calls=[_tool_call()])
+
+    monkeypatch.setattr(
+        "spork.core.llm.clients.litellm.importlib.import_module",
+        lambda name: SimpleNamespace(completion=completion),
+    )
+
+    client = LiteLLMClient(model="anthropic/test")
+    client.get_verdict(_request())
+
+    assert len(calls) == 1
 
 
 def test_upstream_completion_failure_is_wrapped_at_the_client_boundary() -> None:
