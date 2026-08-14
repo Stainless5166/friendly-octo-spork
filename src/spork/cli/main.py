@@ -20,6 +20,7 @@ from spork.cli.commands.pause import pause, resume
 from spork.cli.commands.reclassify import reclassify
 from spork.cli.commands.rules import app as rules_app
 from spork.cli.commands.status import status
+from spork.core.logging_setup import configure_logging
 
 app = typer.Typer(
     name="spork",
@@ -43,11 +44,23 @@ def main(
     version: bool = typer.Option(
         False, "--version", help="Show the version and exit.", is_eager=True
     ),
+    log_level: str = typer.Option(
+        "WARNING",
+        "--log-level",
+        help="Log verbosity (DEBUG/INFO/WARNING/ERROR/CRITICAL) — quiet by default, "
+        "this is a short-lived CLI, not the daemon (§6.2).",
+    ),
 ) -> None:
     """Status, config, and rule management for the sporkd daemon."""
     if version:
         typer.echo(f"spork {__version__}")
         raise typer.Exit()
+
+    try:
+        configure_logging(log_level)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 if __name__ == "__main__":
