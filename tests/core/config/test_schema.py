@@ -55,6 +55,29 @@ def test_sporkconfig_socket_path_defaults_to_none() -> None:
     assert config.socket_path is None
 
 
+def test_sporkconfig_log_level_defaults_to_info() -> None:
+    """docs/DESIGN.md §6.2/§7.2 (M7): omitting log_level entirely is a
+    valid, fully-specified config, same as every other defaulted field."""
+    config = _minimal_sporkconfig()
+
+    assert config.log_level == "INFO"
+
+
+@pytest.mark.parametrize("level", ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+def test_sporkconfig_accepts_every_documented_log_level(level: str) -> None:
+    config = _minimal_sporkconfig(log_level=level)
+
+    assert config.log_level == level
+
+
+def test_sporkconfig_rejects_an_unknown_log_level() -> None:
+    """A typo'd or lowercase log_level fails loudly at config-load time
+    (ConfigLoadError wraps this — see test_loader.py), not silently at
+    some later logging.setLevel() call."""
+    with pytest.raises(ValidationError):
+        _minimal_sporkconfig(log_level="verbose")
+
+
 def test_sporkconfig_tiering_defaults_when_omitted() -> None:
     """Omitting [tiering] entirely still produces a full TieringConfig
     with every documented default, not a missing-field error."""
