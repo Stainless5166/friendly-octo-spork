@@ -23,7 +23,7 @@ from spork.core.providers.base import (
 from spork.core.providers.jmap.client import JmapClient, JmapFetchResult
 from spork.core.providers.jmap.push import JmapPushTrigger
 from spork.core.rules.schema import Action
-from spork.core.sources.base import CheckpointedSource, MessageBatch, Source
+from spork.core.sources.base import CheckpointedSource, MessageBatch, Source, Trigger
 from spork.core.sources.triggered import TriggeredSource
 
 
@@ -56,10 +56,16 @@ class _JmapContentFetcher:
 class _JmapCheckpointedSource:
     """Push-triggered JMAP source that exposes a candidate Email state."""
 
-    def __init__(self, client: JmapClient, cursor: str | None) -> None:
+    def __init__(
+        self,
+        client: JmapClient,
+        cursor: str | None,
+        *,
+        trigger: Trigger | None = None,
+    ) -> None:
         self._client = client
         self._cursor = cursor
-        self._trigger = JmapPushTrigger(client)
+        self._trigger = trigger if trigger is not None else JmapPushTrigger(client)
 
     def poll_batch(self) -> MessageBatch:
         self._trigger.wait()
