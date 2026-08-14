@@ -175,7 +175,22 @@ self-resetting across date rollover by a date-equality guard rather
 than a boolean flag. **M4 is now 2.5/3** (JMAP push disconnected still
 genuinely blocked on a live EventSource connection; crash-loop
 detection re-scoped to M6/systemd, not this loop's job — see
-docs/ROADMAP.md).
+docs/ROADMAP.md). Updated once more for M6, all 7 items in one pass:
+`spork.core.systemd` (`notify.py`/`unit.py`/`template.py`/`install.py`,
+all dependency-free, hand-rolled against the stdlib the same way
+`llm/clean.py`'s `HTMLParser` was), the tracked `systemd/sporkd.service`
+unit file, `spork install-service`, `run_daemon()` signaling readiness
+via `sd_notify`, `spork doctor` rebuilt from one JMAP-only check into
+seven independent checks (secrets/config/provider/rules/local-classifier/
+JMAP/systemd-unit, each its own `[ok]`/`[FAIL]` line), and a `PKGBUILD`.
+One real gap surfaced and fixed along the way: SecretSpec 0.18.0's
+Python SDK resolves the *provider* from a separate, genuinely global
+`~/.config/secretspec/config.toml`, not the manifest's own `[providers]`
+table `docs/DESIGN.md` §7.3 previously assumed sufficient — confirmed
+empirically, `resolve_secretspec_path()` and §7.3's prose both updated.
+**M6 is 7/7 — the milestone is complete** in the same sense every prior
+one is: everything buildable and testable without a live
+account/Arch-tooling-having-machine is real, 604 tests all green.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -583,13 +598,56 @@ subprocess, not simulated.
 filter the already-returned list client-side; `--message-id` reuses
 `get_audit_entries(jmap_id=...)`'s existing storage-side filter.
 
-### M6–M7
+### M6 — systemd packaging + install flow — 7/7 (complete)
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `systemd/sporkd.service` unit file | ✅ | ✅ — tests 530–533 (drift-guarded against the runtime constant), plus PKGBUILD's own tests 560–565 |
+| `Type=notify`/`sd_notify` on ready | ✅ | ✅ — tests 516–522 (`spork.core.systemd.notify`, real `AF_UNIX SOCK_DGRAM` round trips), 558–559 (`run_daemon()` wiring) |
+| Install helper (`spork install-service`) | ✅ | ✅ — tests 534–542 (`install_service()`, 100% line coverage), 543–548 (CLI, including a real fake-`systemctl`-on-`$PATH` success path) |
+| README quickstart | ✅ | Not testable — prose, no test asserts README content (same as every prior README update in this repo's history) |
+| `spork doctor` checks unit install/enabled/active state | ✅ | ✅ — tests 523–529 (`check_unit_status()`, 100% line coverage), 553 (CLI) |
+| `spork doctor` wires in secrets/config/provider checks | ✅ | ✅ — tests 509–510 (`resolve_secretspec_path()`), 548–557 (CLI, 99% line coverage on `spork.cli.commands.doctor` — the one uncovered line is a local-classifier *success* branch genuinely unreachable today: no classifier backend is registered anywhere in this codebase yet) |
+| Arch Linux packaging (`PKGBUILD`) | ✅ | ✅ — tests 560–565 (syntax, required fields, unit-file install path, version match) — `makepkg -si` itself isn't run (no Arch tooling in this sandbox, confirmed) |
+
+`spork.core.systemd` (`notify.py`/`unit.py`/`template.py`/`install.py`)
+is four small, dependency-free modules — `notify()` hand-rolls the real
+`sd_notify(3)` wire protocol against the stdlib `socket` module rather
+than a new dependency, the same call `llm/clean.py`'s hand-rolled
+`HTMLParser` made. `check_unit_status()`'s "unknown" (not
+"inactive"/"disabled") treatment of a missing `systemctl` binary or an
+unreachable user session bus was verified against this project's own
+dev sandbox directly (`systemctl --user is-active` really does fail
+with "Failed to connect to bus" here), not assumed.
+
+`spork doctor`'s secrets check surfaced a real, empirically-confirmed
+gap between `docs/DESIGN.md` §7.3's assumption and SecretSpec 0.18.0's
+actual behavior: the Python SDK's `resolve()` resolves the *provider*
+from a separate, genuinely global `~/.config/secretspec/config.toml`
+(or `$XDG_CONFIG_HOME/secretspec/config.toml`) — the manifest's own
+`[providers]` table (what the separate `secretspec` CLI tool reads) is
+silently ignored by `resolve()` without an explicit `provider=`
+argument. `tests/cli/commands/test_doctor.py`'s "full setup" fixture
+writes both files now; `docs/DESIGN.md` §7.3 was updated to describe
+the real (colocated, `resolve_secretspec_path()`-resolved) manifest
+location, not the repo-root documentation copy.
+
+`spork doctor` itself is a deliberate exception to every other command
+in this codebase: it never stops at the first failure. Seven
+independent checks, each its own `[ok]`/`[FAIL]` line, exit 1 only
+once all seven have run and at least one failed — proven by a
+from-scratch environment failing every check cleanly (test 148) and a
+fully-configured one passing every check this milestone can actually
+make pass, leaving only JMAP connectivity (M1, genuinely blocked) and
+the never-installed systemd unit non-zero (test 552).
+
+### M7 — Hardening & v1 release
 
 No implementation, no tests. Not evaluated here — nothing to check yet.
 
 ---
 
-## Full test inventory (531 tests, all passing — 0 xfail)
+## Full test inventory (604 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -1356,10 +1414,11 @@ framework, §9.4)" further down for the modules themselves.
     `spork doctor --help` via subprocess. Asserts exit 0 and usage
     text.
 
-148. **`test_doctor.py::test_doctor_reports_a_clean_error_not_a_traceback`**
-    `spork doctor` with no live JMAP session available. Asserts exit
-    1, `"Error"` in stderr, no `"Traceback"` — the connectivity-check
-    `NotImplementedError` caught and reported cleanly.
+148. **`test_doctor.py::test_doctor_fails_every_check_cleanly_against_a_bare_environment`**
+    (M6 redesign — supersedes the single-check-era
+    `test_doctor_reports_a_clean_error_not_a_traceback`.) A bare
+    environment (no config/secretspec anywhere): secrets/config/JMAP
+    connectivity all `[FAIL]`, exit 1, no `"Traceback"` anywhere.
 
 149. **`test_doctor.py::test_doctor_appears_in_top_level_help`**
     `spork --help`. Asserts `"doctor"` is listed — confirms
@@ -2922,3 +2981,199 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
     The guard is a date-equality check against `now()`, not a boolean
     flag: a second exhausted-budget day fires again and re-stamps the
     date, with no explicit reset step anywhere.
+
+### M6 — systemd packaging + install flow
+
+509. **`core/config/test_paths.py::test_resolve_secretspec_path_uses_xdg_config_home_when_set`**
+    (parametrized, 8 path shapes) `XDG_CONFIG_HOME/spork/secretspec.toml`.
+
+510. **`core/config/test_paths.py::test_resolve_secretspec_path_falls_back_to_home_dot_config_when_unset`**
+    Same `$HOME/.config` fallback as `resolve_user_config_path()`.
+
+511. **`core/config/test_paths.py::test_resolve_user_unit_path_uses_xdg_config_home_when_set`**
+    (parametrized, 8 path shapes) `XDG_CONFIG_HOME/systemd/user/sporkd.service`
+    — systemd's own real user-unit search path, not a spork subdirectory.
+
+512. **`core/config/test_paths.py::test_resolve_user_unit_path_falls_back_to_home_dot_config_when_unset`**
+    Same `$HOME/.config` fallback, systemd's documented default.
+
+513. **`core/config/test_paths.py::test_resolve_user_unit_path_accepts_a_different_unit_name`**
+    `unit_name` is a parameter, not hardcoded to `"sporkd"`.
+
+514. **`core/config/test_paths_edge_cases.py::test_resolve_secretspec_path_treats_relative_or_empty_as_unset`**
+    (parametrized, 3 cases) Same "relative/empty counts as unset" rule
+    as every other resolver.
+
+515. **`core/config/test_paths_edge_cases.py::test_resolve_user_unit_path_treats_relative_or_empty_as_unset`**
+    (parametrized, 3 cases) Same rule.
+
+516. **`core/systemd/test_notify.py::test_notify_sends_the_given_state_to_notify_socket`**
+    A real `AF_UNIX SOCK_DGRAM` socket bound in `tmp_path`: `notify()`
+    sends the exact bytes, real wire protocol, no mock.
+
+517. **`core/systemd/test_notify.py::test_notify_returns_false_and_sends_nothing_when_notify_socket_is_unset`**
+    The common case (not running under `Type=notify`): a safe no-op.
+
+518. **`core/systemd/test_notify.py::test_notify_prefers_an_explicit_socket_path_over_the_environ`**
+    `socket_path` wins over `$NOTIFY_SOCKET` when both are given.
+
+519. **`core/systemd/test_notify.py::test_notify_supports_the_abstract_namespace_form`**
+    A leading `@` translates to the real `'\0'`-prefixed Linux
+    abstract-namespace address, bound and read back for real.
+
+520. **`core/systemd/test_notify_edge_cases.py::test_notify_reads_the_real_os_environ_by_default`**
+    No `environ` override: falls back to the real process environment.
+
+521. **`core/systemd/test_notify_edge_cases.py::test_notify_returns_false_when_the_socket_path_does_not_exist`**
+    A stale/never-created socket path returns `False`, never raises —
+    a best-effort readiness signal shouldn't crash `sporkd`'s startup.
+
+522. **`core/systemd/test_notify_edge_cases.py::test_notify_returns_false_when_the_state_is_empty`**
+    An empty state string is a no-op before the socket is even touched.
+
+523. **`core/systemd/test_unit.py::test_check_unit_status_reports_installed_enabled_active_when_all_good`**
+    The healthy case, via an injected fake `systemctl` runner.
+
+524. **`core/systemd/test_unit.py::test_check_unit_status_reports_not_installed_when_no_unit_file_exists`**
+    `installed` is a plain filesystem check, independent of `systemctl`.
+
+525. **`core/systemd/test_unit.py::test_check_unit_status_reports_unknown_when_systemctl_is_not_installed`**
+    No `systemctl` binary at all — reports `"unknown"`, never crashes.
+
+526. **`core/systemd/test_unit.py::test_check_unit_status_reports_unknown_when_the_user_bus_is_unreachable`**
+    "Failed to connect to bus" (confirmed real in this sandbox) is
+    `"unknown"`, not misreported as `"inactive"`/`"disabled"`.
+
+527. **`core/systemd/test_unit.py::test_check_unit_status_uses_the_given_unit_name`**
+    `unit_name` flows through to the actual `systemctl` invocation.
+
+528. **`core/systemd/test_unit_edge_cases.py::test_check_unit_status_default_unit_path_uses_resolve_user_unit_path`**
+    No `unit_path` override: `installed` reflects the real resolver.
+
+529. **`core/systemd/test_unit_edge_cases.py::test_check_unit_status_reports_unknown_on_a_timeout`**
+    `subprocess.TimeoutExpired` gets the same `"unknown"` treatment as
+    a missing binary (already covered — no code change needed).
+
+530. **`core/systemd/test_template.py::test_unit_file_content_matches_the_tracked_systemd_service_file`**
+    `UNIT_FILE_CONTENT` byte-matches the tracked `systemd/sporkd.service`
+    — the drift guard.
+
+531. **`core/systemd/test_template.py::test_unit_file_content_is_type_notify`**
+    `Type=notify` is present — `run_daemon()`'s `sd_notify` call means
+    something to `systemctl --user status` only if this holds.
+
+532. **`core/systemd/test_template.py::test_unit_file_content_restarts_on_failure`**
+    `Restart=on-failure` is present.
+
+533. **`core/systemd/test_template.py::test_unit_file_content_never_embeds_a_secret`**
+    No `token`/`api_key`/`password`/`secret=` marker anywhere in the
+    unit file content.
+
+534. **`core/systemd/test_install.py::test_install_service_writes_the_unit_file_content`**
+    Writes `UNIT_FILE_CONTENT` verbatim to `unit_path`.
+
+535. **`core/systemd/test_install.py::test_install_service_creates_missing_parent_directories`**
+    `~/.config/systemd/user/` doesn't exist on a fresh machine —
+    created, not failed on.
+
+536. **`core/systemd/test_install.py::test_install_service_returns_the_written_path`**
+
+537. **`core/systemd/test_install.py::test_install_service_runs_daemon_reload_and_enable_now_by_default`**
+    Both `systemctl` calls happen, via the injected runner.
+
+538. **`core/systemd/test_install.py::test_install_service_skips_enable_now_when_asked`**
+    `enable_now=False` still runs `daemon-reload`, skips `enable --now`.
+
+539. **`core/systemd/test_install.py::test_install_service_raises_when_systemctl_is_not_installed`**
+    Wrapped as `InstallServiceError`.
+
+540. **`core/systemd/test_install.py::test_install_service_raises_when_daemon_reload_fails`**
+    A `CalledProcessError` (e.g. "Failed to connect to bus") wrapped
+    as one `InstallServiceError`.
+
+541. **`core/systemd/test_install.py::test_install_service_uses_the_given_unit_name`**
+
+542. **`core/systemd/test_install_edge_cases.py::test_install_service_raises_when_the_unit_file_cannot_be_written`**
+    `unit_path`'s parent blocked by an existing regular file — a real
+    `NotADirectoryError`, wrapped before `systemctl` is ever touched.
+
+543. **`cli/commands/test_install_service.py::test_install_service_help_works`**
+
+544. **`cli/commands/test_install_service.py::test_install_service_appears_in_top_level_help`**
+
+545. **`cli/commands/test_install_service.py::test_install_service_writes_the_unit_file_even_when_systemctl_fails`**
+    The write happens before `daemon-reload` — a real, inspectable
+    unit file on disk even in this systemd-less sandbox.
+
+546. **`cli/commands/test_install_service.py::test_install_service_reports_a_clean_error_not_a_traceback`**
+    Real subprocess, real (bus-less) `systemctl` in this sandbox —
+    confirmed deterministic failure, not mocked. Exit 1, no traceback.
+
+547. **`cli/commands/test_install_service_edge_cases.py::test_install_service_reports_success_when_systemctl_succeeds`**
+    A fake `systemctl` script prepended onto `$PATH`: exit 0, both
+    success messages printed.
+
+548. **`cli/commands/test_install_service_edge_cases.py::test_install_service_no_enable_now_skips_the_enable_message`**
+    `--no-enable-now`'s different closing message.
+
+549. **`cli/commands/test_doctor.py::test_doctor_help_works`** (unchanged from the single-check era)
+
+550. **`cli/commands/test_doctor.py::test_doctor_appears_in_top_level_help`** (unchanged)
+
+551. **`cli/commands/test_doctor.py::test_doctor_skips_provider_rules_and_classifier_checks_when_config_fails`**
+    provider/rules/local-classifier report `"skipped — config failed
+    to load"`, not silently omitted or crashed on.
+
+552. **`cli/commands/test_doctor.py::test_doctor_passes_every_check_a_full_setup_can_pass`**
+    A fully valid config+secretspec setup (`env://` provider, plus the
+    separate *global* `~/.config/secretspec/config.toml` SecretSpec's
+    SDK actually reads the provider from — verified empirically):
+    secrets/config/provider/rules/local-classifier all `[ok]`, only
+    JMAP connectivity (M1) and the systemd unit (never installed here)
+    keep exit code 1.
+
+553. **`cli/commands/test_doctor.py::test_doctor_reports_systemd_unit_state`**
+    `"installed=False"` in an isolated `$XDG_CONFIG_HOME` that never
+    had `spork install-service` run against it.
+
+554. **`cli/commands/test_doctor_edge_cases.py::test_doctor_reports_provider_failure_when_the_spec_is_bad`**
+    A valid config naming an unloadable provider spec — `[FAIL]
+    provider`, `[ok] config`.
+
+555. **`cli/commands/test_doctor_edge_cases.py::test_doctor_reports_rules_failure_when_the_rules_file_is_missing`**
+    `[FAIL] rules`, `[ok] config`.
+
+556. **`cli/commands/test_doctor_edge_cases.py::test_doctor_reports_local_classifier_failure_when_unregistered`**
+    No classifier backend is registered anywhere in this codebase yet
+    (`classify/keyword.py` still planned, §9.1) — naming any
+    `local_classifier` is always `UnknownClassifierError` today.
+
+557. **`cli/commands/test_doctor_edge_cases.py::test_doctor_reports_local_classifier_ok_when_none_configured`**
+    The default (no `local_classifier` at all) is valid, not a failure.
+
+558. **`daemon/test_loop.py::test_run_daemon_signals_readiness_via_notify_fn`**
+    `run_daemon()` calls `notify_fn("READY=1")` once composition has
+    succeeded, proven via an injected stub.
+
+559. **`daemon/test_loop.py::test_run_daemon_signals_readiness_exactly_once`**
+    Not once per poll iteration — one "I'm up" per process lifetime.
+
+560. **`test_pkgbuild.py::test_pkgbuild_exists`**
+
+561. **`test_pkgbuild.py::test_pkgbuild_is_syntactically_valid_bash`**
+    `bash -n` — a real parse, not a guess. `makepkg`/`pacman` aren't
+    available in this sandbox (confirmed, Ubuntu) — same
+    can't-exercise-honestly-here situation as `JmapClient.connect()`,
+    for a shell script instead of a Python function.
+
+562. **`test_pkgbuild.py::test_pkgbuild_declares_the_fields_makepkg_requires`**
+    `pkgname`/`pkgver`/`pkgrel`/`arch`/`license`/`pkgdesc`.
+
+563. **`test_pkgbuild.py::test_pkgbuild_has_build_and_package_functions`**
+
+564. **`test_pkgbuild.py::test_pkgbuild_installs_the_tracked_systemd_unit_file`**
+    The same `systemd/sporkd.service` `spork install-service` embeds a
+    copy of — one unit definition, two install paths.
+
+565. **`test_pkgbuild.py::test_pkgbuild_pkgver_matches_pyproject`**
+    No drift between the Arch package version and `pyproject.toml`'s own.
