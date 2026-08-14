@@ -20,8 +20,9 @@ class BackendSpec(BaseModel):
     Matches `load_provider()`/`load_llm_client()`/`load_alerter()`'s
     "module.path:ClassName" convention exactly (§9.3/§10.1/§12.1) —
     `spec` is passed straight to whichever loader owns the field this
-    `BackendSpec` came from, `kwargs` straight to that backend's
-    constructor.
+    `BackendSpec` came from. `kwargs` contains ordinary constructor
+    values; `secret_kwargs` maps constructor arguments to SecretSpec
+    field names that runtime composition resolves only in memory.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -76,7 +77,8 @@ class SporkConfig(BaseModel):
 
     `provider`/`llm`/`alerts`/`rules_path`/`db_path` have no static
     default — every real deployment must specify them, across
-    whichever tier(s) it uses. `socket_path=None` means "not
+    whichever tier(s) it uses. `llm_recording=None` disables private
+    corpus recording. `socket_path=None` means "not
     overridden by any tier" — `spork.core.config.loader.load_config()`
     fills it in via `paths.resolve_socket_path()` when still `None`
     after merging all three tiers, so this schema itself never needs

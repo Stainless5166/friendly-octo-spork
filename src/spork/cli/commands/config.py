@@ -95,8 +95,9 @@ def _load_config_or_exit() -> SporkConfig:
 def show() -> None:
     """Print the fully-merged effective config (docs/DESIGN.md §13).
 
-    Credential-shaped `kwargs` values are redacted; every value the
-    enforced tier sets is flagged `(enforced)`.
+    Credential-shaped `kwargs` values are redacted; SecretSpec names
+    in `secret_kwargs` remain visible. Every value the enforced tier
+    sets is flagged `(enforced)`.
     """
     config = _load_config_or_exit()
     enforced_paths = enforced_override_paths()

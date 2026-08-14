@@ -2,8 +2,9 @@
 
 Unlike every other command in this codebase, `doctor` never stops at
 the first failure: it runs each of its checks independently — secrets
-(§7.3), config, provider, rules, the configured local classifier if
-any (§9.1/§9.3), JMAP connectivity, and the systemd unit's
+ (§7.3), config, provider, LLM client, alerter, rules, the configured
+local classifier if any (§9.1/§9.3), JMAP connectivity, and the
+systemd unit's
 install/enabled/active state (§14) — printing one `[ok]`/`[FAIL]` line
 per check, and only exits non-zero once all of them have run and at
 least one failed. "Tell me everything that's wrong" is the actual job
