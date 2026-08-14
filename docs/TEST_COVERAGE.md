@@ -210,7 +210,13 @@ builder, real per-call token usage, and an append-only private corpus
 recorder. LiteLLM is an optional runtime extra; tests inject the
 upstream completion callable and make no network calls. The changed
 LLM and Tier 2 modules have 100% line coverage. **M3 is now 8/8 and
-the full suite is 670 tests, all green.**
+the full suite is 670 tests, all green.** Updated once more for runtime
+backend composition: `BackendSpec.secret_kwargs` now maps constructor
+arguments to SecretSpec names, one resolved `Secrets` object feeds the
+provider/LLM/alerter builders used by daemon, doctor, and reclassify,
+and optional `[llm_recording]` configuration wraps the chosen client.
+The runtime module and changed config/daemon paths have 100% line
+coverage. **M5 is now 11/11 and the full suite is 684 tests, all green.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -528,11 +534,12 @@ built, doesn't thread Tier 1's correlation ID into `Tier2Meta`) — M7
 still separately owns `sporkd`'s overall structured logging setup and
 audit-trail completeness beyond triage outcomes.
 
-### M5 — CLI + daemon control surface — 10/10 (complete)
+### M5 — CLI + daemon control surface — 11/11 (complete)
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `spork.core.config` | ✅ | ✅ — tests 347–374 (28 numbered entries, 51 actual test cases — see note below), 100% line coverage |
+| Runtime backend composition | ✅ | ✅ — tests 626–639 (14 tests), 100% line coverage on `spork.core.runtime`, `spork.core.config.schema`, `spork.cli.commands.config`, `spork.cli.commands.reclassify`, and `spork.daemon.loop` |
 | Daemon event loop assembly | ✅ | ✅ — tests 375–383 (9 tests), 100% line coverage on `spork.daemon.loop` |
 | Wire Tier 2 into the daemon loop | ✅ | ✅ — tests 418–435 + 502 (19 tests), 100% line coverage on the touched `spork.core.providers.*`/`spork.daemon.loop` code |
 | IPC protocol + Unix socket server | ✅ | ✅ — tests 384–399 + 400–403 (20 tests), 99–100% line coverage on `spork.core.ipc` |
@@ -623,7 +630,7 @@ filter the already-returned list client-side; `--message-id` reuses
 | Install helper (`spork install-service`) | ✅ | ✅ — tests 534–542 (`install_service()`, 100% line coverage), 543–548 (CLI, including a real fake-`systemctl`-on-`$PATH` success path) |
 | README quickstart | ✅ | Not testable — prose, no test asserts README content (same as every prior README update in this repo's history) |
 | `spork doctor` checks unit install/enabled/active state | ✅ | ✅ — tests 523–529 (`check_unit_status()`, 100% line coverage), 553 (CLI) |
-| `spork doctor` wires in secrets/config/provider checks | ✅ | ✅ — tests 509–510 (`resolve_secretspec_path()`), 548–557 (CLI, 99% line coverage on `spork.cli.commands.doctor` — the one uncovered line is a local-classifier *success* branch genuinely unreachable today: no classifier backend is registered anywhere in this codebase yet) |
+| `spork doctor` wires in secrets/config/backend checks | ✅ | ✅ — tests 509–510 (`resolve_secretspec_path()`), 548–557 and 637–639 (CLI, including provider/LLM/alerter construction with mapped secrets) |
 | Arch Linux packaging (`PKGBUILD`) | ✅ | ✅ — tests 560–565 (syntax, required fields, unit-file install path, version match) — `makepkg -si` itself isn't run (no Arch tooling in this sandbox, confirmed) |
 
 `spork.core.systemd` (`notify.py`/`unit.py`/`template.py`/`install.py`)
@@ -706,7 +713,7 @@ declared names.
 
 ---
 
-## Full test inventory (670 tests, all passing — 0 xfail)
+## Full test inventory (684 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -3421,3 +3428,53 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
 625. **`core/pipeline/tier2/test_modules_edge_cases.py::test_record_llm_usage_filter_raises_when_call_usage_is_missing`**
     A timestamp cannot silently invent token counts when
     `CallLLMAugment` did not populate `meta.llm_usage`.
+
+### M5 runtime composition follow-up (tests 626–639)
+
+626. **`core/config/test_schema.py::test_backendspec_accepts_secret_name_mappings_separately_from_kwargs`**
+    Keeps SecretSpec field names separate from ordinary constructor
+    values.
+
+627. **`core/config/test_schema.py::test_backendspec_rejects_a_constructor_key_in_both_config_and_secrets`**
+    Rejects ambiguous constructor argument sources during validation.
+
+628. **`core/config/test_schema.py::test_sporkconfig_accepts_optional_llm_recording_configuration`**
+    Validates the private corpus path as top-level configuration.
+
+629. **`core/test_runtime.py::test_materialize_backend_kwargs_injects_values_without_mutating_config`**
+    Resolves mapped values into a fresh constructor dictionary; the
+    validated config still contains names, never resolved credentials.
+
+630. **`core/test_runtime.py::test_runtime_resolves_secret_spec_once_for_all_configured_backends`**
+    One resolution supplies every backend in a command invocation.
+
+631. **`core/test_runtime.py::test_runtime_builders_inject_secrets_and_wrap_llm_recording`**
+    Provider, LLM, and alerter receive mapped values, and an LLM call
+    writes the configured corpus file.
+
+632. **`daemon/test_loop.py::test_run_daemon_injects_mapped_secrets_and_records_the_live_llm_path`**
+    End-to-end daemon composition reaches Tier 2 using secret-mapped
+    file paths and records the successful verdict.
+
+633. **`core/test_runtime_edge_cases.py::test_runtime_skips_secretspec_when_no_backend_maps_a_secret`**
+    Existing secret-free configurations do not require a manifest.
+
+634. **`core/test_runtime_edge_cases.py::test_materialization_reports_an_unresolved_mapped_name_cleanly`**
+    A missing mapped name remains one catchable `SecretsError`.
+
+635. **`core/test_runtime_edge_cases.py::test_llm_builder_does_not_record_when_recording_is_unconfigured`**
+    Omitting `[llm_recording]` returns the configured client directly.
+
+636. **`cli/commands/test_config_edge_cases.py::test_format_show_lines_displays_secret_names_and_recording_path`**
+    Effective config output shows safe SecretSpec names and corpus
+    configuration without resolving credentials.
+
+637. **`cli/commands/test_doctor_edge_cases.py::test_doctor_injects_a_mapped_provider_secret`**
+    Doctor validates a real provider constructor using a resolved
+    SecretSpec mapping.
+
+638. **`cli/commands/test_doctor_edge_cases.py::test_doctor_reports_llm_failure_when_the_spec_is_bad`**
+    A bad LLM spec is an independent failed check, never a traceback.
+
+639. **`cli/commands/test_doctor_edge_cases.py::test_doctor_reports_alerter_failure_when_the_spec_is_bad`**
+    A bad alerter spec is likewise reported cleanly and independently.

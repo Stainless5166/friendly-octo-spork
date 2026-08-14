@@ -24,7 +24,8 @@ from pathlib import Path
 
 import pytest
 
-from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
+from spork.core.config.schema import BackendSpec, LLMRecordingConfig, SporkConfig, TieringConfig
+from spork.core.secrets import Secrets
 from spork.core.state.db import StateDB
 from spork.daemon.loop import run_daemon
 
@@ -196,6 +197,45 @@ def test_run_daemon_runs_an_escalated_message_through_tier2(tmp_path: Path) -> N
     ).fetchone()
     conn.close()
     assert row == ("tier2", "ignore")
+
+
+def test_run_daemon_injects_mapped_secrets_and_records_the_live_llm_path(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    messages_path = Path(config.provider.kwargs["messages_path"])
+    responses_path = Path(config.llm.kwargs["responses_path"])
+    corpus_path = tmp_path / "corpus" / "live.jsonl"
+    config = config.model_copy(
+        update={
+            "provider": config.provider.model_copy(
+                update={
+                    "kwargs": {"actions_log_path": config.provider.kwargs["actions_log_path"]},
+                    "secret_kwargs": {"messages_path": "MESSAGES_PATH"},
+                }
+            ),
+            "llm": config.llm.model_copy(
+                update={
+                    "kwargs": {},
+                    "secret_kwargs": {"responses_path": "RESPONSES_PATH"},
+                }
+            ),
+            "llm_recording": LLMRecordingConfig(corpus_path=corpus_path),
+        }
+    )
+
+    asyncio.run(
+        _run_briefly(
+            config,
+            secrets=Secrets(
+                {
+                    "MESSAGES_PATH": str(messages_path),
+                    "RESPONSES_PATH": str(responses_path),
+                }
+            ),
+        )
+    )
+
+    entries = [json.loads(line) for line in corpus_path.read_text().splitlines()]
+    assert [entry["subject"] for entry in entries] == ["Urgent"]
 
 
 def _write_two_escalating_messages(path: Path) -> None:

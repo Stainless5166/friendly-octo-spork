@@ -15,20 +15,27 @@ from datetime import UTC, datetime
 import typer
 
 from spork.core.actions.executor import ActionExecutor
-from spork.core.alerts.loader import AlerterLoadError, load_alerter
+from spork.core.alerts.loader import AlerterLoadError
 from spork.core.classify import registry as classify_registry
 from spork.core.classify.base import TextClassifier
 from spork.core.classify.registry import UnknownClassifierError
 from spork.core.config.loader import ConfigLoadError, load_config
 from spork.core.config.schema import SporkConfig
-from spork.core.llm.loader import LLMClientLoadError, load_llm_client
+from spork.core.llm.loader import LLMClientLoadError
 from spork.core.pipeline import process_message
 from spork.core.pipeline.observer import PipelineObserver
 from spork.core.pipeline.tier2.escalate import escalate_message
 from spork.core.providers.base import MessageNotFoundError
-from spork.core.providers.loader import ProviderLoadError, load_provider
+from spork.core.providers.loader import ProviderLoadError
 from spork.core.rules.loader import RulesLoadError, load_rules
 from spork.core.rules.schema import Action
+from spork.core.runtime import (
+    build_alerter,
+    build_llm_client,
+    build_provider,
+    resolve_runtime_secrets,
+)
+from spork.core.secrets import SecretsError
 from spork.core.state.db import StateDB
 
 # Every load-error type this command's own calls (load_provider(),
@@ -44,6 +51,7 @@ _LoadError = (
     UnknownClassifierError,
     AlerterLoadError,
     LLMClientLoadError,
+    SecretsError,
 )
 
 
@@ -76,11 +84,12 @@ def reclassify(
 
 
 def _reclassify(message_id: str, config: SporkConfig) -> None:
-    provider = load_provider(config.provider.spec, **config.provider.kwargs)
+    secrets = resolve_runtime_secrets(config, reason="reclassify message")
+    provider = build_provider(config, secrets)
     message = provider.build_message_lookup().get_message(message_id)
 
     executor = ActionExecutor(provider.build_action_applier())
-    ops = PipelineObserver(load_alerter(config.alerts.spec, **config.alerts.kwargs))
+    ops = PipelineObserver(build_alerter(config, secrets))
     rules = load_rules(config.rules_path)
     classifier: TextClassifier | None = (
         classify_registry.get(config.tiering.local_classifier)
@@ -119,7 +128,7 @@ def _reclassify(message_id: str, config: SporkConfig) -> None:
             message,
             thread_history_reader=provider.build_thread_history_reader(),
             mailbox_lister=provider.build_mailbox_lister(),
-            llm_client=load_llm_client(config.llm.spec, **config.llm.kwargs),
+            llm_client=build_llm_client(config, secrets),
             executor=executor,
             draft_creator=provider.build_draft_creator(),
             state_db=state_db,

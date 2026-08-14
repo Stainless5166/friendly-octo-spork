@@ -71,6 +71,11 @@ def _format_show_lines(config: SporkConfig, enforced_paths: set[str]) -> list[st
         for key, value in spec.kwargs.items():
             display = "<redacted>" if _looks_like_secret(key) else value
             _add(f"{section}.kwargs.{key}", display)
+        for key, value in spec.secret_kwargs.items():
+            _add(f"{section}.secret_kwargs.{key}", value)
+
+    if config.llm_recording is not None:
+        _add("llm_recording.corpus_path", config.llm_recording.corpus_path)
 
     for field in TieringConfig.model_fields:
         _add(f"tiering.{field}", getattr(config.tiering, field))
@@ -90,8 +95,9 @@ def _load_config_or_exit() -> SporkConfig:
 def show() -> None:
     """Print the fully-merged effective config (docs/DESIGN.md §13).
 
-    Credential-shaped `kwargs` values are redacted; every value the
-    enforced tier sets is flagged `(enforced)`.
+    Credential-shaped `kwargs` values are redacted; SecretSpec names
+    in `secret_kwargs` remain visible. Every value the enforced tier
+    sets is flagged `(enforced)`.
     """
     config = _load_config_or_exit()
     enforced_paths = enforced_override_paths()

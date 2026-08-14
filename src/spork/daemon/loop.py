@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any
 
 from spork.core.actions.executor import ActionExecutor
-from spork.core.alerts.loader import load_alerter
 from spork.core.classify import registry as classify_registry
 from spork.core.classify.base import TextClassifier
 from spork.core.config.paths import resolve_socket_path
@@ -26,14 +25,19 @@ from spork.core.config.schema import SporkConfig, TieringConfig
 from spork.core.ipc.server import IpcServer
 from spork.core.llm.base import LLMClient
 from spork.core.llm.budget import has_budget_remaining
-from spork.core.llm.loader import load_llm_client
 from spork.core.pipeline import process_message
 from spork.core.pipeline.observer import PipelineObserver
 from spork.core.pipeline.tier2.escalate import escalate_message
 from spork.core.providers.base import DraftCreator, MailboxLister, ThreadHistoryReader
-from spork.core.providers.loader import load_provider
 from spork.core.rules.loader import load_rules
 from spork.core.rules.schema import Action
+from spork.core.runtime import (
+    build_alerter,
+    build_llm_client,
+    build_provider,
+    resolve_runtime_secrets,
+)
+from spork.core.secrets import Secrets
 from spork.core.sources.base import Source
 from spork.core.state.db import StateDB
 from spork.core.systemd.notify import notify
@@ -54,6 +58,7 @@ async def run_daemon(
     daemon_state: DaemonState | None = None,
     idle_delay_seconds: float = 1.0,
     notify_fn: Callable[[str], bool] = notify,
+    secrets: Secrets | None = None,
 ) -> None:
     """Compose `config` into a running Tier 1+2 daemon loop + IPC server.
 
@@ -71,7 +76,10 @@ async def run_daemon(
     daemon_state = daemon_state if daemon_state is not None else DaemonState()
     daemon_state.started_at = datetime.now(UTC).isoformat()
 
-    provider = load_provider(config.provider.spec, **config.provider.kwargs)
+    runtime_secrets = (
+        secrets if secrets is not None else resolve_runtime_secrets(config, reason="start sporkd")
+    )
+    provider = build_provider(config, runtime_secrets)
     source = provider.build_source()
     executor = ActionExecutor(provider.build_action_applier())
     draft_creator = provider.build_draft_creator()
@@ -84,9 +92,9 @@ async def run_daemon(
     # of what else in config is or isn't configured.
     rules_state = RulesState(rules=load_rules(config.rules_path))
 
-    llm_client = load_llm_client(config.llm.spec, **config.llm.kwargs)
+    llm_client = build_llm_client(config, runtime_secrets)
 
-    alerter = load_alerter(config.alerts.spec, **config.alerts.kwargs)
+    alerter = build_alerter(config, runtime_secrets)
     ops = PipelineObserver(alerter)
 
     classifier: TextClassifier | None = (
