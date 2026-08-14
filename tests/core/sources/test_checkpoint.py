@@ -7,6 +7,9 @@ from spork.core.sources.base import CheckpointedSource, MessageBatch
 
 
 class _FixtureCheckpointedSource:
+    def poll(self) -> Sequence[NormalizedMessage]:
+        return self.poll_batch().messages
+
     def poll_batch(self) -> MessageBatch:
         return MessageBatch(messages=(), checkpoint="state-1")
 

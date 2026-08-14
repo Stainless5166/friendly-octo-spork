@@ -24,15 +24,15 @@ from spork.core.actions.executor import ActionExecutor
 from spork.core.alerts.base import AlertUrgency
 from spork.core.alerts.log import LoggingAlerter
 from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
-from spork.core.llm.base import Verdict, VerdictRequest
+from spork.core.llm.base import LLMResult, VerdictRequest
 from spork.core.llm.clients.recorded import UnrecordedResponseError
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline.observer import PipelineObserver
 from spork.core.providers.base import ThreadContext
 from spork.core.rules.loader import RulesLoadError
 from spork.core.rules.schema import Action, Condition, Rule
+from spork.core.sources.base import CheckpointedSource, MessageBatch
 from spork.core.state.db import StateDB
-from spork.core.sources.base import MessageBatch
 from spork.daemon.loop import _check_daily_budget_alert, _run_message_loop, run_daemon
 from spork.daemon.state import DaemonState, RulesState
 
@@ -42,7 +42,7 @@ class _UnusedLLMClient:
     rules that only ever produce a terminal action, never "escalate",
     so Tier 2 should never be reached."""
 
-    def get_verdict(self, request: VerdictRequest) -> Verdict:
+    def get_verdict(self, request: VerdictRequest) -> LLMResult:
         raise AssertionError("get_verdict() should not be called in this test")
 
 
@@ -146,6 +146,9 @@ class _CheckpointSource:
         self._stop_event.set()
         return MessageBatch(messages=(), checkpoint="state-2")
 
+    def poll(self) -> Sequence[NormalizedMessage]:
+        return self.poll_batch().messages
+
 
 class _FailingApplier:
     def apply(self, message: NormalizedMessage, action: Action) -> None:
@@ -153,7 +156,7 @@ class _FailingApplier:
 
 
 async def _run_checkpoint_loop(
-    source: object,
+    source: CheckpointedSource,
     state_db: StateDB,
     stop_event: asyncio.Event,
     *,
@@ -162,7 +165,9 @@ async def _run_checkpoint_loop(
     await _run_message_loop(
         source=source,
         rules_state=RulesState(
-            rules=[Rule(id="r1", when=Condition(always=True), action=Action(type="tag", mailbox="X"))]
+            rules=[
+                Rule(id="r1", when=Condition(always=True), action=Action(type="tag", mailbox="X"))
+            ]
         ),
         default_unmatched_action=Action(type="escalate"),
         executor=executor,
