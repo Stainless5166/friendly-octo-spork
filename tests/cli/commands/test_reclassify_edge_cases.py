@@ -100,6 +100,161 @@ def _env(tmp_path: Path) -> dict[str, str]:
     return env
 
 
+def _write_minimal_config(config_dir: Path, tmp_path: Path, *, llm_spec: str) -> None:
+    """A config with one known-good message and a catch-all escalate
+    rule, but a caller-supplied llm spec — for exercising a bad
+    llm.spec cleanly, independent of _write_config's fixed-good one."""
+    config_dir.mkdir(parents=True, exist_ok=True)
+    messages_path = tmp_path / "messages.json"
+    messages_path.write_text(
+        json.dumps(
+            [
+                {
+                    "message_id": "msg-1",
+                    "thread_id": "thread-1",
+                    "from_address": "a@example.com",
+                    "from_domain": "example.com",
+                    "subject": "s",
+                    "body_text": "b",
+                }
+            ]
+        )
+    )
+    rules_path = tmp_path / "rules.toml"
+    rules_path.write_text(
+        """
+        [[rule]]
+        id = "catch-all"
+        when = { always = true }
+        action = { type = "escalate" }
+        """
+    )
+    (config_dir / "config.toml").write_text(
+        f"""
+        rules_path = "{rules_path}"
+        db_path = "{tmp_path / "state.sqlite3"}"
+        socket_path = "{tmp_path / "sporkd.sock"}"
+
+        [provider]
+        spec = "spork.core.providers.file.provider:FileProvider"
+        [provider.kwargs]
+        messages_path = "{messages_path}"
+        actions_log_path = "{tmp_path / "actions.jsonl"}"
+
+        [llm]
+        spec = "{llm_spec}"
+
+        [alerts]
+        spec = "spork.core.alerts.log:LoggingAlerter"
+        """
+    )
+
+
+def test_reclassify_with_an_unloadable_provider_spec_reports_a_clean_error(tmp_path: Path) -> None:
+    """load_provider() is called with no exception handling around it
+    today — a bad provider.spec must still fail cleanly, same
+    convention as every other load error in this CLI."""
+    env = _env(tmp_path)
+    config_dir = tmp_path / "xdg-config-home" / "spork"
+    config_dir.mkdir(parents=True)
+    rules_path = tmp_path / "rules.toml"
+    rules_path.write_text("")
+    (config_dir / "config.toml").write_text(
+        f"""
+        rules_path = "{rules_path}"
+        db_path = "{tmp_path / "state.sqlite3"}"
+        socket_path = "{tmp_path / "sporkd.sock"}"
+
+        [provider]
+        spec = "no.such.module:NoSuchClass"
+
+        [llm]
+        spec = "spork.core.llm.clients.recorded:RecordedLLMClient"
+        [llm.kwargs]
+        responses_path = "{tmp_path / "responses.json"}"
+
+        [alerts]
+        spec = "spork.core.alerts.log:LoggingAlerter"
+        """
+    )
+    (tmp_path / "responses.json").write_text("{}")
+
+    result = _run("msg-1", env=env)
+
+    assert result.returncode == 1
+    assert "Error:" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_reclassify_with_an_unloadable_rules_file_reports_a_clean_error(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    config_dir = tmp_path / "xdg-config-home" / "spork"
+    config_dir.mkdir(parents=True)
+    messages_path = tmp_path / "messages.json"
+    messages_path.write_text(
+        json.dumps(
+            [
+                {
+                    "message_id": "msg-1",
+                    "thread_id": "thread-1",
+                    "from_address": "a@example.com",
+                    "from_domain": "example.com",
+                    "subject": "s",
+                    "body_text": "b",
+                }
+            ]
+        )
+    )
+    rules_path = tmp_path / "rules.toml"
+    rules_path.write_text("this is not [ valid toml")
+    (config_dir / "config.toml").write_text(
+        f"""
+        rules_path = "{rules_path}"
+        db_path = "{tmp_path / "state.sqlite3"}"
+        socket_path = "{tmp_path / "sporkd.sock"}"
+
+        [provider]
+        spec = "spork.core.providers.file.provider:FileProvider"
+        [provider.kwargs]
+        messages_path = "{messages_path}"
+        actions_log_path = "{tmp_path / "actions.jsonl"}"
+
+        [llm]
+        spec = "spork.core.llm.clients.recorded:RecordedLLMClient"
+        [llm.kwargs]
+        responses_path = "{tmp_path / "responses.json"}"
+
+        [alerts]
+        spec = "spork.core.alerts.log:LoggingAlerter"
+        """
+    )
+    (tmp_path / "responses.json").write_text("{}")
+
+    result = _run("msg-1", env=env)
+
+    assert result.returncode == 1
+    assert "Error:" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_reclassify_with_an_unloadable_llm_spec_reports_a_clean_error_only_when_it_escalates(
+    tmp_path: Path,
+) -> None:
+    """load_llm_client() is only called after Tier 1 escalates — a bad
+    llm.spec must still fail cleanly at that point, not with a raw
+    traceback."""
+    env = _env(tmp_path)
+    _write_minimal_config(
+        tmp_path / "xdg-config-home" / "spork", tmp_path, llm_spec="no.such.module:NoSuchClass"
+    )
+
+    result = _run("msg-1", env=env)
+
+    assert result.returncode == 1
+    assert "Error:" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_reclassify_help_lists_the_message_id_argument() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "spork.cli.main", "reclassify", "--help"],

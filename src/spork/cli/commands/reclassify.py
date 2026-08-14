@@ -12,19 +12,36 @@ from __future__ import annotations
 import typer
 
 from spork.core.actions.executor import ActionExecutor
-from spork.core.alerts.loader import load_alerter
+from spork.core.alerts.loader import AlerterLoadError, load_alerter
 from spork.core.classify import registry as classify_registry
 from spork.core.classify.base import TextClassifier
+from spork.core.classify.registry import UnknownClassifierError
 from spork.core.config.loader import ConfigLoadError, load_config
-from spork.core.llm.loader import load_llm_client
+from spork.core.config.schema import SporkConfig
+from spork.core.llm.loader import LLMClientLoadError, load_llm_client
 from spork.core.pipeline import process_message
 from spork.core.pipeline.observer import PipelineObserver
 from spork.core.pipeline.tier2.escalate import escalate_message
 from spork.core.providers.base import MessageNotFoundError
-from spork.core.providers.loader import load_provider
-from spork.core.rules.loader import load_rules
+from spork.core.providers.loader import ProviderLoadError, load_provider
+from spork.core.rules.loader import RulesLoadError, load_rules
 from spork.core.rules.schema import Action
 from spork.core.state.db import StateDB
+
+# Every load-error type this command's own calls (load_provider(),
+# load_rules(), classify_registry.get(), load_alerter(),
+# load_llm_client()) can raise — one catchable tuple, same "clean CLI
+# error, never a raw traceback" convention every command in this CLI
+# follows (mirrors spork.daemon.main's tuple, minus ConfigLoadError,
+# which is caught separately below since it can fail before any of
+# these are even reachable).
+_LoadError = (
+    ProviderLoadError,
+    RulesLoadError,
+    UnknownClassifierError,
+    AlerterLoadError,
+    LLMClientLoadError,
+)
 
 
 def reclassify(
@@ -44,12 +61,20 @@ def reclassify(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
-    provider = load_provider(config.provider.spec, **config.provider.kwargs)
+    # Every load-error/lookup-error this command can raise after
+    # config is in hand, caught in one place — same "clean CLI error,
+    # never a raw traceback" convention every command in this CLI
+    # follows, not just the config-load step.
     try:
-        message = provider.build_message_lookup().get_message(message_id)
-    except MessageNotFoundError as exc:
+        _reclassify(message_id, config)
+    except (*_LoadError, MessageNotFoundError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+
+
+def _reclassify(message_id: str, config: SporkConfig) -> None:
+    provider = load_provider(config.provider.spec, **config.provider.kwargs)
+    message = provider.build_message_lookup().get_message(message_id)
 
     executor = ActionExecutor(provider.build_action_applier())
     ops = PipelineObserver(load_alerter(config.alerts.spec, **config.alerts.kwargs))
