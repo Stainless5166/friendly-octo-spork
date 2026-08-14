@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from spork.core.secrets import SecretsError, resolve_secrets
+from spork.core.secrets import Secrets, SecretsError, resolve_secrets
 
 
 def test_resolve_secrets_wraps_malformed_toml_as_secrets_error(tmp_path: Path) -> None:
@@ -50,3 +50,15 @@ def test_resolve_secrets_respects_the_given_profile(
     # there) — succeeding here proves profile="development" was
     # actually forwarded, not silently ignored.
     resolve_secrets(manifest, provider="env://", reason="test", profile="development")
+
+
+def test_secrets_repr_never_exposes_resolved_values() -> None:
+    """docs/DESIGN.md §15's security review (M7): a plain dataclass
+    repr would print every resolved secret's real value verbatim —
+    a real leak risk if a Secrets instance ever ends up in an
+    uncaught-exception traceback's local-variable dump, a debug log
+    line, or a stray print(). repr() must never show the values,
+    regardless of what get() legitimately returns."""
+    secrets = Secrets({"JMAP_API_TOKEN": "super-secret-value-12345"})
+
+    assert "super-secret-value-12345" not in repr(secrets)
