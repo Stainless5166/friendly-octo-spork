@@ -1,47 +1,75 @@
-"""EventSource push listener (docs/DESIGN.md §6.2 step 3, §8).
-
-`JmapPushTrigger` satisfies `spork.core.sources.base.Trigger`
-structurally, so it plugs into `TriggeredSource` exactly like
-`ImmediateTrigger` or `IntervalTimer`. Its `wait()` would block on a
-live JMAP EventSource connection — real-network work this environment
-can't exercise honestly, so it's deliberately NotImplementedError-
-stubbed for the same reason as `spork.core.providers.jmap.client.JmapClient` (see
-that module's docstring). Reconnect/backoff *scheduling* is already
-implemented and tested separately (`spork.core.providers.jmap.backoff`); what's
-missing here is the actual listen loop that scheduling would drive.
-"""
+"""EventSource push listener and transient reconnect boundary (§6.2, §8)."""
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Sequence
+from time import sleep as default_sleep
+
+from spork.core.providers.jmap.backoff import next_delay
 from spork.core.providers.jmap.client import JmapClient
 
 
-class JmapPushTrigger:
-    """A Trigger that blocks on a live JMAP EventSource connection.
+class JmapPushDisconnectedError(Exception):
+    """A transient EventSource failure that should activate polling fallback."""
 
-    Design gap, stated rather than silently missing (docs/DESIGN.md
-    §12.2/§12.3): M4's "daemon health" alert triggers include "JMAP
-    push disconnected > N minutes," and this class is exactly where
-    that timer would live — `wait()` is the one call already on the
-    hook for noticing a stalled connection. It stays undesigned for
-    the same reason `wait()` itself is a stub: there's no live
-    EventSource here to time out on, so a disconnect-timer design
-    would be inventing a shape against nothing real to validate it
-    against (same "don't fake what isn't there" principle CLAUDE.md
-    states directly). Once `wait()` is real, the likely shape is a
-    last-event timestamp checked against a deadline on each reconnect
-    attempt, firing through the same `PipelineObserver`/`Alerter` path
-    `_check_daily_budget_alert()` (`spork.daemon.loop`, §12.3) already
-    uses for the sibling daemon-health signal that *could* be built
-    honestly — not a new alerting mechanism, just a new caller of the
-    existing one, once there's something real for it to observe.
+
+class JmapPushTrigger:
+    """Block until a relevant account event, retrying with explicit backoff.
+
+    `events_factory`/`sleep` are injectable for recorded contract tests;
+    production uses the client's jmapc stream and `time.sleep`. The
+    trigger owns retry timing but not fallback selection or durable
+    cursor state.
     """
 
-    def __init__(self, client: JmapClient) -> None:
+    def __init__(
+        self,
+        client: JmapClient,
+        *,
+        account_id: str | None = None,
+        events_factory: Callable[[], Iterable[object]] | None = None,
+        sleep: Callable[[float], None] = default_sleep,
+        reconnect_backoff: Sequence[float] = (2.0, 5.0, 15.0, 60.0, 300.0),
+    ) -> None:
         self._client = client
+        self._account_id = account_id
+        self._events_factory = events_factory if events_factory is not None else client.event_stream
+        self._sleep = sleep
+        self._reconnect_backoff = tuple(reconnect_backoff)
+        self._attempt = 0
 
     def wait(self) -> None:
-        raise NotImplementedError(
-            "JmapPushTrigger.wait() requires a live JMAP EventSource connection — "
-            "not implemented yet, see docs/ROADMAP.md M1"
+        """Consume events until the configured account has mail activity."""
+        try:
+            for event in self._events_factory():
+                if self._is_relevant(event):
+                    self._attempt = 0
+                    return
+        except Exception as exc:
+            self._disconnect(str(exc))
+        self._disconnect("EventSource ended")
+
+    def _disconnect(self, reason: str) -> None:
+        """Delay one retry, then hand transient failure to fallback."""
+        try:
+            delay = next_delay(self._reconnect_backoff, self._attempt)
+        except ValueError as exc:
+            raise JmapPushDisconnectedError(str(exc)) from exc
+        self._sleep(delay)
+        self._attempt += 1
+        raise JmapPushDisconnectedError(reason)
+
+    def _is_relevant(self, event: object) -> bool:
+        """Accept only Email or EmailDelivery state for this account."""
+        data = getattr(event, "data", None)
+        changed = getattr(data, "changed", None)
+        if not isinstance(changed, dict):
+            return False
+        account_id = self._account_id if self._account_id is not None else self._client.account_id
+        state = changed.get(account_id)
+        if state is None:
+            return False
+        return (
+            getattr(state, "email", None) is not None
+            or getattr(state, "email_delivery", None) is not None
         )

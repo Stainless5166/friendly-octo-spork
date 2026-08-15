@@ -222,6 +222,10 @@ Updated once more for cursor-safe daemon acknowledgement:
 and the daemon persists it only after a complete batch passes. Empty
 batches advance; processing failures, shutdown, and restart replay
 preserve the prior state. **The full suite is 713 tests, all green.**
+Updated once more for JMAP EventSource: the trigger now filters account
+and mail state events, retries after transient stream failures using the
+configured backoff, and composes with a checkpoint-preserving polling
+fallback. **The full suite is 726 tests, all green.**
 Updated once more for the first live JMAP leaf: `JmapClient.connect()`
 and `fetch_new_messages()` now authenticate through optional `jmapc`,
 baseline current Email state, page `Email/changes`, normalize Inbox
@@ -309,7 +313,7 @@ verified).
 | `jmap.client` session bootstrap (`jmapc`) | ✅ | ✅ — tests 49–50, 640–651; 100% line coverage plus a live Fastmail session/baseline check |
 | Mailbox role resolution + caching | ✅ | ✅ — tests 20–26 (7 tests) |
 | `Email/changes`+`Email/get` batched fetch | ✅ client leaf + cursor-safe daemon acknowledgement | ✅ — tests 50, 640–651, 656–660 |
-| EventSource push listener + backoff | 🟡 stub (listener) / ✅ (backoff math) | ✅ (that it raises) — tests 51, 52 / ✅ (math) — tests 16–19 |
+| EventSource push listener + backoff | ✅ implementation; live acceptance open | ✅ — tests 51–52, 665–673; backoff math tests 16–19 |
 | Poll-based fallback | ✅ (real, network-free) | ✅ — tests 53–61 (9 tests) |
 | State DB (`push_cursor`, `processed_messages`) | ✅ | ✅ — tests 62–71 (10 tests) |
 | Cursor-safe daemon acknowledgement | ✅ | ✅ — tests 652–660; candidate state is written only after a complete batch succeeds |
@@ -727,7 +731,7 @@ declared names.
 
 ---
 
-## Full test inventory (714 tests, all passing — 0 xfail)
+## Full test inventory (726 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -1043,11 +1047,11 @@ see each section heading). These pick back up at 72.
     exits cleanly rather than falling through to the daemon loop's
     `NotImplementedError`.
 
-### tests/core/providers/jmap — live reads + remaining stubs (M1)
+### tests/core/providers/jmap — live reads, push, and remaining stubs (M1)
 
-The read-side client tests are now real and network-free through an
-injected jmapc-shaped client. Push and mutation-side tests still pass
-normally by asserting their settled `NotImplementedError` behavior.
+The read-side client and push tests are real and network-free through
+injected jmapc-shaped clients and event streams. Mutation-side tests still
+pass normally by asserting their settled `NotImplementedError` behavior.
 
 49. **`test_client.py::test_connect_authenticates_once_and_exposes_the_primary_account`**
     Authenticates once despite two `connect()` calls, resolves the Inbox
@@ -1057,18 +1061,11 @@ normally by asserting their settled `NotImplementedError` behavior.
     `since_cursor=None` requests no Email objects and returns the current
     state with an empty batch, preventing an implicit historical replay.
 
-51. **`test_push.py::test_wait_raises_not_implemented`**
-    Constructs `JmapPushTrigger(client)` and calls `wait()` directly.
-    Asserts `NotImplementedError`.
+51. **`test_push.py::test_wait_returns_for_a_relevant_email_event`**
+    A relevant Email state event wakes the trigger.
 
-52. **`test_push.py::test_composes_into_triggered_source_like_any_other_trigger`**
-    Wires a `JmapPushTrigger` into a real `TriggeredSource` alongside a
-    fetcher that would raise `AssertionError` if ever called. Asserts
-    calling `source.poll()` raises `NotImplementedError` (from
-    `wait()`, before the fetcher runs), proving `JmapPushTrigger`
-    satisfies the `Trigger` contract structurally — it plugs into the
-    M1a machinery exactly like `ImmediateTrigger`/`IntervalTimer` do,
-    even though its own behavior isn't implemented yet.
+52. **`test_push.py::test_wait_ignores_other_accounts_and_unrelated_events`**
+    Events for another account and unrelated state types are ignored.
 
 ### tests/core/sources — timer + fallback (M1)
 
@@ -3564,3 +3561,43 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
 661. **`core/providers/jmap/test_provider.py::test_provider_builds_a_checkpointed_source_and_exposes_account_id`**
     Covers the provider capability used by daemon composition to load the
     account cursor before readiness.
+
+### M1 EventSource and polling fallback follow-up (tests 662–673)
+
+662. **`core/providers/jmap/test_client_edge_cases.py::test_default_factory_configures_mail_event_types`**
+    The production jmapc factory requests Email and EmailDelivery events.
+
+663. **`core/providers/jmap/test_client_edge_cases.py::test_event_stream_connects_once_and_returns_the_backend_stream`**
+    Event stream access reuses one authenticated JMAP session.
+
+664. **`core/providers/jmap/test_client_edge_cases.py::test_event_stream_wraps_backend_stream_failures`**
+    EventSource opening failures remain inside `JmapError`.
+
+665. **`core/providers/jmap/test_push.py::test_wait_sleeps_using_backoff_and_reports_a_disconnect`**
+    Stream failure uses the first configured delay before handing control
+    to fallback.
+
+666. **`core/providers/jmap/test_push.py::test_next_wait_retries_push_and_resets_backoff_after_recovery`**
+    The next poll retries push and a relevant event resets the attempt
+    counter.
+
+667. **`core/providers/jmap/test_push.py::test_wait_rejects_an_empty_reconnect_schedule`**
+    Invalid retry configuration fails through the push boundary.
+
+668. **`core/providers/jmap/test_push.py::test_wait_ignores_events_with_malformed_state_data`**
+    Malformed event data is ignored until a relevant event arrives.
+
+669. **`core/sources/test_checkpoint_fallback.py::test_checkpoint_fallback_uses_polling_after_push_disconnect`**
+    A transient push failure returns the polling source's candidate batch.
+
+670. **`core/sources/test_checkpoint_fallback.py::test_checkpoint_fallback_retries_push_on_the_next_poll`**
+    Fallback does not latch permanently; recovered push is tried again.
+
+671. **`core/sources/test_checkpoint_fallback.py::test_checkpoint_fallback_does_not_hide_unconfigured_failures`**
+    Failures outside the configured transient set propagate.
+
+672. **`core/sources/test_checkpoint_fallback.py::test_checkpoint_fallback_exposes_the_plain_source_view`**
+    Checkpoint fallback remains usable through the ordinary Source method.
+
+673. **`core/sources/test_checkpoint_fallback.py::test_checkpoint_fallback_propagates_secondary_failures`**
+    Polling failures are not hidden after push has already disconnected.

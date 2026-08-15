@@ -8,7 +8,7 @@ recorded Fastmail contracts land.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Protocol, cast
@@ -36,6 +36,9 @@ class _JmapcClient(Protocol):
     account_id: str
     jmap_session: Any
 
+    @property
+    def events(self) -> Iterable[object]: ...
+
     def request(self, method: object, *, raise_errors: bool = False) -> object: ...
 
 
@@ -45,14 +48,21 @@ ClientFactory = Callable[[str, str], _JmapcClient]
 def _default_client_factory(host: str, api_token: str) -> _JmapcClient:
     """Import jmapc only when the dynamically selected provider needs it."""
     try:
-        client_class = import_module("jmapc").Client
+        jmapc = import_module("jmapc")
+        client_class = jmapc.Client
     except ImportError as exc:
         raise JmapError(
             "JMAP support requires the optional dependency: install spork[jmap]"
         ) from exc
+    options: dict[str, object] = {}
+    event_source_config = getattr(jmapc, "EventSourceConfig", None)
+    if event_source_config is not None:
+        options["event_source_config"] = event_source_config(
+            types="EmailDelivery,Email", closeafter="no", ping=30
+        )
     return cast(
         _JmapcClient,
-        client_class.create_with_api_token(host=host, api_token=api_token),
+        client_class.create_with_api_token(host=host, api_token=api_token, **options),
     )
 
 
@@ -188,6 +198,15 @@ class JmapClient:
             cursor = new_state
             if not has_more:
                 return JmapFetchResult(messages=tuple(messages), cursor=cursor)
+
+    def event_stream(self) -> Iterable[object]:
+        """Return the connected jmapc EventSource stream for push handling."""
+        self.connect()
+        assert self._client is not None
+        try:
+            return self._client.events
+        except Exception as exc:
+            raise JmapError(f"could not open JMAP EventSource: {exc}") from exc
 
     def _request(self, method: object) -> object:
         """Apply the module's single error boundary to one JMAP method."""

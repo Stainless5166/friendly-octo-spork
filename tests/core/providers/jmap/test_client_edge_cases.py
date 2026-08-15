@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 import pytest
 
 from spork.core.providers.jmap import client as client_module
@@ -20,6 +22,15 @@ class _FakeClient:
         self.jmap_session = _Response(api_url="https://api.example.test/jmap")
         self.responses = responses
         self.requests: list[object] = []
+        self._events: Iterable[object] = ()
+
+    @property
+    def events(self) -> Iterable[object]:
+        return self._events
+
+    @events.setter
+    def events(self, value: Iterable[object]) -> None:
+        self._events = value
 
     def request(self, method: object, *, raise_errors: bool = False) -> object:
         self.requests.append(method)
@@ -85,6 +96,62 @@ def test_default_factory_passes_credentials_to_jmapc(monkeypatch: pytest.MonkeyP
 
     assert result is backend
     assert calls == [("api.fastmail.com", "fake-token")]
+
+
+def test_default_factory_configures_mail_event_types(monkeypatch: pytest.MonkeyPatch) -> None:
+    options: list[dict[str, object]] = []
+    backend = _FakeClient([])
+
+    class _EventSourceConfig:
+        def __init__(self, **values: object) -> None:
+            self.values = values
+
+    class _ClientClass:
+        @staticmethod
+        def create_with_api_token(**values: object) -> _FakeClient:
+            options.append(values)
+            return backend
+
+    monkeypatch.setattr(
+        client_module,
+        "import_module",
+        lambda name: _Response(Client=_ClientClass, EventSourceConfig=_EventSourceConfig),
+    )
+
+    client_module._default_client_factory("api.fastmail.com", "fake-token")
+
+    config = options[0]["event_source_config"]
+    assert isinstance(config, _EventSourceConfig)
+    assert config.values == {"types": "EmailDelivery,Email", "closeafter": "no", "ping": 30}
+
+
+def test_event_stream_connects_once_and_returns_the_backend_stream() -> None:
+    client, backend = _client([_mailboxes("inbox")])
+    backend.events = ("event",)
+
+    assert tuple(client.event_stream()) == ("event",)
+    assert tuple(client.event_stream()) == ("event",)
+
+
+def test_event_stream_wraps_backend_stream_failures() -> None:
+    class _BrokenEventsClient(_FakeClient):
+        @property
+        def events(self) -> Iterable[object]:
+            raise RuntimeError("event source unavailable")
+
+        @events.setter
+        def events(self, value: Iterable[object]) -> None:
+            raise AssertionError("events should not be assigned")
+
+    backend = _BrokenEventsClient([_mailboxes("inbox")])
+    client = JmapClient(
+        "api.fastmail.com",
+        "fake-token",
+        client_factory=lambda host, token: backend,
+    )
+
+    with pytest.raises(JmapError, match="event source unavailable"):
+        client.event_stream()
 
 
 @pytest.mark.parametrize("roles", [(), (None,), ("inbox", "inbox")])

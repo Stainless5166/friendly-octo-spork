@@ -22,7 +22,9 @@ from spork.core.providers.jmap.provider import (
     _JmapMessageLookup,
     _JmapThreadHistoryReader,
 )
+from spork.core.providers.jmap.push import JmapPushDisconnectedError, JmapPushTrigger
 from spork.core.rules.schema import Action
+from spork.core.sources.fallback import CheckpointedFallbackSource
 from spork.core.sources.triggered import TriggeredSource
 
 
@@ -37,14 +39,19 @@ def test_build_source_returns_a_triggered_source() -> None:
     assert isinstance(source, TriggeredSource)
 
 
-def test_source_poll_raises_not_implemented() -> None:
-    """Polling the composed Source raises NotImplementedError, propagated
-    from JmapPushTrigger.wait() — proving JmapProvider actually wires the
-    real (if still-stubbed) pieces together, not placeholders of its own."""
+def test_source_poll_propagates_a_transient_push_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ordinary source view preserves the push boundary error."""
     provider = JmapProvider(host="api.fastmail.com", api_token="fake-token")
     source = provider.build_source()
 
-    with pytest.raises(NotImplementedError):
+    def disconnected(self: JmapPushTrigger) -> None:
+        raise JmapPushDisconnectedError("disconnected")
+
+    monkeypatch.setattr(JmapPushTrigger, "wait", disconnected)
+
+    with pytest.raises(JmapPushDisconnectedError, match="disconnected"):
         source.poll()
 
 
@@ -106,7 +113,7 @@ def test_provider_builds_a_checkpointed_source_and_exposes_account_id() -> None:
 
     source = provider.build_checkpointed_source("state-1")
 
-    assert isinstance(source, _JmapCheckpointedSource)
+    assert isinstance(source, CheckpointedFallbackSource)
     assert provider.account_id() == "account-1"
 
 

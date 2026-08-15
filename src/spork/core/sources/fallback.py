@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from spork.core.models import NormalizedMessage
-from spork.core.sources.base import Source
+from spork.core.sources.base import CheckpointedSource, MessageBatch, Source
 
 
 class FallbackSource:
@@ -41,3 +41,29 @@ class FallbackSource:
             return self._primary.poll()
         except self._catch:
             return self._secondary.poll()
+
+
+class CheckpointedFallbackSource:
+    """Select between cursor-aware primary and secondary sources."""
+
+    def __init__(
+        self,
+        primary: CheckpointedSource,
+        secondary: CheckpointedSource,
+        *,
+        catch: tuple[type[BaseException], ...] = (Exception,),
+    ) -> None:
+        self._primary = primary
+        self._secondary = secondary
+        self._catch = catch
+
+    def poll_batch(self) -> MessageBatch:
+        """Retry primary on every call and preserve candidate checkpoints."""
+        try:
+            return self._primary.poll_batch()
+        except self._catch:
+            return self._secondary.poll_batch()
+
+    def poll(self) -> Sequence[NormalizedMessage]:
+        """Expose the ordinary Source view for generic consumers."""
+        return self.poll_batch().messages

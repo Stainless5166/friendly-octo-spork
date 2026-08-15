@@ -2780,9 +2780,22 @@ reach, never an error, since the file write itself already succeeded.
 - **Auth:** bearer API token (from secretspec), scoped to the mail
   account only where Fastmail's token scoping allows it.
 - **Push:** EventSource subscription to the mail account's state
-  changes. On disconnect, exponential backoff per `config.toml`, with a
-  poll-based fallback so a flaky connection degrades to "slower" rather
-  than "silent."
+  changes. `JmapPushTrigger` requests `EmailDelivery,Email` events,
+  ignores events for other accounts and unrelated state types, and
+  returns only when the configured account has a relevant change. A
+  stream exhaustion/transport failure sleeps according to the explicit
+  reconnect schedule and raises `JmapPushDisconnectedError`; this hands
+  control to the fallback source rather than trapping the daemon in an
+  internal reconnect loop. The next source poll retries push first.
+  `CheckpointedFallbackSource` composes that primary with an interval
+  JMAP poller, so a flaky connection degrades to "slower" rather than
+  "silent." Both paths share the same in-memory candidate cursor.
+- **Push lifecycle:** the trigger owns EventSource iteration and retry
+  delay; the fallback source owns primary/secondary selection; the
+  daemon still owns durable cursor acknowledgement. Push recovery is
+  represented by the next successful primary poll, not a second alerting
+  mechanism. Disconnect-duration health alerts remain a separate M4
+  unit.
 - **Fetch/checkpoint pattern:** the persisted cursor is the Email object
   state consumed by `Email/changes(sinceState=...)`, not an
   `Email/query` state or an EventSource ID; those tokens are different

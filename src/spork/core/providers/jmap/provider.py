@@ -9,6 +9,7 @@ read (`Source`) and write (`ActionApplier`) sides.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from spork.core.models import NormalizedMessage
@@ -21,9 +22,11 @@ from spork.core.providers.base import (
     ThreadHistoryReader,
 )
 from spork.core.providers.jmap.client import JmapClient, JmapFetchResult
-from spork.core.providers.jmap.push import JmapPushTrigger
+from spork.core.providers.jmap.push import JmapPushDisconnectedError, JmapPushTrigger
 from spork.core.rules.schema import Action
 from spork.core.sources.base import CheckpointedSource, MessageBatch, Source, Trigger
+from spork.core.sources.fallback import CheckpointedFallbackSource
+from spork.core.sources.timer import IntervalTimer
 from spork.core.sources.triggered import TriggeredSource
 
 
@@ -53,6 +56,11 @@ class _JmapContentFetcher:
         return self._client.fetch_new_messages(since_cursor=self._cursor).messages
 
 
+@dataclass
+class _JmapCursorState:
+    value: str | None
+
+
 class _JmapCheckpointedSource:
     """Push-triggered JMAP source that exposes a candidate Email state."""
 
@@ -62,15 +70,16 @@ class _JmapCheckpointedSource:
         cursor: str | None,
         *,
         trigger: Trigger | None = None,
+        cursor_state: _JmapCursorState | None = None,
     ) -> None:
         self._client = client
-        self._cursor = cursor
+        self._cursor_state = cursor_state or _JmapCursorState(cursor)
         self._trigger = trigger if trigger is not None else JmapPushTrigger(client)
 
     def poll_batch(self) -> MessageBatch:
         self._trigger.wait()
-        result = self._client.fetch_new_messages(since_cursor=self._cursor)
-        self._cursor = result.cursor
+        result = self._client.fetch_new_messages(since_cursor=self._cursor_state.value)
+        self._cursor_state.value = result.cursor
         return MessageBatch(messages=result.messages, checkpoint=result.cursor)
 
     def poll(self) -> Sequence[NormalizedMessage]:
@@ -155,9 +164,19 @@ class JmapProvider:
     instead of duplicated at every call site.
     """
 
-    def __init__(self, host: str, api_token: str, *, cursor: str | None = None) -> None:
+    def __init__(
+        self,
+        host: str,
+        api_token: str,
+        *,
+        cursor: str | None = None,
+        poll_interval_seconds: float = 300.0,
+        reconnect_backoff_seconds: Sequence[float] = (2.0, 5.0, 15.0, 60.0, 300.0),
+    ) -> None:
         self._client = JmapClient(host=host, api_token=api_token)
         self._cursor = cursor
+        self._poll_interval_seconds = poll_interval_seconds
+        self._reconnect_backoff_seconds = tuple(reconnect_backoff_seconds)
 
     def build_source(self) -> Source:
         trigger = JmapPushTrigger(self._client)
@@ -170,7 +189,28 @@ class JmapProvider:
 
     def build_checkpointed_source(self, cursor: str | None) -> CheckpointedSource:
         """Build the JMAP source using the daemon's acknowledged cursor."""
-        return _JmapCheckpointedSource(self._client, cursor)
+        cursor_state = _JmapCursorState(cursor)
+        primary = _JmapCheckpointedSource(
+            self._client,
+            cursor,
+            cursor_state=cursor_state,
+            trigger=JmapPushTrigger(
+                self._client,
+                account_id=self._client.account_id,
+                reconnect_backoff=self._reconnect_backoff_seconds,
+            ),
+        )
+        secondary = _JmapCheckpointedSource(
+            self._client,
+            cursor,
+            cursor_state=cursor_state,
+            trigger=IntervalTimer(self._poll_interval_seconds),
+        )
+        return CheckpointedFallbackSource(
+            primary,
+            secondary,
+            catch=(JmapPushDisconnectedError,),
+        )
 
     def build_action_applier(self) -> ActionApplier:
         return _JmapActionApplier(self._client)

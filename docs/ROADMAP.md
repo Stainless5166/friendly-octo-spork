@@ -44,10 +44,12 @@ read-only. No actions taken yet.
 - [x] Mailbox role resolution + caching (Inbox, Drafts, custom mailboxes) (S)
 - [x] ~~`Email/changes` + `Email/get` batched fetch of new mail since a cursor (M)~~
       — folded into `JmapClient.fetch_new_messages()` above, same status.
-- [ ] EventSource push listener with reconnect/backoff (M) — backoff
-      *scheduling* is done and tested (`spork.core.providers.jmap.backoff`); the
-      listener itself (`JmapPushTrigger.wait()`) remains a settled-shape
-      `NotImplementedError` stub. See `tests/core/providers/jmap/test_push.py`.
+- [x] EventSource push listener with reconnect/backoff (M) — backoff
+      scheduling, account/event filtering, transient disconnect handling,
+      and checkpoint-preserving polling fallback are implemented. Live
+      Fastmail push/reconnect acceptance remains part of the M1 exit
+      criterion. Disconnect-duration alerting remains separately tracked
+      under M4.
 - [x] Poll-based fallback when push is unavailable/disconnected (S) —
       real, tested implementation (`spork.core.sources.timer.IntervalTimer`
       + `spork.core.sources.fallback.FallbackSource`), pure control flow
@@ -75,9 +77,9 @@ read-only. No actions taken yet.
 **Exit criteria:** `sporkd` runs, logs each new inbox message's subject
 as it arrives (via push, verified by sending a real test email), survives
 a forced network drop and reconnects. **Not yet met.** The authenticated
-client leaf is now real; the remaining blocker is the EventSource
-push/reconnect path. The daemon now has crash-safe cursor acknowledgement,
-but the JMAP source still waits on the push stub until the next unit.
+client leaf and push/fallback implementation are now real; the remaining
+work for the M1 exit criterion is live acceptance against a delivered test
+message and a forced network drop/reconnect.
 
 The next unit implements the EventSource transport and reconnect path.
 
