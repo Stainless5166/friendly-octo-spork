@@ -4388,7 +4388,10 @@ WantedBy=default.target
   against the live API.
 - **End-to-end (manual, pre-release):** point at a real test Fastmail
   account, verify push connectivity, rule firing, draft creation, and
-  systemd unit lifecycle.
+  systemd unit lifecycle. `docs/acceptance/m1_jmap.feature` is the
+  Gherkin-form acceptance specification for the live read/push/fallback
+  evidence; it is deliberately manual until a dedicated live-account
+  harness exists.
 
 ## 17. Open questions / risks
 
