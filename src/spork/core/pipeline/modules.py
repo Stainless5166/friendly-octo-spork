@@ -65,7 +65,11 @@ class CorrelationIdFilter:
 
 
 class RuleEvaluationSelector:
-    """Runs the Tier 1 rule engine; routes "terminal" or "escalate"."""
+    """Runs the Tier 1 rule engine; routes "terminal", "escalate", or
+    "archive_receipt" (docs/DESIGN.md §9.5, M10) — a third branch,
+    distinct from "terminal", since `ActionExecutor` rejects
+    `archive_receipt` outright the same way it rejects `escalate`.
+    """
 
     def select(self, payload: Payload[MessageMeta]) -> tuple[str, Payload[MessageMeta]]:
         meta = payload.meta
@@ -76,7 +80,12 @@ class RuleEvaluationSelector:
             classifier=meta.classifier,
         )
         updated = dataclasses.replace(payload, meta=dataclasses.replace(meta, verdict=verdict))
-        branch = "escalate" if verdict.action.type == "escalate" else "terminal"
+        if verdict.action.type == "escalate":
+            branch = "escalate"
+        elif verdict.action.type == "archive_receipt":
+            branch = "archive_receipt"
+        else:
+            branch = "terminal"
         return branch, updated
 
 

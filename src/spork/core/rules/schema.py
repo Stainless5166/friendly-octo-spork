@@ -53,12 +53,16 @@ class Action(BaseModel):
     `mailbox` is meaningful for `move`/`tag` and ignored otherwise.
     `reason` is free text carried through to the audit log so a
     human reviewing `spork logs` can see *why* a rule escalated or
-    acted, not just that it did.
+    acted, not just that it did. `type == "archive_receipt"`
+    (docs/DESIGN.md §9.5, M10) hands the message to its own pipeline
+    branch — company/date extraction, keyword tagging, and combined-PDF
+    archiving — never `ActionExecutor`'s plain `ActionApplier` path;
+    `mailbox` is unused for it, same as `escalate`.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["move", "tag", "escalate", "ignore"]
+    type: Literal["move", "tag", "escalate", "ignore", "archive_receipt"]
     mailbox: str | None = None
     reason: str | None = None
     # Opts an escalation into an immediate alert (docs/DESIGN.md §12.2)

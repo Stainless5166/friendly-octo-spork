@@ -20,10 +20,13 @@ _MAILBOX_REQUIRED_ACTIONS = frozenset({"move", "tag"})
 class ActionExecutionError(ValueError):
     """Raised when an Action can't be executed as given.
 
-    Covers both ways a verdict can reach this class malformed: an
+    Covers three ways a verdict can reach this class malformed: an
     `escalate` action (a routing bug — escalation belongs to Tier 2,
-    never the terminal step), or a `move`/`tag` action with no
-    `mailbox` set (nowhere to actually move/tag the message to).
+    never the terminal step), an `archive_receipt` action (a routing
+    bug the same way — it belongs to its own pipeline branch,
+    docs/DESIGN.md §9.5, M10, never the plain `ActionApplier` path), or
+    a `move`/`tag` action with no `mailbox` set (nowhere to actually
+    move/tag the message to).
     """
 
 
@@ -43,6 +46,11 @@ class ActionExecutor:
             raise ActionExecutionError(
                 f"ActionExecutor cannot execute an escalate action: {action!r} — "
                 "escalation is Tier 2's job, not the terminal action step"
+            )
+        if action.type == "archive_receipt":
+            raise ActionExecutionError(
+                f"ActionExecutor cannot execute an archive_receipt action: {action!r} — "
+                "receipt archiving is its own pipeline branch, not the terminal action step"
             )
         if action.type in _MAILBOX_REQUIRED_ACTIONS and action.mailbox is None:
             raise ActionExecutionError(
