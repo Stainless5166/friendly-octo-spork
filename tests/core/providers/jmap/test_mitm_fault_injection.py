@@ -22,10 +22,10 @@ until that harness is implemented. See docs/ROADMAP.md M1c.
 from __future__ import annotations
 
 import pytest
-from tests.support.jmap_mitm import jmap_mitm_harness
 
 from spork.core.providers.jmap.client import JmapClient, JmapError
 from spork.core.providers.jmap.push import JmapPushDisconnectedError, JmapPushTrigger
+from tests.support.jmap_mitm import jmap_mitm_harness
 
 
 def test_client_round_trips_through_real_jmapc_over_the_harness_with_no_live_network() -> None:
