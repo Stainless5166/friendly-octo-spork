@@ -390,9 +390,9 @@ until M1's real JMAP fetch exists.
 | `tests/support/jmap_mitm.py` fault-injection harness | ✅ | ✅ — tests 707–712 (6 tests) |
 | `tests/fixtures/jmap/flows/` recorded flows | ✅ captured, gitignored, token-redacted; not yet wired into the harness as a replay source | — (nothing to unit-test in a recorded flow file itself) |
 | Automatable push/fallback acceptance coverage | ✅ (new feature, not a bind of `m1.py`'s live steps) | ✅ — `docs/acceptance/m1_jmap_fault_injection.feature` + `steps/m1_fault_injection.py`, passing in the safe-default `uv run behave` |
-| Initial `tests/fixtures/corpus/live.jsonl` seed | 🟡 started, 5 entries, not yet diverse | — |
+| Initial `tests/fixtures/corpus/live.jsonl` seed | ✅ 13 entries, 13 distinct categories | — (not a pytest-covered artifact) |
 
-**3 of 4 items done** (the 4th, corpus seeding, partially). The harness itself is real and network-free (an
+**4 of 4 items done.** The harness itself is real and network-free (an
 in-process mitmproxy instance answers every request locally; nothing
 is ever forwarded to a real upstream host), and it drives the actual
 production `client_factory`/`jmapc.Client`, not a fake — the first time
@@ -408,7 +408,9 @@ just cursor values. Recorded flows now exist
 (`tests/fixtures/jmap/flows/`) including a genuine EventSource push
 event triggered by a real test email — replaying them from
 `jmap_mitm.py` instead of hand-built canned responses is still open.
-Growing the LLM corpus beyond 5 entries is still open too.
+The LLM corpus grew to 13 entries across 13 distinct categories (M8's
+`query_messages()` used for the second batch's fetch). Larger,
+backfill-driven volume remains M8's job, not this milestone's.
 
 ### M2 — Rule engine (Tier 1) + action executor
 
@@ -756,6 +758,21 @@ resolved secret's real value verbatim — confirmed empirically
 (`repr(Secrets({"JMAP_API_TOKEN": "..."}))` really did leak the value)
 before fixing with `repr=False` + a custom `__repr__` showing only the
 declared names.
+
+### M8 — Backfill / retroactive categorization — 1/5
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `JmapClient.query_messages()` | ✅ | ✅ — tests 716–720 (5 tests), live-verified against the real account |
+| Bounded, resumable `spork backfill` Source/CLI | — | not started |
+| `StateDB`/`processed_messages` dedup reuse | — | not started |
+| Backfill-specific throttle/budget policy | — | not started |
+| Full backfill run growing the corpus at volume | — | not started — a 13-entry hand-picked seed exists (M1c), not a backfill-driven one |
+
+Deliberately the smallest defensible first slice: the new read
+capability, real and tested, live-verified against the account's
+actual 4181-message Inbox — not the CLI surface or dedup wiring around
+it, which need their own design/test rounds.
 
 ---
 
@@ -3809,3 +3826,26 @@ now strips it from what the model is offered.
      Every other part of the schema is byte-for-byte identical to
      `Verdict.model_json_schema()` — the fix is a single-field edit,
      not a schema rewrite.
+
+### tests/core/providers/jmap — query_messages() backfill read path (M8)
+
+716. **`test_query.py::test_query_messages_returns_a_page_of_normalized_messages_and_position`**
+     A two-message `Email/query`+`Email/get` page normalizes correctly
+     and reports `position`/`total`/`has_more` from the response.
+
+717. **`test_query.py::test_query_messages_unread_only_sets_the_not_keyword_filter`**
+     `unread_only=True` sends `Email/query` with `filter.not_keyword ==
+     "$seen"` and `filter.in_mailbox` set to the resolved Inbox id.
+
+718. **`test_query.py::test_query_messages_has_more_true_when_a_later_page_remains`**
+     `position=0, limit=1` against a `total=5` response reports
+     `has_more=True` — the caller can page without re-deriving the
+     arithmetic itself.
+
+719. **`test_query.py::test_query_messages_with_no_matching_ids_skips_the_get_call`**
+     An empty `Email/query` result never issues an `Email/get` call —
+     only `MailboxGet` and `EmailQuery` appear in the request log.
+
+720. **`test_query.py::test_query_messages_passes_the_requested_position_and_limit`**
+     `position=20, limit=10` are forwarded to `Email/query` exactly,
+     unmodified.

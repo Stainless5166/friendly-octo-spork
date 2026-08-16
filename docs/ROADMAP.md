@@ -218,24 +218,28 @@ milestone; this milestone does not depend on M8.
       disconnect/recover cycle) remains live-only — a real forced
       network drop against a real account is still the honest way to
       prove that, not a simulated timer.
-- [ ] Build an initial `tests/fixtures/corpus/live.jsonl` by wrapping
+- [x] Build an initial `tests/fixtures/corpus/live.jsonl` by wrapping
       the configured `LiteLLMClient` with `RecordingLLMClient` and
       running it over a diverse hand-picked sample of real mail (S) —
       seeds the corpus ahead of the much larger backfill-driven pass
-      in M8. **Started, not complete:** 6 tagged sample emails (`[spork-
-      corpus-test]` subject prefix — newsletter, receipt, personal,
-      security-notification, promo/spam-like, urgent-invoice) sent via
-      real SMTP to the live account, fetched back via real
-      `Email/changes`/`Email/get` (5 landed in Inbox; the deliberately
-      spammy one was correctly filtered to Junk by Fastmail itself and
-      `fetch_new_messages`'s Inbox-only filter, so never entered the
-      pipeline — expected, not a bug). Of those 5, all 5 now produce
-      valid verdicts and are in the corpus — the initial 3 (newsletter,
-      receipt, security notification), plus the 2 that hit the
-      `"escalate"`-rejection gap above, re-run after that fix landed
-      (same content, no new emails sent). Corpus has 5 entries —
-      genuinely diverse coverage (more categories, more volume) is
-      still open, and is exactly what M8's backfill run is for.
+      in M8. 14 tagged sample emails (`[spork-corpus-test]` subject
+      prefix) sent via real SMTP across two batches — newsletter,
+      receipt, personal, security-notification, promo/spam-like,
+      urgent-invoice, calendar-invite, shipping-notification,
+      subscription-renewal, recruiting-outreach, event-webinar,
+      survey-request, legal-terms-update, appointment-reminder (a 15th,
+      a push-recording trigger email, has no distinct triage category
+      and wasn't corpus-seeded). Second batch fetched via the new
+      `query_messages()` (M8) rather than a cursor, doubling as a real
+      usage smoke test of it. **13 of 14 categorizable samples produced
+      valid verdicts and are in the corpus** (one, the "50% off"
+      promo, was initially thought Junk-filtered — turned out to be
+      Fastmail indexing lag, not a real spam-filter action, but wasn't
+      re-fetched for the corpus; low priority to backfill). 15 emails
+      sent this session total, within the 25-email session budget.
+      Genuinely large-volume, backfill-driven diversity is still what
+      M8's full backfill run is for — this is a hand-picked seed, not
+      a substitute for that.
 
 **Exit criteria:** `pytest` can force an EventSource disconnect and a
 JMAP request-level fault through the mitmproxy harness and assert
@@ -840,11 +844,17 @@ the kind of large, real, varied run that should be developed and
 regression-tested against recorded flows, not live-fired against the
 real account on every test run.
 
-- [ ] `JmapClient.query_messages()`: `Email/query` + `Email/get`,
-      windowed by JMAP anchor/position paging, filterable (e.g.
-      `notKeyword: $seen` for unread-only, unconditional for a full
-      sweep) — a new, explicitly-named read path, not a flag on
-      `fetch_new_messages()` (M)
+- [x] `JmapClient.query_messages()`: `Email/query` + `Email/get`,
+      windowed by `position`/`limit` paging, filterable (`unread_only`
+      → `notKeyword: $seen`, unconditional for a full sweep) — a new,
+      explicitly-named read path, not a flag on `fetch_new_messages()`
+      (M). `JmapQueryResult` carries `position`/`total`/`has_more`,
+      distinct in shape from `JmapFetchResult`'s cursor semantics — a
+      query page isn't an acknowledgeable Email state. 5 acceptance
+      tests (`tests/core/providers/jmap/test_query.py`), same injected
+      jmapc-shaped fake convention as the rest of the package.
+      Live-verified against the real (read-only) account: 4181 total
+      Inbox messages, 2849 unread, real pagination, no writes.
 - [ ] A bounded, resumable backfill `Source`/CLI command (`spork
       backfill`), separate from the daemon's steady-state
       push/poll `TriggeredSource` (M)
