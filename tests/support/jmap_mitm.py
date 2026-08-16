@@ -29,9 +29,10 @@ import os
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import jmapc
 from jmapc import methods as jmapc_methods
@@ -164,6 +165,14 @@ class _JmapMockAddon:
         self.state = state
 
     async def request(self, flow: http.HTTPFlow) -> None:
+        if flow.response is not None:
+            # mitmproxy's own ServerPlayback addon (a default addon,
+            # already loaded, request() hooks run in registration
+            # order) already answered this one from a recorded flow —
+            # see jmap_mitm_harness()'s replay_flows parameter. Canned
+            # responses below are the fallback for whatever a loaded
+            # recording doesn't cover, not a replacement for it.
+            return
         state = self.state
         if state.latency_seconds:
             await asyncio.sleep(state.latency_seconds)
@@ -337,9 +346,12 @@ class JmapMitmHarness:
 class _Runner:
     """Owns the background asyncio loop mitmproxy's DumpMaster runs in."""
 
-    def __init__(self, addon: _JmapMockAddon, confdir: str) -> None:
+    def __init__(
+        self, addon: _JmapMockAddon, confdir: str, replay_flows: Sequence[str] = ()
+    ) -> None:
         self._addon = addon
         self._confdir = confdir
+        self._replay_flows = tuple(replay_flows)
         self.master: DumpMaster | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ready = threading.Event()
@@ -352,6 +364,14 @@ class _Runner:
         opts = options.Options(listen_host="127.0.0.1", listen_port=0)
         self.master = DumpMaster(opts, with_termlog=False, with_dumper=False)
         opts.set(f"confdir={self._confdir}", "connection_strategy=lazy", "http2=false")
+        if self._replay_flows:
+            # ServerPlayback (a default addon, already loaded) matches
+            # incoming requests against these recorded flows and answers
+            # from them directly — server_replay_extra="404" keeps the
+            # harness's core safety property (never forwards upstream)
+            # for whatever a loaded recording doesn't cover, same as an
+            # unconfigured canned response already does.
+            opts.update(server_replay=list(self._replay_flows), server_replay_extra="404")
         self.master.addons.add(self._addon)
         self._loop = asyncio.get_running_loop()
         run_task = asyncio.ensure_future(self.master.run())
@@ -381,7 +401,9 @@ class _Runner:
 
 
 @contextmanager
-def jmap_mitm_harness(*, host: str = "jmap.acceptance.test") -> Iterator[JmapMitmHarness]:
+def jmap_mitm_harness(
+    *, host: str = "jmap.acceptance.test", replay_flows: Sequence[str | Path] = ()
+) -> Iterator[JmapMitmHarness]:
     """Start the harness, route real JMAP traffic through it, and tear it down.
 
     Sets HTTP_PROXY/HTTPS_PROXY/REQUESTS_CA_BUNDLE for the duration of the
@@ -389,11 +411,20 @@ def jmap_mitm_harness(*, host: str = "jmap.acceptance.test") -> Iterator[JmapMit
     the bare `requests.get` sseclient uses for EventSource, since neither
     is otherwise reachable from this harness), and restores the prior
     environment on exit.
+
+    `replay_flows` (docs/ROADMAP.md M1c): paths to `.flow` files
+    recorded against the live account (`tests/fixtures/jmap/flows/`).
+    When given, matching requests are answered from those real
+    recordings via mitmproxy's own `ServerPlayback` addon, ahead of
+    (and independent from) this harness's hand-built canned responses
+    — the two compose: a loaded recording covers what it covers,
+    `set_mailbox_response()`/etc. still work for anything it doesn't,
+    and an unmatched request with neither still fails closed.
     """
     state = _FaultState(host=host)
     addon = _JmapMockAddon(state)
     with tempfile.TemporaryDirectory(prefix="spork-jmap-mitm-") as confdir:
-        runner = _Runner(addon, confdir)
+        runner = _Runner(addon, confdir, replay_flows=[str(p) for p in replay_flows])
         proxy_host, proxy_port = runner.start()
         ca_path = os.path.join(confdir, "mitmproxy-ca-cert.pem")
         deadline = time.monotonic() + _STARTUP_TIMEOUT_SECONDS
