@@ -119,9 +119,13 @@ alongside M4's `alerts/log.py`). `config/`, `ipc/`, and
 longer dashed boxes. `systemd/` (core) and
 `cli/commands/install_service.py` land with M6 — no longer dashed
 either. `logging_setup.py` and `pipeline/tracing.py` land with M7 —
-also no longer dashed. This is layout orientation
-only — see §6.4 for what each built module's classes actually look
-like.
+also no longer dashed. `context/clients/entities/` is new this
+change — a real, fully offline-testable third `ContextProvider`
+backend (structured domains/companies/services/people, docs/ROADMAP.md
+M9), solid alongside `null.py`; `vault.py` stays dashed, still blocked
+on its own undecided retrieval-algorithm question. This is layout
+orientation only — see §6.4 for what each built module's classes
+actually look like.
 
 ```mermaid
 flowchart TD
@@ -216,6 +220,11 @@ flowchart TD
             subgraph context_clients["clients/"]
                 context_null["null.py<br/>NullContextProvider"]
                 context_vault["vault.py<br/>MarkdownVaultContextProvider"]:::planned
+                subgraph context_entities["entities/ (M9 prototype)"]
+                    context_entities_models["models.py<br/>Domain/Company/Service/Person"]
+                    context_entities_data["data.py<br/>load_entity_data()"]
+                    context_entities_provider["provider.py<br/>EntityContextProvider"]
+                end
             end
         end
 
@@ -1488,13 +1497,62 @@ classDiagram
         -vault_path: Path
         +get_context(message: NormalizedMessage) ContextResult
     }
+    class Domain {
+        <<dataclass, frozen>>
+        +name: str
+        +company: Optional~str~
+    }
+    class Company {
+        <<dataclass, frozen>>
+        +name: str
+        +domains: tuple~str~
+        +services: tuple~str~
+    }
+    class Service {
+        <<dataclass, frozen>>
+        +name: str
+        +category: Optional~str~
+        +provided_by: tuple~str~
+    }
+    class Person {
+        <<dataclass, frozen>>
+        +name: str
+        +email: Optional~str~
+        +company: Optional~str~
+    }
+    class EntityDataLoadError { <<Exception>> }
+    class load_entity_data {
+        <<function>>
+        +load_entity_data(path: Path) EntityData
+    }
+    class EntityContextProvider {
+        -domains: dict
+        -companies: dict
+        -services: dict
+        -people: dict
+        +lookup_domain(domain: str) Optional~Domain~
+        +lookup_company(name: str) Optional~Company~
+        +lookup_service(name: str) Optional~Service~
+        +lookup_person(identifier: str) Optional~Person~
+        +get_context(message: NormalizedMessage) ContextResult
+    }
 
     ContextProvider ..> NormalizedMessage : reads
     ContextProvider ..> ContextResult : returns
     ContextResult *-- ContextSnippet
     ContextProvider <|.. NullContextProvider : structurally satisfies
     ContextProvider <|.. MarkdownVaultContextProvider : structurally satisfies
+    ContextProvider <|.. EntityContextProvider : structurally satisfies
     load_context_provider ..> ContextProviderLoadError : raises
+    EntityContextProvider ..> load_entity_data : loads at construction
+    load_entity_data ..> EntityDataLoadError : raises
+    Company "1" --> "*" Service : services (name only)
+    Company "1" --> "*" Domain : domains (name only)
+    Person ..> Company : company (name only)
+    EntityContextProvider ..> Domain : looks up
+    EntityContextProvider ..> Company : looks up
+    EntityContextProvider ..> Service : looks up
+    EntityContextProvider ..> Person : looks up
 ```
 
 A generic, read-only "give me relevant background for this message"
@@ -1503,6 +1561,16 @@ note-taking tool. `NullContextProvider` is the real default when
 `[context]` is unconfigured; `MarkdownVaultContextProvider` is a
 settled-shape stub, blocked on an undecided retrieval-algorithm design
 question rather than a live network call (docs/ROADMAP.md M9).
+`EntityContextProvider` (`spork.core.context.clients.entities`) is a
+third, fully real backend — a structured knowledge base tracking
+domains, companies, services, and people (e.g. "gandi.com is operated
+by Gandi, which provides DNS hosting and Cloud hosting"), read once
+from a JSON fixture at construction into in-memory indices. Unlike
+the vault backend, this has no undecided-retrieval-algorithm blocker
+— structured entity facts are exactly the kind of thing buildable and
+testable fully offline from fixtures alone, the same reasoning that
+already let `FileProvider` ship complete rather than as a stub. See
+§10.8 for the full design and docs/ROADMAP.md M9 for status.
 
 #### `spork.core.actions`
 
@@ -4138,7 +4206,7 @@ without the Protocol anticipating them in advance. An empty
 `ContextResult` is a real, first-class answer ("no relevant context
 found"), not an error.
 
-**Two backends today, one config field:**
+**Three backends today, one config field:**
 
 - **`NullContextProvider`** — always returns `ContextResult(snippets=())`.
   The real, fully-working default when `SporkConfig.context` is `None`
@@ -4156,6 +4224,33 @@ found"), not an error.
   environment has no real vault content to validate honestly either
   way, unlike `FileProvider`, which was buildable and testable fully
   offline from fixtures alone (docs/ROADMAP.md M9).
+- **`EntityContextProvider`** (`spork.core.context.clients.entities`,
+  M9 prototype) — a second real, fully-working backend, and the first
+  to actually demonstrate the seam changing what a sender looks like
+  to Tier 2. Reads a JSON fixture of companies (each with the domains
+  they operate and the services they provide), standalone service
+  metadata (a `category`), and people (each optionally affiliated with
+  a company) into in-memory indices once at construction —
+  `spork.core.context.clients.entities.data.load_entity_data()`,
+  mirroring `spork.core.providers.file.messages.load_messages()`'s
+  parse-then-adapt split. `get_context()` looks up the message's
+  `from_domain`; an unrecognized domain (the overwhelmingly common
+  case for a hand-curated fixture) returns an empty `ContextResult`,
+  the same "not found is normal, not an error" contract every other
+  lookup in this codebase uses (`ContextProvider` itself,
+  `KnowledgeBackend`-shaped lookups elsewhere). A recognized domain
+  yields a `ContextSnippet` naming the operating company and the
+  services it provides, plus a second snippet when the sender's exact
+  address matches a tracked person. `lookup_domain()`/`lookup_company()`/
+  `lookup_service()`/`lookup_person()` are also exposed directly
+  (case-insensitive on the lookup key, original casing preserved in
+  what's returned) — independently useful and independently tested,
+  not just internal plumbing for `get_context()`. Explicitly one of
+  several knowledge base backends this seam is meant to hold: a future
+  backend answering the same four lookups from a live source (e.g. a
+  WHOIS/RDAP client) is a sibling implementation, not a redesign of
+  this one — this prototype intentionally does not build that second
+  backend, only proves the shape.
 
 `SporkConfig.context: BackendSpec | None = None`, loaded via
 `spork.core.context.loader.load_context_provider()` — identical

@@ -293,7 +293,16 @@ self-registers as `"keyword_heuristic"` at import time, fixing
 every real deployment. **The full suite is now 870 tests, all green**
 — the running per-paragraph totals above this point were not
 individually reconciled to that figure; treat this line as the
-current authority.
+current authority. Updated once more for M9's `EntityContextProvider`
+(prototype): a second real `context/clients` backend, structured
+rather than free-text — domains, companies, services, and people
+parsed from a JSON fixture, `Service.provided_by` aggregated across
+every company that lists a given service, `get_context()` turning a
+recognized `from_domain`/`from_address` into `ContextSnippet`s. Unlike
+`MarkdownVaultContextProvider`, this has no undecided-retrieval-
+algorithm blocker, so it ships complete, backed by Gherkin
+(`docs/acceptance/m9_entity_context.feature`) and 100%-covered pytest.
+**M9 is now 3/4; the full suite is 892 tests, all green.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -851,17 +860,18 @@ test) — closed with targeted tests, not implementation changes; no
 | Backfill-specific throttle/budget policy | ✅ (`--limit`, default 50) | ✅ — tests 756, 760 |
 | Full backfill run growing the corpus at volume | — | not started — a 13-entry hand-picked seed exists (M1c) via direct SMTP+LLM calls, not a `spork backfill` run; that needs an all-`ignore` rules file or the write-side JMAP stubs resolved first (`apply_action()`/`create_draft()` are still `NotImplementedError`) |
 
-### M9 — Read-only knowledgebase context retrieval — 2/3
+### M9 — Read-only knowledgebase context retrieval — 3/4
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `ContextProvider` Protocol + dynamic loader + pipeline wiring | ✅ | ✅ — tests 787–796, 801–805, 811 (100% line coverage on `spork.core.context`) |
 | `NullContextProvider` (the real default) | ✅ | ✅ — tests 797–798 |
-| A real backend that actually reads content | — | genuinely undecided design work, not a live-account blocker — `MarkdownVaultContextProvider` (tests 799–800) settles the shape as a stub; the retrieval algorithm choice needs real vault content to validate against |
+| A real backend that actually reads content (free-text vault) | — | genuinely undecided design work, not a live-account blocker — `MarkdownVaultContextProvider` (tests 799–800) settles the shape as a stub; the retrieval algorithm choice needs real vault content to validate against |
+| `EntityContextProvider` (structured domain/company/service/person knowledge base, prototype) | ✅ | ✅ — tests 820–841 (100% line coverage on `spork.core.context.clients.entities`); specified in Gherkin (`docs/acceptance/m9_entity_context.feature`) |
 
 ---
 
-## Full test inventory (824 tests, all passing — 0 xfail)
+## Full test inventory (892 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -4336,6 +4346,105 @@ numbering convention.
      Constructing one doesn't require the vault directory to exist yet
      or do any I/O — same "settle the shape, defer the behavior"
      split `JmapClient`'s constructor makes.
+
+### tests/core/context/clients/entities — EntityContextProvider, a structured knowledge base backend (M9 prototype)
+
+Inserted here out of file order (sits physically alongside 797–800 as
+a third `context/clients` backend) but numbered at the end per this
+doc's stable-numbering convention.
+
+820. **`test_data.py::test_load_entity_data_parses_companies_services_and_people`**
+     A well-formed companies/services/people fixture parses into
+     `Company`/`Service`/`Person` records, each field preserved as
+     authored.
+
+821. **`test_data.py::test_load_entity_data_defaults_missing_sections_to_empty`**
+     A fixture with only `"companies"` is valid — `"services"`/`"people"`
+     are optional sections, not required ones.
+
+822. **`test_provider.py::test_lookup_domain_returns_the_operating_company`**
+     `EntityContextProvider.lookup_domain()` resolves a tracked domain
+     to the company known to operate it.
+
+823. **`test_provider.py::test_lookup_company_returns_its_domains_and_services`**
+     `lookup_company()` returns the domains it operates and the
+     services it provides, exactly as authored in the fixture.
+
+824. **`test_provider.py::test_lookup_service_aggregates_providers_across_companies`**
+     A service several companies list independently (e.g. both Gandi
+     and Cloudflare offering "DNS hosting") comes back as one
+     `Service` record naming every provider — computed by the
+     backend, not stored redundantly in the fixture.
+
+825. **`test_provider.py::test_lookup_person_returns_their_affiliated_company`**
+     `lookup_person()` resolves a tracked person (by email) to their
+     affiliated company.
+
+826. **`test_provider.py::test_get_context_returns_a_snippet_for_a_known_sender_and_empty_for_unknown`**
+     The whole point of this backend: `get_context()` gives a
+     recognized sender's domain a real `ContextSnippet` naming its
+     company, and an unrecognized sender an empty `ContextResult` —
+     not an error either way.
+
+827. **`test_data_edge_cases.py::test_load_entity_data_raises_for_a_missing_file`**
+     A nonexistent fixture path is a clear `EntityDataLoadError`, not a
+     raw `FileNotFoundError`.
+
+828. **`test_data_edge_cases.py::test_load_entity_data_raises_for_malformed_json`**
+     Broken JSON syntax is a clear `EntityDataLoadError`, not a raw
+     `json.JSONDecodeError` leaking through unwrapped.
+
+829. **`test_data_edge_cases.py::test_load_entity_data_raises_for_non_object_top_level`**
+     A file whose top level isn't a JSON object (e.g. a bare array) is
+     a clear `EntityDataLoadError`, not an `AttributeError` from
+     calling `.get()` on the wrong type further down.
+
+830. **`test_data_edge_cases.py::test_load_entity_data_raises_when_a_company_entry_is_not_an_object`**
+     A `"companies"` entry that isn't a JSON object (e.g. a bare
+     string) is rejected before any field is read.
+
+831. **`test_data_edge_cases.py::test_load_entity_data_raises_when_a_company_is_missing_its_name`**
+     A company entry missing the required `"name"` field is a clear
+     `EntityDataLoadError` naming which entry.
+
+832. **`test_data_edge_cases.py::test_load_entity_data_raises_when_a_service_is_missing_its_name`**
+     Same missing-required-field guarantee for a standalone `"services"`
+     entry.
+
+833. **`test_data_edge_cases.py::test_load_entity_data_raises_when_a_person_is_missing_its_name`**
+     Same missing-required-field guarantee for a `"people"` entry.
+
+834. **`test_provider_edge_cases.py::test_lookup_domain_returns_none_for_an_unknown_domain`**
+     An untracked domain is `None`, not an error — the overwhelmingly
+     common case for a hand-curated fixture.
+
+835. **`test_provider_edge_cases.py::test_lookup_company_returns_none_for_an_unknown_company`**
+     Same not-found contract for `lookup_company()`.
+
+836. **`test_provider_edge_cases.py::test_lookup_service_returns_none_for_an_unknown_service`**
+     Same not-found contract for `lookup_service()`.
+
+837. **`test_provider_edge_cases.py::test_lookup_person_returns_none_for_an_unknown_person`**
+     Same not-found contract for `lookup_person()`.
+
+838. **`test_provider_edge_cases.py::test_lookups_are_case_insensitive_on_the_key`**
+     `"GANDI.COM"`/`"gandi"`/`"dns hosting"` all resolve to the same
+     records; the record returned keeps its original fixture casing —
+     only the lookup key is folded.
+
+839. **`test_provider_edge_cases.py::test_lookup_person_falls_back_to_name_when_no_email_matches`**
+     A person with no `"email"` in the fixture is still resolvable by
+     name.
+
+840. **`test_provider_edge_cases.py::test_lookup_service_includes_category_only_entries_with_no_provider_yet`**
+     A standalone `"services"` entry's `category` and its
+     `provided_by` list are independent facts — a service can be
+     categorized before any company is recorded as providing it.
+
+841. **`test_provider_edge_cases.py::test_get_context_includes_a_person_snippet_when_the_sender_is_known`**
+     A message whose exact `from_address` matches a tracked person
+     gets a second `ContextSnippet` naming their affiliation, alongside
+     the domain/company snippet.
 
 ### tests/core/pipeline/tier2 — context wired into the Tier 2 pipeline
 

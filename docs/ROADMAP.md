@@ -1126,14 +1126,41 @@ but a read right context/knowledgebase interface.")
       which could be built and tested fully offline from fixtures
       alone. Needs a decision once real vault content is available to
       test against, not more design-from-nothing.
+- [x] `EntityContextProvider` — a second real backend (prototype),
+      structured rather than free-text: tracks domains, companies,
+      services, and people from a JSON fixture (e.g. "gandi.com is
+      operated by Gandi, which provides DNS hosting and Cloud
+      hosting"), not a redo of the vault backend above. Unlike
+      `MarkdownVaultContextProvider`, structured domain/company/
+      service/person facts have no undecided-retrieval-algorithm
+      blocker — the same "buildable and testable fully offline from
+      fixtures alone" reasoning `FileProvider` already established —
+      so this ships complete, not as a stub. `lookup_domain()`/
+      `lookup_company()`/`lookup_service()`/`lookup_person()` are
+      exposed directly (case-insensitive keys, aggregate
+      `Service.provided_by` computed from every company listing that
+      service rather than stored redundantly) and `get_context()`
+      builds on them, turning a recognized `from_domain`/`from_address`
+      into `ContextSnippet`s. Explicitly one of several knowledge base
+      backends this seam is meant to hold — a future live-lookup
+      backend (WHOIS/RDAP) answering the same four lookups is a
+      sibling implementation, not a redesign; this prototype doesn't
+      build that second one, only proves the shape. Specified in
+      Gherkin (`docs/acceptance/m9_entity_context.feature`) and backed
+      by a full pytest acceptance + edge-case suite
+      (`tests/core/context/clients/entities/`) — see
+      docs/DESIGN.md §10.8.
 
 **Exit criteria:** a Tier 2 verdict on a test message demonstrably
 changes (a different `suggested_action`, a materially different
 `reasoning`) when relevant context is present in `context_snippets`
 versus absent — proving the seam actually influences the model's
-answer, not just that it's wired through unused. Blocked on the same
-real backend as the second checklist item above; `NullContextProvider`
-alone can't demonstrate this since it never supplies any snippets.
+answer, not just that it's wired through unused. `EntityContextProvider`
+is the first backend actually capable of demonstrating this (unlike
+`NullContextProvider`, which never supplies any snippets) — but the
+demonstration itself (a recorded-LLM-fixture test showing the verdict
+actually differ, mirroring M3's prompt→verdict test convention) is
+still open, tracked here rather than assumed from the backend existing.
 
 ## Stretch / post-v1 (not scoped, not blocking)
 

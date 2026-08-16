@@ -51,6 +51,15 @@ those remain the real evidence for M1's exit criterion (an actual
 forced network drop against a real account); this feature makes the
 same Source-composition behavior regression-tested on every run.
 
+`m9_entity_context.feature` is also not `@manual`, for a different
+reason than the fault-injection feature above: `EntityContextProvider`
+(docs/DESIGN.md §10.8) has no live dependency at all — it's a
+self-contained, JSON-fixture-backed knowledge base lookup, the same
+"buildable and testable fully offline" category `FileProvider`
+already established. No step bindings exist yet; the described
+behavior is covered directly by
+`tests/core/context/clients/entities/`'s pytest suite instead.
+
 ## Status
 
 | Feature | Scope | Current evidence |
@@ -63,6 +72,7 @@ same Source-composition behavior regression-tested on every run.
 | `m5_control_surface.feature` | Daemon and CLI control surface | FileProvider/systemd-free integration tested; live JMAP path open |
 | `m6_systemd.feature` | Service install and operational startup | Unit/install behavior tested; real user-session acceptance open |
 | `m7_hardening.feature` | Unattended operation and v1 release | Requires real mailbox, model, rate-limit, and one-week run |
+| `m9_entity_context.feature` | Structured domain/company/service/person knowledge base | Fully covered by pytest (`tests/core/context/clients/entities/`); no behave bindings, no live dependency to wait on |
 
 The scenarios are deliberately more demanding than the current automated
 suite. A scenario is complete only when its stated live evidence exists,
