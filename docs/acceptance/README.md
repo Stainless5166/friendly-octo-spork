@@ -84,7 +84,8 @@ test, just for behave instead of pytest.
 | `m5_control_surface.feature` | Daemon and CLI control surface | FileProvider/systemd-free integration tested; live JMAP path open |
 | `m6_systemd.feature` | Service install and operational startup | Unit/install behavior tested; real user-session acceptance open |
 | `m7_hardening.feature` | Unattended operation and v1 release | Requires real mailbox, model, rate-limit, and one-week run |
-| `m9_receipt_archiving.feature` | Receipt tagging + combined-PDF archiving, deterministic-first with learned Tier 2 fallback | Scenarios drafted, step bindings scaffolded (`@wip`, all raise `NotImplementedError`); `spork.core.receipts` not yet implemented |
+| `m9a_receipt_pdf.feature` | Receipt PDF building + archiving (`spork.core.receipts.pdf`/`archive`) | Fully bound and passing on every run — no live account, no network |
+| `m9_receipt_archiving.feature` | Receipt tagging + combined-PDF archiving, deterministic-first with learned Tier 2 fallback | Scenarios drafted, step bindings scaffolded (`@wip`, all raise `NotImplementedError`); PDF/archive module done (`m9a`), the rest of `spork.core.receipts` not yet implemented |
 
 The scenarios are deliberately more demanding than the current automated
 suite. A scenario is complete only when its stated live evidence exists,

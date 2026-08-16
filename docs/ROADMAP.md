@@ -1038,14 +1038,21 @@ JMAP-dependent milestones are.
       mirroring `LLMClient`/`RecordedLLMClient` (§10.1/§10.5) (M)
 - [ ] `rules.schema.Action` gains a fourth terminal type,
       `"archive_receipt"` (S)
-- [ ] `spork.core.receipts.pdf.build_receipt_pdf()`: message +
+- [x] `spork.core.receipts.pdf.build_receipt_pdf()`: message +
       attachments -> one PDF (cover page + merged/rendered
       attachments, or cover page alone with no attachments); new
       optional `spork[receipts]` extra (`pypdf`, `reportlab`,
-      `Pillow`) (M)
-- [ ] `spork.core.receipts.archive.save_pdf()`: writes to
-      `SporkConfig.receipt_archive.output_dir`, deterministic filename,
-      one wrapped error type on write failure (S)
+      `Pillow`) (M) — 9 acceptance tests
+      (`tests/core/receipts/test_pdf.py`), plus
+      `docs/acceptance/m9a_receipt_pdf.feature` (4 scenarios, fully
+      bound and passing, no live account/network).
+- [x] `spork.core.receipts.archive.save_pdf()`: writes to a caller-
+      supplied output directory (wired to
+      `SporkConfig.receipt_archive.output_dir` once that config
+      section exists — still open below), deterministic filename, one
+      wrapped `ReceiptArchiveError` on write failure (S) — 6 acceptance
+      tests (`tests/core/receipts/test_archive.py`), same
+      `m9a_receipt_pdf.feature` covers the archived-filename scenario.
 - [ ] `SporkConfig.receipt_archive: ReceiptArchiveConfig | None` (S)
 - [ ] Pipeline wiring: a new Filter/Augment pair on the `"terminal"`
       branch for `action.type == "archive_receipt"` (M)
