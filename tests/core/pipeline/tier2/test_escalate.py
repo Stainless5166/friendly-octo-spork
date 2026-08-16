@@ -18,6 +18,8 @@ from spork.core.actions.executor import ActionExecutor
 from spork.core.alerts.base import AlertUrgency
 from spork.core.alerts.log import LoggingAlerter
 from spork.core.config.schema import TieringConfig
+from spork.core.context.base import ContextResult, ContextSnippet
+from spork.core.context.clients.null import NullContextProvider
 from spork.core.llm.base import LLMResult, VerdictRequest
 from spork.core.llm.clients.litellm import LiteLLMClientError
 from spork.core.llm.clients.recorded import RecordedLLMClient
@@ -119,6 +121,7 @@ def test_escalate_message_wires_thread_history_and_mailbox_lister_into_tier2(
             state_db=state_db,
             ops=PipelineObserver(LoggingAlerter()),
             tiering=TieringConfig(allowed_categories=["needs_reply"]),
+            context_provider=NullContextProvider(),
         )
 
     assert verdict is not None
@@ -126,6 +129,73 @@ def test_escalate_message_wires_thread_history_and_mailbox_lister_into_tier2(
     assert thread_history_reader.calls == [message]
     assert mailbox_lister.calls == 1
     assert applier.calls == [(message, Action(type="tag", mailbox="Needs-Reply"))]
+
+
+class _StubContextProvider:
+    def __init__(self, result: ContextResult) -> None:
+        self._result = result
+
+    def get_context(self, message: NormalizedMessage) -> ContextResult:
+        return self._result
+
+
+class _RecordingLLMClient:
+    """Wraps a real client just to capture the exact VerdictRequest it
+    was called with — proves context_provider's result actually
+    reached the prompt, not just that escalate_message() accepts the
+    argument."""
+
+    def __init__(self, inner: RecordedLLMClient) -> None:
+        self._inner = inner
+        self.last_request: VerdictRequest | None = None
+
+    def get_verdict(self, request: VerdictRequest) -> LLMResult:
+        self.last_request = request
+        return self._inner.get_verdict(request)
+
+
+def test_escalate_message_wires_context_provider_into_tier2(tmp_path: Path, make_message) -> None:
+    """docs/DESIGN.md §10.8 (item 3): escalate_message() threads its
+    context_provider argument all the way to the actual prompt, same
+    depth of wiring thread_history_reader/mailbox_lister already get."""
+    message = make_message(message_id="msg-1", subject="Urgent")
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text(
+        json.dumps(
+            {
+                "Urgent": {
+                    "category": "needs_reply",
+                    "urgency": "high",
+                    "confidence": 0.95,
+                    "suggested_action": {"type": "ignore"},
+                    "summary": "s",
+                    "reasoning": "r",
+                }
+            }
+        )
+    )
+    client = _RecordingLLMClient(RecordedLLMClient(responses_path))
+
+    with StateDB(tmp_path / "state.sqlite3") as state_db:
+        escalate_message(
+            message,
+            thread_history_reader=_RecordingThreadHistoryReader(
+                ThreadContext(prior_subject=None, user_has_replied=False)
+            ),
+            mailbox_lister=_RecordingMailboxLister(["Inbox"]),
+            llm_client=client,
+            executor=ActionExecutor(_RecordingApplier()),
+            draft_creator=_RecordingDraftCreator(),
+            state_db=state_db,
+            ops=PipelineObserver(LoggingAlerter()),
+            tiering=TieringConfig(allowed_categories=["needs_reply"]),
+            context_provider=_StubContextProvider(
+                ContextResult(snippets=(ContextSnippet(source="notes/a.md", text="A note."),))
+            ),
+        )
+
+    assert client.last_request is not None
+    assert client.last_request.context_snippets == ("notes/a.md: A note.",)
 
 
 def test_escalate_message_returns_none_when_the_daily_budget_is_exhausted(
@@ -151,6 +221,7 @@ def test_escalate_message_returns_none_when_the_daily_budget_is_exhausted(
             state_db=state_db,
             ops=PipelineObserver(LoggingAlerter()),
             tiering=TieringConfig(daily_call_budget=0),
+            context_provider=NullContextProvider(),
         )
 
     assert verdict is None
@@ -185,6 +256,7 @@ def _base_kwargs(tmp_path: Path, message: NormalizedMessage, state_db: StateDB, 
         draft_creator=_RecordingDraftCreator(),
         state_db=state_db,
         ops=PipelineObserver(alerter or LoggingAlerter()),
+        context_provider=NullContextProvider(),
     )
 
 
@@ -392,4 +464,5 @@ def test_escalate_message_or_quarantine_does_not_catch_a_real_pipeline_bug(
             state_db=state_db,
             ops=PipelineObserver(LoggingAlerter()),
             tiering=TieringConfig(allowed_categories=["needs_reply"]),
+            context_provider=NullContextProvider(),
         )

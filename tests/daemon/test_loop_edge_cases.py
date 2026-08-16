@@ -24,6 +24,7 @@ from spork.core.actions.executor import ActionExecutor
 from spork.core.alerts.base import AlertUrgency
 from spork.core.alerts.log import LoggingAlerter
 from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
+from spork.core.context.clients.null import NullContextProvider
 from spork.core.llm.base import LLMResult, VerdictRequest
 from spork.core.llm.clients.recorded import UnrecordedResponseError
 from spork.core.models import NormalizedMessage
@@ -193,6 +194,7 @@ async def _run_checkpoint_loop(
         draft_creator=_UnusedDraftCreator(),
         thread_history_reader=_UnusedThreadHistoryReader(),
         mailbox_lister=_UnusedMailboxLister(),
+        context_provider=NullContextProvider(),
         tiering=TieringConfig(),
         daemon_state=DaemonState(),
         stop_event=stop_event,
@@ -311,6 +313,7 @@ def test_run_message_loop_stops_mid_batch_without_processing_the_rest(
                 draft_creator=_UnusedDraftCreator(),
                 thread_history_reader=_UnusedThreadHistoryReader(),
                 mailbox_lister=_UnusedMailboxLister(),
+                context_provider=NullContextProvider(),
                 tiering=TieringConfig(),
                 daemon_state=DaemonState(),
                 stop_event=stop_event,
@@ -352,6 +355,7 @@ def test_run_message_loop_sleeps_rather_than_busy_looping_on_an_empty_source(
                     draft_creator=_UnusedDraftCreator(),
                     thread_history_reader=_UnusedThreadHistoryReader(),
                     mailbox_lister=_UnusedMailboxLister(),
+                    context_provider=NullContextProvider(),
                     tiering=TieringConfig(),
                     daemon_state=DaemonState(),
                     stop_event=stop_event,
@@ -400,6 +404,7 @@ def test_run_message_loop_drains_pending_control_plane_events(tmp_path: Path) ->
                     draft_creator=_UnusedDraftCreator(),
                     thread_history_reader=_UnusedThreadHistoryReader(),
                     mailbox_lister=_UnusedMailboxLister(),
+                    context_provider=NullContextProvider(),
                     tiering=TieringConfig(),
                     daemon_state=daemon_state,
                     stop_event=stop_event,
@@ -452,6 +457,7 @@ def test_run_message_loop_drains_pending_events_even_while_paused(tmp_path: Path
                     draft_creator=_UnusedDraftCreator(),
                     thread_history_reader=_UnusedThreadHistoryReader(),
                     mailbox_lister=_UnusedMailboxLister(),
+                    context_provider=NullContextProvider(),
                     tiering=TieringConfig(),
                     daemon_state=daemon_state,
                     stop_event=stop_event,

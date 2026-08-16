@@ -18,6 +18,8 @@ import pytest
 
 from spork.core.actions.executor import ActionExecutor
 from spork.core.alerts.base import AlertUrgency
+from spork.core.context.base import ContextResult, ContextSnippet
+from spork.core.context.clients.null import NullContextProvider
 from spork.core.llm.base import LLMCallUsage, LLMResult, Verdict
 from spork.core.llm.clients.recorded import RecordedLLMClient
 from spork.core.models import NormalizedMessage
@@ -89,6 +91,7 @@ def _default_kwargs(**overrides: object) -> dict[str, object]:
         "daily_call_budget": 200,
         "alert_threshold": 0.55,
         "autoact_threshold": 0.85,
+        "context_provider": NullContextProvider(),
         "ops": PipelineObserver(_FakeAlerter()),
         "now": lambda: "2026-08-12T10:00:00Z",
     }
@@ -147,6 +150,7 @@ def test_process_tier2_message_traces_every_stage_it_runs(
 
     for stage_name in (
         "BudgetGateSelector",
+        "FetchContextAugment",
         "BuildVerdictRequestFilter",
         "CallLLMAugment",
         "ValidateVerdictFilter",
@@ -196,6 +200,70 @@ def test_process_tier2_message_sends_allowed_categories_to_the_model(
 
     assert len(client.requests) == 1
     assert client.requests[0].available_categories == ("needs_reply", "fyi")
+
+
+class _StubContextProvider:
+    """Returns a fixed ContextResult regardless of the message — same
+    role _RecordingLLMClient plays above, for the context seam."""
+
+    def __init__(self, result: ContextResult) -> None:
+        self._result = result
+
+    def get_context(self, message: object) -> ContextResult:
+        return self._result
+
+
+def test_process_tier2_message_sends_context_snippets_to_the_model(
+    tmp_path: Path, make_message
+) -> None:
+    """docs/DESIGN.md §10.8 (item 3): a configured ContextProvider's
+    result reaches the actual prompt, flattened into
+    VerdictRequest.context_snippets — the read-only knowledgebase seam
+    end to end, not just constructible in isolation."""
+    applier = _RecordingApplier()
+    message = make_message(message_id="msg-1", subject="Test subject")
+    client = _RecordingLLMClient(_high_confidence_response())
+    context_provider = _StubContextProvider(
+        ContextResult(snippets=(ContextSnippet(source="notes/a.md", text="A note."),))
+    )
+    kwargs = _default_kwargs()
+    kwargs["context_provider"] = context_provider
+
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        process_tier2_message(
+            message,
+            llm_client=client,
+            executor=ActionExecutor(applier),
+            draft_creator=_RecordingDraftCreator(),
+            state_db=db,
+            **kwargs,
+        )
+
+    assert len(client.requests) == 1
+    assert client.requests[0].context_snippets == ("notes/a.md: A note.",)
+
+
+def test_process_tier2_message_sends_no_context_snippets_when_none_configured(
+    tmp_path: Path, make_message
+) -> None:
+    """The default NullContextProvider is the real "no knowledgebase
+    configured" state — an empty tuple, not a missing field or a
+    crash."""
+    applier = _RecordingApplier()
+    message = make_message(message_id="msg-1", subject="Test subject")
+    client = _RecordingLLMClient(_high_confidence_response())
+
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        process_tier2_message(
+            message,
+            llm_client=client,
+            executor=ActionExecutor(applier),
+            draft_creator=_RecordingDraftCreator(),
+            state_db=db,
+            **_default_kwargs(),
+        )
+
+    assert client.requests[0].context_snippets == ()
 
 
 def test_process_tier2_message_does_not_act_on_a_low_confidence_verdict(

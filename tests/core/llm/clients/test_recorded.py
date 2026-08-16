@@ -28,6 +28,7 @@ def _request(subject: str = "Re: Thursday call") -> VerdictRequest:
         thread_user_has_replied=False,
         available_mailboxes=("Inbox", "Needs-Reply"),
         available_categories=(),
+        context_snippets=(),
     )
 
 

@@ -19,6 +19,7 @@ from pathlib import Path
 
 from spork.core.actions.executor import ActionExecutor
 from spork.core.alerts.base import AlertUrgency
+from spork.core.context.clients.null import NullContextProvider
 from spork.core.llm.clients.recorded import RecordedLLMClient
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline import process_message
@@ -113,6 +114,7 @@ def test_tier2_run_overwrites_tier1s_escalation_row(tmp_path: Path, make_message
             daily_call_budget=200,
             alert_threshold=0.55,
             autoact_threshold=0.85,
+            context_provider=NullContextProvider(),
             ops=PipelineObserver(_FakeAlerter()),
             now=lambda: "2026-08-12T09:05:00Z",
         )
