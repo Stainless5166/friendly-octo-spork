@@ -151,6 +151,46 @@ goes one step further: loaded the same way, its `build_source()` and
 `build_action_applier()` both actually work end to end, no live
 network involved. **Met.**
 
+## M1c — Test harness & corpus tooling
+
+**Goal:** a mitmproxy-based fault-injection harness for `JmapClient`
+that doubles as the recorder for a JMAP response corpus, plus a real
+LLM corpus built from the `RecordingLLMClient` wrapper that already
+exists (`spork.core.llm.recording`). Unblocks the two acceptance
+scenarios that are currently manual-only (`@fallback`,
+`@network-recovery` in `docs/acceptance/m1_jmap.feature`) and gives
+[[M8]] (backfill) a real, varied corpus to build the retroactive-run
+against instead of hand-written fixtures. M8 depends on this
+milestone; this milestone does not depend on M8.
+
+- [ ] `tests/support/jmap_mitm.py`: pytest fixture wrapping
+      `mitmproxy.tools.dump.DumpMaster` with an addon exposing a
+      per-test fault-injection surface (drop-after-N-bytes, kill the
+      EventSource stream mid-frame, added latency, synthetic 429 +
+      `Retry-After`) (M)
+- [ ] `tests/fixtures/jmap/flows/`: recorded `Session`/`Email/changes`/
+      `Email/get`/EventSource flows captured once against the live
+      read-only account via `mitmdump -w`, then replayed offline for
+      both ordinary tests and fault injection — gitignored like
+      `tests/fixtures/corpus/` already is, same real-mail-content
+      privacy rule (S)
+- [ ] Bind `docs/acceptance/steps/m1.py`'s `@fallback` and
+      `@network-recovery` scenarios to the harness, replacing "exposes
+      undefined step bindings" with real, automatable coverage (M)
+- [ ] Build an initial `tests/fixtures/corpus/live.jsonl` by wrapping
+      the configured `LiteLLMClient` with `RecordingLLMClient` and
+      running it over a diverse hand-picked sample of real mail (S) —
+      seeds the corpus ahead of the much larger backfill-driven pass
+      in M8
+
+**Exit criteria:** `pytest` can force an EventSource disconnect and a
+JMAP request-level fault through the mitmproxy harness and assert
+`JmapClient`'s existing reconnect/backoff/fallback behavior handles
+both, with no real network or live account involved in the test run
+itself; the two previously-manual M1 acceptance scenarios have real
+step bindings; an initial LLM corpus file exists and
+`RecordedLLMClient` can replay it.
+
 ## M2 — Rule engine (Tier 1) + action executor
 
 **Goal:** deterministic rules file drives real mailbox actions, no LLM
@@ -709,6 +749,50 @@ three remaining checklist items (confidence tuning, rate-limit
 verification, crash-loop verification) and the exit criterion all share
 that one blocker — not new scope invented for M7, the same one M1's own
 exit criteria has stated since the beginning.
+
+## M8 — Backfill / retroactive categorization
+
+**Goal:** triage the maintainer's existing several-thousand-message
+Inbox (read and unread), not just mail that arrives after `sporkd` is
+enabled. `fetch_new_messages(since_cursor=None)` deliberately
+baselines and discards history (docs/DESIGN.md §9.3, "a separate
+explicit import/backfill feature would need its own policy and is not
+implicit startup behavior") — this milestone is that separate feature.
+Depends on M1c's harness/corpus existing first: backfill is exactly
+the kind of large, real, varied run that should be developed and
+regression-tested against recorded flows, not live-fired against the
+real account on every test run.
+
+- [ ] `JmapClient.query_messages()`: `Email/query` + `Email/get`,
+      windowed by JMAP anchor/position paging, filterable (e.g.
+      `notKeyword: $seen` for unread-only, unconditional for a full
+      sweep) — a new, explicitly-named read path, not a flag on
+      `fetch_new_messages()` (M)
+- [ ] A bounded, resumable backfill `Source`/CLI command (`spork
+      backfill`), separate from the daemon's steady-state
+      push/poll `TriggeredSource` (M)
+- [ ] Backfill reuses `StateDB`/`processed_messages` for dedup so an
+      overlapping backfill run and live ingestion never double-process
+      the same message (S)
+- [ ] A backfill-specific throttle/budget policy — `tiering.
+      daily_call_budget` (default 200) exists for steady-state live
+      triage and will be exhausted almost immediately by a
+      several-thousand-message sweep; backfill must not silently
+      inherit it unmodified (S)
+- [ ] `spork backfill` run against the recorded/replayed corpus from
+      M1c is used to grow `tests/fixtures/corpus/live.jsonl` with real
+      category diversity (newsletters, receipts, personal, spam, …)
+      for prompt/threshold tuning ahead of M7's confidence-tuning item
+      (S)
+
+**Exit criteria:** a backfill run categorizes a large recorded sample
+of the maintainer's real Inbox end-to-end through the same Tier 1/
+Tier 2 pipeline live ingestion uses, respects its own budget policy,
+and never reprocesses a message the live path has already claimed.
+Applying the resulting categorization as real mailbox actions (labels,
+moves) is gated on write-scoped JMAP credentials, same limitation as
+M2/M3/M5's own live-action items — this milestone's exit criterion is
+about correct read-side categorization, not the write.
 
 ## Stretch / post-v1 (not scoped, not blocking)
 

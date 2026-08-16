@@ -2850,7 +2850,9 @@ reach, never an error, since the file write itself already succeeded.
   the current Email state. Spork starts with mail arriving after it was
   enabled rather than unexpectedly triaging an unbounded existing
   inbox. A separate explicit import/backfill feature would need its own
-  policy and is not implicit startup behavior.
+  policy and is not implicit startup behavior — see docs/ROADMAP.md M8,
+  which adds `Email/query`-based windowed paging as its own read path
+  rather than a flag on this method.
 - **Connection/readiness:** `connect()` performs authenticated session
   discovery, resolves the primary account and Inbox-role mailbox, and
   is idempotent. It is injected with a client factory in contract tests
@@ -4433,6 +4435,31 @@ WantedBy=default.target
   manual until a dedicated live-account harness exists. The acceptance
   directory README records prerequisites, evidence status, and the boundary
   between offline tests and live verification.
+- **Fault injection (M1c):** `JmapClient` talks to `jmapc`'s HTTP/
+  EventSource session, which a pytest fixture points at a local
+  `mitmproxy` instance instead of Fastmail directly. Two uses of the
+  same proxy: (1) **recorder** — capture real `Session`/`Email/changes`/
+  `Email/get`/EventSource traffic once against the live read-only
+  account (`mitmdump -w`), replayed offline afterward so ordinary tests
+  never touch the network or credentials; (2) **fault injector** — an
+  addon adds controlled failures on top of a replayed flow (mid-frame
+  EventSource death, truncated response body, added latency, synthetic
+  429/`Retry-After`) so `docs/acceptance/m1_jmap.feature`'s `@fallback`
+  and `@network-recovery` scenarios become real, automatable `pytest`
+  coverage instead of manual-only. Fault injection always runs against
+  replayed flows, never proxied live onto the real account — a dropped
+  connection mid-retry-storm test is not a risk worth taking against
+  production mail, even read-only. Recorded flows live in
+  `tests/fixtures/jmap/flows/` and are gitignored for the same
+  real-mail-content reason `tests/fixtures/corpus/` already is.
+- **LLM/JMAP corpus growth:** `RecordingLLMClient`/`RecordedLLMClient`
+  (§10.5) already exist for the LLM side; M1c seeds an initial corpus
+  by wrapping the configured `LiteLLMClient` and running it over a
+  hand-picked diverse mail sample. M8's backfill run is the much larger
+  follow-on pass that grows the same corpus from real category
+  diversity instead of hand-written fixtures. The JMAP side has no
+  recorder today — the mitmproxy flow captures above serve as it,
+  rather than building a second bespoke recording mechanism.
 
 ## 17. Open questions / risks
 

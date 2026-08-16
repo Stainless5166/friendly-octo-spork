@@ -41,7 +41,7 @@ are being added milestone by milestone.
 
 | Feature | Scope | Current evidence |
 |---|---|---|
-| `m1_jmap.feature` | JMAP session, push, fallback, cursor safety | Baseline binding added; live baseline and push/reconnect evidence still open |
+| `m1_jmap.feature` | JMAP session, push, fallback, cursor safety | Baseline binding added; live baseline evidence still open. `@fallback`/`@network-recovery` await the mitmproxy harness (ROADMAP M1c) rather than being manual forever |
 | `m2_rules.feature` | Live deterministic rules and actions | Offline pipeline tested; live JMAP actions still open |
 | `m3_tier2.feature` | Live LLM verdicts, confidence, budget, drafts | Recorded/offline pipeline tested; live JMAP writes and live model run open |
 | `m4_alerting.feature` | Alerts, push health, desktop delivery | Logging alerts tested; desktop backend and push-health alert open |
