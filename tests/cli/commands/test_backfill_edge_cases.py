@@ -5,6 +5,7 @@ Companion to test_backfill.py's acceptance tests.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -86,3 +87,92 @@ def test_backfill_with_a_page_size_larger_than_the_limit_still_stops_at_the_limi
     count = conn.execute("SELECT COUNT(*) FROM processed_messages").fetchone()[0]
     conn.close()
     assert count == 1
+
+
+def test_backfill_builds_tier2_provider_capabilities_once_per_run_not_per_message(
+    tmp_path: Path,
+) -> None:
+    """PR #20 review finding #2: build_thread_history_reader()/
+
+    build_mailbox_lister()/build_draft_creator() must be built once per
+    backfill run, not once per escalated message — FileProvider's
+    versions re-read the whole messages file from disk on every call,
+    so calling them per-message would redo that work needlessly for
+    every escalation.
+    """
+    messages_path = tmp_path / "messages.json"
+    messages_path.write_text(
+        json.dumps(
+            [
+                {
+                    "message_id": f"msg-{i}",
+                    "thread_id": f"thread-{i}",
+                    "from_address": "boss@example.com",
+                    "from_domain": "example.com",
+                    "subject": f"Urgent {i}",
+                    "body_text": "Need this today.",
+                }
+                for i in range(3)
+            ]
+        )
+    )
+    rules_path = tmp_path / "rules.toml"
+    rules_path.write_text(
+        '[[rule]]\nid = "catch-all"\nwhen = { always = true }\naction = { type = "escalate" }\n'
+    )
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text(
+        json.dumps(
+            {
+                f"Urgent {i}": {
+                    "category": "needs_reply",
+                    "urgency": "high",
+                    "confidence": 0.95,
+                    "suggested_action": {"type": "ignore"},
+                    "summary": "s",
+                    "reasoning": "r",
+                }
+                for i in range(3)
+            }
+        )
+    )
+    counts_path = tmp_path / "capability_counts.json"
+    config_dir = tmp_path / "xdg-config-home" / "spork"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.toml").write_text(
+        f"""
+        rules_path = "{rules_path}"
+        db_path = "{tmp_path / "state.sqlite3"}"
+        socket_path = "{tmp_path / "sporkd.sock"}"
+
+        [provider]
+        spec = "tests.support.counting_provider:CountingFileProvider"
+        [provider.kwargs]
+        messages_path = "{messages_path}"
+        actions_log_path = "{tmp_path / "actions.jsonl"}"
+        counts_path = "{counts_path}"
+
+        [llm]
+        spec = "spork.core.llm.clients.recorded:RecordedLLMClient"
+        [llm.kwargs]
+        responses_path = "{responses_path}"
+
+        [alerts]
+        spec = "spork.core.alerts.log:LoggingAlerter"
+
+        [tiering]
+        allowed_categories = ["needs_reply"]
+        """
+    )
+    env = _env(tmp_path)
+
+    result = _run(env=env)
+
+    assert result.returncode == 0
+    assert "3 Tier 2 verdicts" in result.stdout
+    counts = json.loads(counts_path.read_text())
+    assert counts == {
+        "build_thread_history_reader": 1,
+        "build_mailbox_lister": 1,
+        "build_draft_creator": 1,
+    }
