@@ -218,6 +218,11 @@ class FileProvider:
         messages = load_messages(self._messages_path)
         total = len(messages)
         page = tuple(messages[position : position + limit])
+        next_position = position + len(page)
         return BackfillPage(
-            messages=page, position=position, total=total, has_more=position + limit < total
+            messages=page,
+            position=position,
+            next_position=next_position,
+            total=total,
+            has_more=next_position < total,
         )

@@ -123,11 +123,17 @@ class BackfillPage:
     `position`/`total` describe a page in a query's result window, not
     a durable Email-state checkpoint to acknowledge — backfill is a
     bounded, resumable *read*, never part of the daemon's steady-state
-    ingestion loop.
+    ingestion loop. `next_position` is where the next page should
+    start — not necessarily `position + len(messages)`, since a
+    backend's underlying query can match more items than it actually
+    returns (e.g. JMAP's `Email/get` returning fewer emails than
+    `Email/query` matched ids, a message deleted/moved mid-sweep). A
+    caller should always resume from `next_position`.
     """
 
     messages: tuple[NormalizedMessage, ...]
     position: int
+    next_position: int
     total: int | None
     has_more: bool
 

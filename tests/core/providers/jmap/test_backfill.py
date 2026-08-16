@@ -38,7 +38,9 @@ def test_query_messages_delegates_to_the_client_and_wraps_the_result(make_messag
             self, *, unread_only: bool = False, position: int = 0, limit: int = 50
         ) -> JmapQueryResult:
             self.calls.append({"unread_only": unread_only, "position": position, "limit": limit})
-            return JmapQueryResult(messages=(message,), position=10, total=42, has_more=True)
+            return JmapQueryResult(
+                messages=(message,), position=10, next_position=11, total=42, has_more=True
+            )
 
     client = _Client()
     provider = _provider(client)
@@ -48,6 +50,7 @@ def test_query_messages_delegates_to_the_client_and_wraps_the_result(make_messag
     assert isinstance(page, BackfillPage)
     assert page.messages == (message,)
     assert page.position == 10
+    assert page.next_position == 11
     assert page.total == 42
     assert page.has_more is True
     assert client.calls == [{"unread_only": True, "position": 10, "limit": 20}]
@@ -62,7 +65,9 @@ def test_query_messages_uses_documented_defaults() -> None:
             self, *, unread_only: bool = False, position: int = 0, limit: int = 50
         ) -> JmapQueryResult:
             self.calls.append({"unread_only": unread_only, "position": position, "limit": limit})
-            return JmapQueryResult(messages=(), position=0, total=0, has_more=False)
+            return JmapQueryResult(
+                messages=(), position=0, next_position=0, total=0, has_more=False
+            )
 
     client = _Client()
     provider = _provider(client)

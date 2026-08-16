@@ -177,7 +177,12 @@ def _backfill(config: SporkConfig, *, unread_only: bool, limit: int, page_size: 
                         break
                     tier2_verdicts += 1
 
-            position += len(page.messages)
+            # page.next_position, not position + len(page.messages): those
+            # diverge whenever the backend's query matches more items than
+            # it actually returns (e.g. a message deleted/moved between
+            # Email/query and Email/get mid-sweep) - see BackfillPage's
+            # docstring.
+            position = page.next_position
             if not page.has_more:
                 break
 
