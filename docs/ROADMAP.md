@@ -918,13 +918,22 @@ real account on every test run.
       windowed by `position`/`limit` paging, filterable (`unread_only`
       → `notKeyword: $seen`, unconditional for a full sweep) — a new,
       explicitly-named read path, not a flag on `fetch_new_messages()`
-      (M). `JmapQueryResult` carries `position`/`total`/`has_more`,
-      distinct in shape from `JmapFetchResult`'s cursor semantics — a
-      query page isn't an acknowledgeable Email state. 5 acceptance
-      tests (`tests/core/providers/jmap/test_query.py`), same injected
-      jmapc-shaped fake convention as the rest of the package.
-      Live-verified against the real (read-only) account: 4181 total
-      Inbox messages, 2849 unread, real pagination, no writes.
+      (M). `JmapQueryResult` carries `position`/`next_position`/`total`/
+      `has_more`, distinct in shape from `JmapFetchResult`'s cursor
+      semantics — a query page isn't an acknowledgeable Email state.
+      6 acceptance tests (`tests/core/providers/jmap/test_query.py`),
+      same injected jmapc-shaped fake convention as the rest of the
+      package. Live-verified against the real (read-only) account:
+      4181 total Inbox messages, 2849 unread, real pagination, no
+      writes. **PR #20 review finding, fixed:** pagination originally
+      derived `has_more`/the next page's position from
+      `len(messages)` (the post-normalize count) instead of the
+      actual `Email/query` match count — a message deleted/moved
+      between `Email/query` and `Email/get` mid-sweep would have
+      drifted position and could stall a run before reaching `total`.
+      `next_position` now derives from `len(ids)`, and `spork
+      backfill` resumes from `page.next_position`, not
+      `position + len(page.messages)`.
 - [x] A bounded, resumable backfill CLI command (`spork backfill`),
       separate from the daemon's steady-state push/poll
       `TriggeredSource` (M) — standalone like `reclassify`/`logs`
@@ -938,7 +947,15 @@ real account on every test run.
       idempotency gate, capability check, and per-message limit
       counter were already correct), same
       subprocess/FileProvider/RecordedLLMClient convention as
-      `test_reclassify.py`.
+      `test_reclassify.py`. **PR #20 review finding, fixed:**
+      `build_thread_history_reader()`/`build_mailbox_lister()`/
+      `build_draft_creator()` were built inside the per-message loop,
+      once per escalation — for `FileProvider` that re-reads and
+      re-parses the whole messages file from disk every time. Now
+      built once before the loop and reused across every escalation.
+      A new test (`tests/support/counting_provider.py`'s
+      `CountingFileProvider`) confirms each is built exactly once
+      across 3 escalating messages.
 - [x] Backfill reuses `StateDB`/`processed_messages` for dedup so an
       overlapping backfill run and live ingestion never double-process
       the same message (S) — comes for free from
@@ -957,6 +974,12 @@ real account on every test run.
       layers on top: if Tier 2's budget is exhausted mid-run, the loop
       stops early and reports it (`stderr`), rather than silently
       continuing to escalate messages that will keep failing budget.
+      **PR #20 review finding, fixed:** `--limit`/`--page-size` had no
+      positivity validation — `--limit 0` ran successfully and
+      reported "0 messages processed" instead of being rejected as a
+      mistake. Both now use Typer's `min=1`, rejecting a non-positive
+      value with a clean usage error (exit 2, no traceback) before any
+      provider/network call.
 - [ ] `spork backfill` run against the recorded/replayed corpus from
       M1c is used to grow `tests/fixtures/corpus/live.jsonl` with real
       category diversity (newsletters, receipts, personal, spam, …)

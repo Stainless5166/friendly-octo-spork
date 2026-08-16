@@ -36,13 +36,21 @@ class JmapQueryResult:
 
     Not a live-ingestion checkpoint — `position`/`total` describe a
     page in `Email/query`'s result window, not an Email state to
-    acknowledge. `has_more` is derived (`position + len(messages) <
-    total`) so a caller can page without re-deriving that arithmetic
-    itself.
+    acknowledge. `next_position` is where the *next* page should start
+    — `position` plus how many ids `Email/query` actually matched at
+    this window, not `len(messages)`. Those two diverge whenever
+    `Email/get` returns fewer emails than requested ids (a message
+    deleted/moved between the two calls, plausible mid-sweep on a
+    live several-thousand-message backfill) — deriving pagination
+    from the post-normalize message count would drift `has_more`
+    and could stall a run instead of advancing past the gap. A caller
+    should always resume from `next_position`, never
+    `position + len(messages)`.
     """
 
     messages: tuple[NormalizedMessage, ...]
     position: int
+    next_position: int
     total: int | None
     has_more: bool
 
@@ -285,9 +293,17 @@ class JmapClient:
                 raise JmapError("Email/get returned no message list")
             messages = tuple(self._normalize(email) for email in emails)
 
-        has_more = total is not None and response_position + len(messages) < total
+        # len(ids), not len(messages): the number of ids Email/query
+        # actually matched at this window, regardless of how many
+        # Email/get returned (see JmapQueryResult's docstring).
+        next_position = response_position + len(ids)
+        has_more = total is not None and next_position < total
         return JmapQueryResult(
-            messages=messages, position=response_position, total=total, has_more=has_more
+            messages=messages,
+            position=response_position,
+            next_position=next_position,
+            total=total,
+            has_more=has_more,
         )
 
     def event_stream(self) -> Iterable[object]:

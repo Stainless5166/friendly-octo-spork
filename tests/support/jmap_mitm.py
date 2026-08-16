@@ -16,9 +16,14 @@ EventSource stream) rather than injecting a fake jmapc client object,
 so it can exercise `JmapClient`/`JmapPushTrigger` against genuine
 transport failures instead of only test-double exceptions.
 
-Recording real traffic against the maintainer's live account
-(`tests/fixtures/jmap/flows/`, M1c's second checklist item) is a
-separate, explicitly manual step — not exercised by this module.
+Recording real traffic against the maintainer's live account (into
+`tests/fixtures/jmap/flows/`) is a separate, explicitly manual step —
+not exercised by this module. Replaying those recordings back *is*,
+though: `jmap_mitm_harness(replay_flows=[...])` loads mitmproxy's own
+`ServerPlayback` addon against the given `.flow` files, answering a
+matching request from the real recorded shape ahead of (and
+independent from) the hand-built canned responses below, which still
+cover anything a loaded recording doesn't.
 """
 
 from __future__ import annotations

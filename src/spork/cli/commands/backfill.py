@@ -67,6 +67,7 @@ def backfill(
     limit: int = typer.Option(  # noqa: B008 - idiomatic Typer, not a mutable default
         50,
         "--limit",
+        min=1,
         help=(
             "Maximum number of messages to process this run. Deliberately "
             "conservative by default (docs/ROADMAP.md M8): a several-"
@@ -74,7 +75,9 @@ def backfill(
             "accident — raise explicitly for a larger run."
         ),
     ),
-    page_size: int = typer.Option(50, "--page-size", help="Messages fetched per Email/query page."),
+    page_size: int = typer.Option(  # noqa: B008 - idiomatic Typer, not a mutable default
+        50, "--page-size", min=1, help="Messages fetched per Email/query page."
+    ),
 ) -> None:
     """Retroactively categorize existing mail through the same Tier 1/Tier 2
     pipeline live ingestion uses (docs/ROADMAP.md M8)."""
@@ -110,6 +113,13 @@ def _backfill(config: SporkConfig, *, unread_only: bool, limit: int, page_size: 
     )
     default_unmatched_action = Action(type=config.tiering.default_unmatched_action)
     llm_client = build_llm_client(config, secrets)
+    # Built once for the whole run, not once per escalated message
+    # (PR #20 review finding #2) — FileProvider's versions re-read the
+    # whole messages file from disk on every call, so building these
+    # per-escalation would redo that work needlessly on every one.
+    thread_history_reader = provider.build_thread_history_reader()
+    mailbox_lister = provider.build_mailbox_lister()
+    draft_creator = provider.build_draft_creator()
 
     processed = 0
     tier1_actions = 0
@@ -163,11 +173,11 @@ def _backfill(config: SporkConfig, *, unread_only: bool, limit: int, page_size: 
                 if verdict.action.type == "escalate":
                     tier2_verdict = escalate_message(
                         message,
-                        thread_history_reader=provider.build_thread_history_reader(),
-                        mailbox_lister=provider.build_mailbox_lister(),
+                        thread_history_reader=thread_history_reader,
+                        mailbox_lister=mailbox_lister,
                         llm_client=llm_client,
                         executor=executor,
-                        draft_creator=provider.build_draft_creator(),
+                        draft_creator=draft_creator,
                         state_db=state_db,
                         ops=ops,
                         tiering=config.tiering,
@@ -177,7 +187,12 @@ def _backfill(config: SporkConfig, *, unread_only: bool, limit: int, page_size: 
                         break
                     tier2_verdicts += 1
 
-            position += len(page.messages)
+            # page.next_position, not position + len(page.messages): those
+            # diverge whenever the backend's query matches more items than
+            # it actually returns (e.g. a message deleted/moved between
+            # Email/query and Email/get mid-sweep) - see BackfillPage's
+            # docstring.
+            position = page.next_position
             if not page.has_more:
                 break
 

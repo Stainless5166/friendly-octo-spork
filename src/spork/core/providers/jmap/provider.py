@@ -230,6 +230,7 @@ class JmapProvider:
         return BackfillPage(
             messages=result.messages,
             position=result.position,
+            next_position=result.next_position,
             total=result.total,
             has_more=result.has_more,
         )
