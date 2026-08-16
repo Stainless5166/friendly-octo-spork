@@ -11,8 +11,9 @@ the message loop and the IPC control socket as two tasks in one
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,7 @@ from spork.core.providers.base import (
     MailboxLister,
     ThreadHistoryReader,
 )
+from spork.core.receipts.pipeline import ReceiptArchiveComponents
 from spork.core.rules.loader import load_rules
 from spork.core.rules.schema import Action
 from spork.core.runtime import (
@@ -43,6 +45,7 @@ from spork.core.runtime import (
     build_context_provider,
     build_llm_client,
     build_provider,
+    build_receipt_archive_components,
     resolve_runtime_secrets,
 )
 from spork.core.secrets import Secrets
@@ -63,6 +66,18 @@ class _ObserveDraftCreator:
     """Suppress draft creation in observe mode."""
 
     def create_draft(self, in_reply_to: Any, body: str) -> None:
+        return
+
+
+class _ObserveKeywordApplier:
+    """Suppress keyword tagging in observe mode -- the archive_receipt
+    branch's counterpart to _ObserveActionApplier. Combined with
+    ArchiveReceiptAugment's own dry_run (which skips the PDF write),
+    this is what makes --observe's "process and audit messages without
+    changing mail or creating drafts" contract hold for receipt
+    archiving too, not just move/tag/escalate."""
+
+    def apply_keywords(self, message: Any, keywords: Sequence[str]) -> None:
         return
 
 
@@ -117,6 +132,17 @@ async def run_daemon(
 
     llm_client = build_llm_client(config, runtime_secrets)
     context_provider = build_context_provider(config, runtime_secrets)
+    receipt_archive = build_receipt_archive_components(
+        config, provider, context_provider, runtime_secrets
+    )
+    if observe and receipt_archive is not None:
+        # Same "still routes and audits, but no real side effect" shape
+        # _ObserveActionApplier/_ObserveDraftCreator give the terminal
+        # branch: dry_run=True skips the PDF write, this KeywordApplier
+        # swap skips the mail mutation.
+        receipt_archive = dataclasses.replace(
+            receipt_archive, keyword_applier=_ObserveKeywordApplier(), dry_run=True
+        )
 
     alerter = build_alerter(config, runtime_secrets)
     ops = PipelineObserver(alerter)
@@ -167,6 +193,7 @@ async def run_daemon(
                     thread_history_reader=thread_history_reader,
                     mailbox_lister=mailbox_lister,
                     context_provider=context_provider,
+                    receipt_archive=receipt_archive,
                     tiering=config.tiering,
                     daemon_state=daemon_state,
                     stop_event=stop_event,
@@ -289,6 +316,7 @@ async def _run_message_loop(
     now: Callable[[], str] = _utc_now_iso,
     cursor_account_id: str | None = None,
     observe: bool = False,
+    receipt_archive: ReceiptArchiveComponents | None = None,
 ) -> None:
     """Repeatedly poll `source` and run each message through Tier 1,
     escalating to Tier 2 in the same cycle when Tier 1 routes
@@ -370,6 +398,7 @@ async def _run_message_loop(
                 state_db=state_db,
                 ops=ops,
                 classifier=classifier,
+                receipt_archive=receipt_archive,
             )
             # A second, separate to_thread call, strictly sequential
             # with the one above — StateDB's sequential-access
