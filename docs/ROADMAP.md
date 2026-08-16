@@ -1071,6 +1071,56 @@ moves) is gated on write-scoped JMAP credentials, same limitation as
 M2/M3/M5's own live-action items — this milestone's exit criterion is
 about correct read-side categorization, not the write.
 
+## M9 — Read-only knowledgebase context retrieval
+
+**Goal:** a Tier 2 verdict can draw on relevant background beyond the
+email itself — a generic, read-only "context/knowledgebase" seam, not
+a bespoke integration with any one note-taking tool. (Explicit
+correction from an earlier 4-item proposal that pasted Obsidian-
+specific pseudocode: "I do not exactly want a bespoke obsidian config,
+but a read right context/knowledgebase interface.")
+
+- [x] `ContextProvider` Protocol + dynamic loader + pipeline wiring (M) —
+      `spork.core.context.base.ContextProvider` (`get_context(message)
+      -> ContextResult`), `spork.core.context.loader.load_context_provider()`
+      (identical "module:ClassName" mechanics to every other backend
+      loader in this codebase). `FetchContextAugment` (a new Tier 2
+      pipeline Augment) runs before `BuildVerdictRequestFilter`, which
+      flattens the result into `VerdictRequest.context_snippets` —
+      sent in the actual prompt (`build_prompt()`), framed explicitly
+      as reference material, never instructions, and never a
+      substitute for `available_categories`/`available_mailboxes` as
+      the source of truth for what the model may choose.
+      `SporkConfig.context: BackendSpec | None = None` — omitting
+      `[context]` is a fully valid config, same convention
+      `tiering.local_classifier: None` already has.
+- [x] `NullContextProvider` — the real default when `[context]` is
+      unconfigured (S) — always answers "no relevant context," zero
+      configuration, zero I/O. Not a stand-in for a missing backend;
+      "no knowledgebase configured" is a legitimate deployment state
+      in its own right.
+- [ ] A real backend that actually reads content (S/M, genuinely
+      undecided) — `spork.core.context.clients.vault.MarkdownVaultContextProvider`
+      settles the likely real shape (`vault_path` constructor arg) as
+      a stub, `get_context()` raising `NotImplementedError` — but
+      *not* for the usual "blocked on a live network call" reason
+      every other settled-shape stub in this codebase has. The actual
+      blocker is a real design choice: plain substring/keyword match
+      vs. something ranked (embeddings, an LLM re-rank pass) against
+      real note content, and this environment has no real vault to
+      validate either choice against honestly — unlike `FileProvider`,
+      which could be built and tested fully offline from fixtures
+      alone. Needs a decision once real vault content is available to
+      test against, not more design-from-nothing.
+
+**Exit criteria:** a Tier 2 verdict on a test message demonstrably
+changes (a different `suggested_action`, a materially different
+`reasoning`) when relevant context is present in `context_snippets`
+versus absent — proving the seam actually influences the model's
+answer, not just that it's wired through unused. Blocked on the same
+real backend as the second checklist item above; `NullContextProvider`
+alone can't demonstrate this since it never supplies any snippets.
+
 ## Stretch / post-v1 (not scoped, not blocking)
 
 - Webhook `Alerter` backend (ntfy/Pushover-style, URL from secretspec) —

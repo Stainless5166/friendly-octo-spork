@@ -210,6 +210,15 @@ flowchart TD
             end
         end
 
+        subgraph context["context/ (§10.8)"]
+            context_base["base.py<br/>ContextProvider +<br/>ContextResult/ContextSnippet"]
+            context_loader["loader.py<br/>load_context_provider()"]
+            subgraph context_clients["clients/"]
+                context_null["null.py<br/>NullContextProvider"]
+                context_vault["vault.py<br/>MarkdownVaultContextProvider"]:::planned
+            end
+        end
+
         subgraph actions["actions/"]
             actions_executor["executor.py<br/>ActionExecutor"]
         end
@@ -629,6 +638,7 @@ classDiagram
         +provider: BackendSpec
         +llm: BackendSpec
         +alerts: BackendSpec
+        +context: Optional~BackendSpec~
         +llm_recording: Optional~LLMRecordingConfig~
         +rules_path: Path
         +db_path: Path
@@ -702,6 +712,8 @@ classDiagram
     class CheckpointedSource { <<Protocol>> }
     class LLMClient { <<Protocol>> }
     class Alerter { <<Protocol>> }
+    class ContextProvider { <<Protocol>> }
+    class NullContextProvider
     class RecordingLLMClient
     class resolve_runtime_secrets {
         <<function>>
@@ -714,8 +726,9 @@ classDiagram
     class build_provider { <<function>> }
     class build_llm_client { <<function>> }
     class build_alerter { <<function>> }
+    class build_context_provider { <<function>> }
 
-    resolve_runtime_secrets ..> SporkConfig : checks configured secret mappings
+    resolve_runtime_secrets ..> SporkConfig : checks configured secret mappings, including context when set
     resolve_runtime_secrets ..> Secrets : resolves once when needed
     materialize_backend_kwargs ..> BackendSpec : reads kwargs + secret_kwargs
     materialize_backend_kwargs ..> Secrets : reads mapped values
@@ -723,6 +736,8 @@ classDiagram
     build_llm_client ..> LLMClient : loads with materialized kwargs
     build_llm_client ..> RecordingLLMClient : wraps when configured
     build_alerter ..> Alerter : loads with materialized kwargs
+    build_context_provider ..> ContextProvider : loads with materialized kwargs when configured
+    build_context_provider ..> NullContextProvider : returns when config.context is None
 ```
 
 `BackendSpec.secret_kwargs` maps a constructor argument to a SecretSpec
@@ -1219,6 +1234,7 @@ classDiagram
         +thread_user_has_replied: bool
         +available_mailboxes: tuple
         +available_categories: tuple
+        +context_snippets: tuple
     }
     class Verdict {
         <<pydantic BaseModel>>
@@ -1427,6 +1443,52 @@ classDiagram
 The `LLMClient` equivalent of `FileProvider` (§9.3) — a second, fully
 real adapter with no `NotImplementedError` anywhere, for CI/offline use
 (§10.5), never a stand-in for a live verdict in production.
+
+#### `spork.core.context`
+
+```mermaid
+classDiagram
+    class NormalizedMessage
+    class ContextSnippet {
+        <<dataclass, frozen>>
+        +source: str
+        +text: str
+    }
+    class ContextResult {
+        <<dataclass, frozen>>
+        +snippets: tuple
+    }
+    class ContextProvider {
+        <<Protocol>>
+        +get_context(message: NormalizedMessage) ContextResult
+    }
+    class ContextProviderLoadError { <<Exception>> }
+    class load_context_provider {
+        <<function>>
+        +load_context_provider(spec: str, **kwargs) ContextProvider
+    }
+    class NullContextProvider {
+        +get_context(message: NormalizedMessage) ContextResult
+    }
+    class MarkdownVaultContextProvider {
+        -vault_path: Path
+        +get_context(message: NormalizedMessage) ContextResult
+    }
+
+    ContextProvider ..> NormalizedMessage : reads
+    ContextProvider ..> ContextResult : returns
+    ContextResult *-- ContextSnippet
+    ContextProvider <|.. NullContextProvider : structurally satisfies
+    ContextProvider <|.. MarkdownVaultContextProvider : structurally satisfies
+    load_context_provider ..> ContextProviderLoadError : raises
+```
+
+A generic, read-only "give me relevant background for this message"
+seam (§10.8) — deliberately not a bespoke integration with any one
+note-taking tool. `NullContextProvider` is the real default when
+`[context]` is unconfigured; `MarkdownVaultContextProvider` is a
+settled-shape stub, blocked on an undecided retrieval-algorithm design
+question rather than a live network call (docs/ROADMAP.md M9).
 
 #### `spork.core.actions`
 
@@ -1851,6 +1913,7 @@ classDiagram
     class MissingMetaError { <<Exception>> }
     class LLMClient { <<Protocol>> }
     class DraftCreator { <<Protocol>> }
+    class ContextProvider { <<Protocol>> }
     class ActionExecutor
     class StateDB
     class PipelineObserver
@@ -1868,6 +1931,7 @@ classDiagram
         +available_mailboxes: Sequence~str~
         +ts: Optional~str~
         +correlation_id: Optional~str~
+        +context: Optional~ContextResult~
         +request: Optional~VerdictRequest~
         +verdict: Optional~Verdict~
         +llm_usage: Optional~LLMCallUsage~
@@ -1888,6 +1952,10 @@ classDiagram
         -state_db: StateDB
         -daily_call_budget: int
         +select(payload) tuple
+    }
+    class FetchContextAugment {
+        -context_provider: ContextProvider
+        +augment(payload) Payload
     }
     class BuildVerdictRequestFilter {
         -available_categories: Sequence~str~
@@ -1940,6 +2008,7 @@ classDiagram
     Filter <|.. TimestampFilter : structurally satisfies
     Filter <|.. CorrelationIdFilter : structurally satisfies
     Selector <|.. BudgetGateSelector : structurally satisfies
+    Augment <|.. FetchContextAugment : structurally satisfies
     Filter <|.. BuildVerdictRequestFilter : structurally satisfies
     Augment <|.. CallLLMAugment : structurally satisfies
     Filter <|.. RecordLLMUsageFilter : structurally satisfies
@@ -1963,6 +2032,7 @@ classDiagram
     MarkProcessedFilter ..> MissingMetaError : raises
 
     BuildVerdictRequestFilter ..> clean_body : cleans body via
+    FetchContextAugment --> ContextProvider : the other I/O stage — knowledgebase seam
     CallLLMAugment --> LLMClient : the one I/O stage — external API seam
     ValidateVerdictFilter ..> validate_verdict : Tier 2 verdict validation
     ConfidenceBandSelector ..> confidence_band : Tier 2 confidence gating
@@ -1979,15 +2049,16 @@ classDiagram
 
     class build_tier2_pipeline {
         <<function>>
-        +build_tier2_pipeline(llm_client, executor, draft_creator, state_db, ops, allowed_categories, daily_call_budget, alert_threshold, autoact_threshold, max_body_chars, now, new_correlation_id) Pipeline
+        +build_tier2_pipeline(llm_client, executor, draft_creator, state_db, ops, allowed_categories, daily_call_budget, alert_threshold, autoact_threshold, context_provider, max_body_chars, now, new_correlation_id) Pipeline
     }
     class process_tier2_message {
         <<function>>
-        +process_tier2_message(message, to_addresses, ..., ops, ..., now, new_correlation_id) Optional~Verdict~
+        +process_tier2_message(message, to_addresses, ..., ops, ..., context_provider, now, new_correlation_id) Optional~Verdict~
     }
     build_tier2_pipeline ..> TimestampFilter : composes
     build_tier2_pipeline ..> CorrelationIdFilter : composes
     build_tier2_pipeline ..> BudgetGateSelector : composes
+    build_tier2_pipeline ..> FetchContextAugment : composes
     build_tier2_pipeline ..> BuildVerdictRequestFilter : composes
     build_tier2_pipeline ..> CallLLMAugment : composes
     build_tier2_pipeline ..> RecordLLMUsageFilter : composes
@@ -4012,6 +4083,106 @@ run this on.** Tier 1 records an escalation as pending but does not call
 `sporkd` main loop still needs to decide "this message escalated and
 hasn't had its Tier 2 run yet" and schedule it; that scheduling half
 needs a live JMAP session and is not faked here.
+
+### 10.8 Read-only knowledgebase context (`spork.core.context`)
+
+A generic, read-only "give me relevant background for this message"
+seam — deliberately **not** a bespoke integration with any one
+note-taking tool. An earlier design proposal pasted Obsidian-specific
+pseudocode for this; the explicit correction that shaped what actually
+got built: "I do not exactly want a bespoke obsidian config, but a
+read right context/knowledgebase interface." `ContextProvider` is a
+`Protocol`, structurally satisfied like every other backend seam in
+this codebase (`LLMClient`, `Provider`, `Alerter`):
+
+```python
+@dataclass(frozen=True, slots=True)
+class ContextSnippet:
+    source: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContextResult:
+    snippets: tuple[ContextSnippet, ...]
+
+
+class ContextProvider(Protocol):
+    def get_context(self, message: NormalizedMessage) -> ContextResult: ...
+```
+
+`get_context()` takes the whole `NormalizedMessage`, not a narrower
+query type — the same shape `ThreadHistoryReader.get_thread_context()`
+already uses — so a real backend can look at whatever fields it needs
+without the Protocol anticipating them in advance. An empty
+`ContextResult` is a real, first-class answer ("no relevant context
+found"), not an error.
+
+**Two backends today, one config field:**
+
+- **`NullContextProvider`** — always returns `ContextResult(snippets=())`.
+  The real, fully-working default when `SporkConfig.context` is `None`
+  (no `[context]` table) — "no knowledgebase configured" is a
+  legitimate deployment state, same relationship
+  `TieringConfig.local_classifier: None` has to the classify registry.
+- **`MarkdownVaultContextProvider`** — a settled-shape stub
+  (`vault_path` constructor argument settled for real,
+  `get_context()` raises `NotImplementedError`). Unlike every other
+  settled-shape stub in this codebase (`JmapClient`, the direct-
+  Anthropic client before LiteLLM replaced it), the blocker here
+  isn't a live network call this environment genuinely can't make —
+  it's an undecided design question (plain substring/keyword match vs.
+  something ranked, e.g. embeddings or an LLM re-rank pass) that this
+  environment has no real vault content to validate honestly either
+  way, unlike `FileProvider`, which was buildable and testable fully
+  offline from fixtures alone (docs/ROADMAP.md M9).
+
+`SporkConfig.context: BackendSpec | None = None`, loaded via
+`spork.core.context.loader.load_context_provider()` — identical
+"module:ClassName" mechanics to every other dynamically-loaded
+backend. `spork.core.runtime.build_context_provider()` returns
+`NullContextProvider()` when `config.context is None`, otherwise loads
+the configured spec; its `secret_kwargs` (if any) are folded into
+`resolve_runtime_secrets()`'s existing check alongside
+provider/llm/alerts.
+
+**Pipeline wiring:** `FetchContextAugment` is a new Tier 2 Augment —
+the second I/O stage besides `CallLLMAugment` — composed into
+`budget_ok` right before `BuildVerdictRequestFilter`:
+
+```python
+budget_ok = Pipeline(
+    [
+        FetchContextAugment(context_provider),
+        BuildVerdictRequestFilter(allowed_categories, max_body_chars),
+        CallLLMAugment(llm_client),
+        ...,
+    ]
+)
+```
+
+`FetchContextAugment.augment()` calls
+`context_provider.get_context(meta.message)` and stores the result in
+`Tier2Meta.context`. `BuildVerdictRequestFilter` then flattens
+`meta.context.snippets` into `VerdictRequest.context_snippets` — plain
+`"source: text"` strings, not structured `ContextSnippet` objects,
+since the prompt only ever needs rendered text — and raises
+`MissingMetaError` if `meta.context` isn't set yet (same ordering
+contract every other stage in this pipeline enforces). `build_prompt()`
+includes `context_snippets` in the exact user-message JSON, and the
+system prompt frames it explicitly: reference material only, never
+instructions, and never a substitute for
+`available_categories`/`available_mailboxes` as the source of truth
+for what the model may actually choose — the same prompt-injection-
+aware framing the email body itself already gets by being sent as
+data, not instructions.
+
+`build_tier2_pipeline()`/`process_tier2_message()`/`escalate_message()`/
+`escalate_message_or_quarantine()` all gained a required
+`context_provider` parameter, threaded through from each of the three
+real Tier 2 callers (`_run_message_loop()`, `spork reclassify`,
+`spork backfill`), each building its own via
+`runtime.build_context_provider()`.
 
 ## 11. Safety & human-in-the-loop
 

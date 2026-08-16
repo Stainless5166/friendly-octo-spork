@@ -277,10 +277,17 @@ was never actually sent this deployment's configured category set
 `ValidateVerdictFilter`'s post-hoc check, never the prompt) — fixed via
 `VerdictRequest.available_categories`/`BuildVerdictRequestFilter`;
 `Verdict` also gained a freeform `metadata: dict[str, str]` field for
-extracted data outside any closed/validated set. **The full suite is
-now 837 tests, all green** — the running per-paragraph totals above
-this point were not individually reconciled to that figure; treat this
-line as the current authority.
+extracted data outside any closed/validated set. Updated once more for
+item 3, a new M9: `spork.core.context` — `ContextProvider` Protocol,
+dynamic loader, `NullContextProvider` (the real default) and
+`MarkdownVaultContextProvider` (a settled-shape stub, blocked on an
+undecided retrieval-algorithm choice rather than a live call), wired
+into the Tier 2 pipeline via a new `FetchContextAugment` and
+`VerdictRequest.context_snippets`, `SporkConfig.context` +
+`runtime.build_context_provider()`, threaded through all three real
+Tier 2 callers. **The full suite is now 862 tests, all green** — the
+running per-paragraph totals above this point were not individually
+reconciled to that figure; treat this line as the current authority.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -838,6 +845,14 @@ test) — closed with targeted tests, not implementation changes; no
 | `StateDB`/`processed_messages` dedup reuse | ✅ (reuses `process_message()`'s existing idempotency gate, no new mechanism) | ✅ — test 758 |
 | Backfill-specific throttle/budget policy | ✅ (`--limit`, default 50) | ✅ — tests 756, 760 |
 | Full backfill run growing the corpus at volume | — | not started — a 13-entry hand-picked seed exists (M1c) via direct SMTP+LLM calls, not a `spork backfill` run; that needs an all-`ignore` rules file or the write-side JMAP stubs resolved first (`apply_action()`/`create_draft()` are still `NotImplementedError`) |
+
+### M9 — Read-only knowledgebase context retrieval — 2/3
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `ContextProvider` Protocol + dynamic loader + pipeline wiring | ✅ | ✅ — tests 787–796, 801–805, 811 (100% line coverage on `spork.core.context`) |
+| `NullContextProvider` (the real default) | ✅ | ✅ — tests 797–798 |
+| A real backend that actually reads content | — | genuinely undecided design work, not a live-account blocker — `MarkdownVaultContextProvider` (tests 799–800) settles the shape as a stub; the retrieval algorithm choice needs real vault content to validate against |
 
 ---
 
@@ -4255,3 +4270,122 @@ numbering convention.
      `ValidateVerdictFilter`'s post-hoc check — a recording `LLMClient`
      spy asserts the exact `VerdictRequest.available_categories` it
      received.
+
+### tests/core/context — ContextProvider, the read-only knowledgebase interface (item 3, docs/DESIGN.md §10.8)
+
+787. **`test_base.py::test_context_snippet_holds_a_source_and_text`**
+     `ContextSnippet(source, text)` round-trips both fields.
+
+788. **`test_base.py::test_context_result_holds_zero_or_more_snippets`**
+     `ContextResult.snippets` is an ordered tuple of however many
+     `ContextSnippet`s a backend returned.
+
+789. **`test_base.py::test_context_result_empty_is_a_valid_no_context_answer`**
+     `ContextResult(snippets=())` — "no relevant context found" is a
+     real, first-class answer, not an error or a missing field.
+
+790. **`test_base.py::test_a_plain_class_with_get_context_structurally_satisfies_contextprovider`**
+     Protocol-based DI, same as every other backend seam in this
+     codebase — nothing needs to import or inherit from
+     `ContextProvider` to satisfy it.
+
+791. **`test_loader.py::test_load_context_provider_imports_and_instantiates_by_spec`**
+     A well-formed `"module:ClassName"` spec resolves to an instance —
+     mirrors `test_load_llm_client_imports_and_instantiates_by_spec`.
+
+792. **`test_loader.py::test_load_context_provider_passes_through_constructor_kwargs`**
+     Extra kwargs reach the provider's constructor unmodified.
+
+793. **`test_loader.py::test_load_context_provider_raises_for_malformed_spec`**
+     A spec with no `':'` separator is rejected before any import is
+     attempted.
+
+794. **`test_loader.py::test_load_context_provider_raises_for_an_unimportable_module`**
+     An unimportable module name fails loudly via
+     `ContextProviderLoadError`, not a raw `ImportError`.
+
+795. **`test_loader.py::test_load_context_provider_raises_for_a_missing_class`**
+     A real module but a nonexistent class name fails loudly via
+     `ContextProviderLoadError`, not a raw `AttributeError`.
+
+796. **`test_loader_edge_cases.py::test_load_context_provider_raises_when_construction_fails`**
+     A provider whose constructor rejects the given kwargs fails
+     loudly rather than a raw `TypeError` leaking through unwrapped.
+
+797. **`clients/test_null.py::test_null_context_provider_always_returns_an_empty_result`**
+     `NullContextProvider` — the real "no knowledgebase configured"
+     default — always answers `ContextResult(snippets=())` regardless
+     of the message.
+
+798. **`clients/test_null.py::test_null_context_provider_takes_no_constructor_arguments`**
+     No config, no kwargs to get wrong — the safe default a minimal
+     config.toml (no `[context]` table) resolves to.
+
+799. **`clients/test_vault.py::test_get_context_raises_not_implemented_yet`**
+     `MarkdownVaultContextProvider.get_context()` raises
+     `NotImplementedError` naming `docs/ROADMAP.md` — a settled-shape
+     stub, same pattern `JmapClient` uses, but blocked on an undecided
+     retrieval-algorithm design question rather than a live call.
+
+800. **`clients/test_vault.py::test_constructor_settles_the_real_shape_without_reading_the_vault`**
+     Constructing one doesn't require the vault directory to exist yet
+     or do any I/O — same "settle the shape, defer the behavior"
+     split `JmapClient`'s constructor makes.
+
+### tests/core/pipeline/tier2 — context wired into the Tier 2 pipeline
+
+801. **`test_modules.py::test_fetch_context_augment_delegates_to_the_provider_and_sets_context`**
+     `FetchContextAugment` calls `context_provider.get_context(meta.message)`
+     and stores the result in `meta.context` — same one-I/O-stage
+     shape as `CallLLMAugment`.
+
+802. **`test_modules.py::test_build_verdict_request_filter_requires_context_to_be_set_first`**
+     `MissingMetaError` if `meta.context` isn't set — same
+     ordering contract every other stage in this pipeline enforces;
+     run `FetchContextAugment` first.
+
+803. **`test_default.py::test_process_tier2_message_sends_context_snippets_to_the_model`**
+     A configured `ContextProvider`'s result reaches the actual
+     prompt end to end, flattened into
+     `VerdictRequest.context_snippets` — the read-only knowledgebase
+     seam wired through the whole pipeline, not just constructible in
+     isolation.
+
+804. **`test_default.py::test_process_tier2_message_sends_no_context_snippets_when_none_configured`**
+     The default `NullContextProvider` produces an empty
+     `context_snippets` tuple, not a missing field or a crash.
+
+805. **`test_escalate.py::test_escalate_message_wires_context_provider_into_tier2`**
+     `escalate_message()` threads its `context_provider` argument all
+     the way to the actual prompt — same depth of wiring
+     `thread_history_reader`/`mailbox_lister` already get.
+
+### tests/core/config, tests/core — SporkConfig.context + runtime wiring
+
+806. **`test_schema.py::test_sporkconfig_context_defaults_to_none`**
+     Unset means "no knowledgebase configured" — a real, valid state,
+     not a missing-field error, same convention as
+     `tiering.local_classifier`.
+
+807. **`test_schema.py::test_sporkconfig_accepts_optional_context_provider_configuration`**
+     A `[context]` table round-trips into `SporkConfig.context` like
+     any other `BackendSpec`.
+
+808. **`test_runtime.py::test_build_context_provider_defaults_to_null_when_unconfigured`**
+     No `[context]` table: `build_context_provider()` returns the real
+     "no knowledgebase configured" backend, not `None`/a crash.
+
+809. **`test_runtime.py::test_build_context_provider_loads_the_configured_backend`**
+     A configured `[context]` spec + kwargs resolves to a real
+     instance via `load_context_provider()`.
+
+810. **`test_runtime.py::test_resolve_runtime_secrets_includes_a_configured_context_providers_secret_kwargs`**
+     A `[context]` table's `secret_kwargs` count toward "does anything
+     configured need SecretSpec resolved" the same way
+     provider/llm/alerts already do — `context` isn't a silent fourth
+     exception.
+
+811. **`test_base.py::test_verdict_request_carries_context_snippets_from_the_knowledgebase`**
+     `VerdictRequest.context_snippets` round-trips like every other
+     field — the flattened `"source: text"` strings the prompt
+     actually sends.
