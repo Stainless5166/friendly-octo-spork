@@ -855,22 +855,53 @@ real account on every test run.
       jmapc-shaped fake convention as the rest of the package.
       Live-verified against the real (read-only) account: 4181 total
       Inbox messages, 2849 unread, real pagination, no writes.
-- [ ] A bounded, resumable backfill `Source`/CLI command (`spork
-      backfill`), separate from the daemon's steady-state
-      push/poll `TriggeredSource` (M)
-- [ ] Backfill reuses `StateDB`/`processed_messages` for dedup so an
+- [x] A bounded, resumable backfill CLI command (`spork backfill`),
+      separate from the daemon's steady-state push/poll
+      `TriggeredSource` (M) — standalone like `reclassify`/`logs`
+      (works whether or not `sporkd` is running), reuses
+      `process_message()`/`escalate_message()` exactly as `reclassify`
+      does, over `BackfillProvider.query_messages()` pages instead of
+      one message-id. Not a `Source` — a one-shot CLI run, not part of
+      the daemon's loop. `--unread-only`/`--limit`/`--page-size`
+      options. 6 acceptance tests + 3 edge cases (all 3 passed against
+      the existing implementation with no code change — the
+      idempotency gate, capability check, and per-message limit
+      counter were already correct), same
+      subprocess/FileProvider/RecordedLLMClient convention as
+      `test_reclassify.py`.
+- [x] Backfill reuses `StateDB`/`processed_messages` for dedup so an
       overlapping backfill run and live ingestion never double-process
-      the same message (S)
-- [ ] A backfill-specific throttle/budget policy — `tiering.
+      the same message (S) — comes for free from
+      `process_message()`'s own idempotency gate (docs/DESIGN.md §11):
+      a message already marked processed (by live ingestion or a
+      prior backfill run) returns `verdict=None`, never reprocessed.
+      No new dedup mechanism needed; the existing one already covers
+      backfill honestly.
+- [x] A backfill-specific throttle/budget policy — `tiering.
       daily_call_budget` (default 200) exists for steady-state live
       triage and will be exhausted almost immediately by a
       several-thousand-message sweep; backfill must not silently
-      inherit it unmodified (S)
+      inherit it unmodified (S) — `--limit` defaults to 50 messages
+      per run (not the Inbox's actual size), an explicit CLI-level cap
+      independent of `daily_call_budget`, which still applies and
+      layers on top: if Tier 2's budget is exhausted mid-run, the loop
+      stops early and reports it (`stderr`), rather than silently
+      continuing to escalate messages that will keep failing budget.
 - [ ] `spork backfill` run against the recorded/replayed corpus from
       M1c is used to grow `tests/fixtures/corpus/live.jsonl` with real
       category diversity (newsletters, receipts, personal, spam, …)
       for prompt/threshold tuning ahead of M7's confidence-tuning item
-      (S)
+      (S). **Not done via `spork backfill` itself** — the corpus
+      already has 13 entries (M1c item 4) from hand-sent tagged
+      samples, not a `spork backfill` run, because `spork backfill`
+      against the real account would hit
+      `JmapClient.apply_action()`/`create_draft()`'s still-`NotImplementedError`
+      write-side stubs the moment any rule resolves to anything but
+      `ignore` — safe (a clean crash, not a mutation, since the JMAP
+      key is read-only anyway), but not something to run live
+      un-gated. A real `spork backfill` corpus-growth run needs either
+      an all-`ignore` rules file or the write-side JMAP stubs resolved
+      first.
 
 **Exit criteria:** a backfill run categorizes a large recorded sample
 of the maintainer's real Inbox end-to-end through the same Tier 1/

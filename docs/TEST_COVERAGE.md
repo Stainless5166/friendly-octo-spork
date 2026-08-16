@@ -759,20 +759,16 @@ resolved secret's real value verbatim — confirmed empirically
 before fixing with `repr=False` + a custom `__repr__` showing only the
 declared names.
 
-### M8 — Backfill / retroactive categorization — 1/5
+### M8 — Backfill / retroactive categorization — 4/5
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `JmapClient.query_messages()` | ✅ | ✅ — tests 716–720 (5 tests), live-verified against the real account |
-| Bounded, resumable `spork backfill` Source/CLI | — | not started |
-| `StateDB`/`processed_messages` dedup reuse | — | not started |
-| Backfill-specific throttle/budget policy | — | not started |
-| Full backfill run growing the corpus at volume | — | not started — a 13-entry hand-picked seed exists (M1c), not a backfill-driven one |
-
-Deliberately the smallest defensible first slice: the new read
-capability, real and tested, live-verified against the account's
-actual 4181-message Inbox — not the CLI surface or dedup wiring around
-it, which need their own design/test rounds.
+| `BackfillPage`/`BackfillProvider` capability (`JmapProvider`, `FileProvider`) | ✅ | ✅ — tests 721–727 (7 tests) |
+| Bounded, resumable `spork backfill` CLI | ✅ | ✅ — tests 728–736 (9 tests: 6 acceptance + 3 edge cases) |
+| `StateDB`/`processed_messages` dedup reuse | ✅ (reuses `process_message()`'s existing idempotency gate, no new mechanism) | ✅ — test 734 |
+| Backfill-specific throttle/budget policy | ✅ (`--limit`, default 50) | ✅ — tests 732, 736 |
+| Full backfill run growing the corpus at volume | — | not started — a 13-entry hand-picked seed exists (M1c) via direct SMTP+LLM calls, not a `spork backfill` run; that needs an all-`ignore` rules file or the write-side JMAP stubs resolved first (`apply_action()`/`create_draft()` are still `NotImplementedError`) |
 
 ---
 
@@ -3849,3 +3845,76 @@ now strips it from what the model is offered.
 720. **`test_query.py::test_query_messages_passes_the_requested_position_and_limit`**
      `position=20, limit=10` are forwarded to `Email/query` exactly,
      unmodified.
+
+### tests/core/providers — BackfillPage/BackfillProvider capability (M8)
+
+721. **`jmap/test_backfill.py::test_provider_satisfies_the_backfill_provider_protocol`**
+     `JmapProvider` structurally satisfies `BackfillProvider`
+     (`isinstance` check, `@runtime_checkable`).
+
+722. **`jmap/test_backfill.py::test_query_messages_delegates_to_the_client_and_wraps_the_result`**
+     `JmapProvider.query_messages()` forwards every argument to the
+     underlying `JmapClient` and wraps its `JmapQueryResult` as the
+     backend-agnostic `BackfillPage`.
+
+723. **`jmap/test_backfill.py::test_query_messages_uses_documented_defaults`**
+     Called with no arguments, the client sees
+     `unread_only=False, position=0, limit=50`.
+
+724. **`file/test_backfill.py::test_provider_satisfies_the_backfill_provider_protocol`**
+     `FileProvider` structurally satisfies `BackfillProvider` too — a
+     second, real implementation, same "the abstraction generalizes"
+     proof `Provider` itself already has (M1b).
+
+725. **`file/test_backfill.py::test_query_messages_returns_a_windowed_page`**
+     A 5-message fixture file, `position=0, limit=2`, returns the
+     first two messages with `total=5, has_more=True`.
+
+726. **`file/test_backfill.py::test_query_messages_has_more_false_on_the_last_page`**
+     `position=4, limit=2` against 5 messages returns the last one with
+     `has_more=False`.
+
+727. **`file/test_backfill.py::test_query_messages_unread_only_is_accepted_but_has_no_filter_to_apply`**
+     `unread_only=True` still returns every message — a fixture file
+     has no "seen" state to filter on, documented rather than silently
+     misleading.
+
+### tests/cli/commands — spork backfill (M8)
+
+728. **`test_backfill.py::test_backfill_help_works`**
+     `spork backfill --help` exits 0 with usage text.
+
+729. **`test_backfill.py::test_backfill_with_no_config_produces_a_clean_error`**
+     No `config.toml` present: exit 1, `Error:` on stderr, no
+     traceback.
+
+730. **`test_backfill.py::test_backfill_processes_every_message_through_tier1`**
+     A 3-message `FileProvider` fixture: every message ends up in
+     `processed_messages` after one run.
+
+731. **`test_backfill.py::test_backfill_escalates_through_tier2_when_rules_say_so`**
+     A message an `always`-matching catch-all rule escalates gets a
+     real Tier 2 verdict via `RecordedLLMClient`, recorded as
+     `tier_reached="tier2"`.
+
+732. **`test_backfill.py::test_backfill_respects_the_limit_option`**
+     5 messages available, `--limit 2`: exactly 2 end up processed.
+
+733. **`test_backfill.py::test_backfill_writes_a_control_plane_audit_entry`**
+     One `backfill_triggered` audit entry per run, same pattern as
+     `reclassify_triggered`.
+
+734. **`test_backfill_edge_cases.py::test_backfill_never_reprocesses_a_message_already_marked_processed`**
+     Running backfill twice: the second run reports 0 Tier 1 actions
+     and 0 Tier 2 verdicts, and `processed_messages` still has exactly
+     3 rows, not 6 — `process_message()`'s idempotency gate is what
+     M8's dedup guarantee actually rests on.
+
+735. **`test_backfill_edge_cases.py::test_backfill_reports_a_clean_error_for_a_provider_without_the_capability`**
+     A provider with no `query_messages()` (`NoBackfillProvider`,
+     `tests/support/`): exit 1, `"does not support backfill"` on
+     stderr, no traceback.
+
+736. **`test_backfill_edge_cases.py::test_backfill_with_a_page_size_larger_than_the_limit_still_stops_at_the_limit`**
+     `--limit 1 --page-size 50` against 5 available messages still
+     processes exactly 1.
