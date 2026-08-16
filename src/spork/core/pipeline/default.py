@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from spork.core.actions.executor import ActionExecutor
 from spork.core.classify.base import TextClassifier
@@ -29,10 +30,19 @@ from spork.core.pipeline.modules import (
 )
 from spork.core.pipeline.observer import PipelineObserver
 from spork.core.pipeline.tracing import wrap_selector, wrap_stages
-from spork.core.receipts.pipeline import ArchiveReceiptAugment, ReceiptArchiveComponents
 from spork.core.rules.engine import RuleVerdict
 from spork.core.rules.schema import Action, Rule
 from spork.core.state.db import StateDB
+
+if TYPE_CHECKING:
+    # Deferred to a function-local import at runtime (see
+    # build_default_pipeline() below) -- spork.core.receipts.pipeline
+    # itself imports spork.core.pipeline.core, so importing it here at
+    # module level would make spork.core.pipeline's own package
+    # initialization circular. TYPE_CHECKING-only is enough for the
+    # receipt_archive: ReceiptArchiveComponents | None annotation below
+    # (deferred-evaluation strings, per `from __future__ import annotations`).
+    from spork.core.receipts.pipeline import ReceiptArchiveComponents
 
 
 def _utc_now_iso() -> str:
@@ -102,6 +112,11 @@ def build_default_pipeline(
     )
     routes: dict[str, Pipeline[MessageMeta]] = {"terminal": terminal, "escalate": escalate}
     if receipt_archive is not None:
+        # Local import: breaks the module-level circular import
+        # spork.core.receipts.pipeline -> spork.core.pipeline.core would
+        # otherwise create (see the TYPE_CHECKING guard above).
+        from spork.core.receipts.pipeline import ArchiveReceiptAugment
+
         routes["archive_receipt"] = Pipeline(
             wrap_stages(
                 [
