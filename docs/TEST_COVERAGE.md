@@ -271,9 +271,16 @@ message (marked processed, audited, a `critical` alert fired) instead
 of letting a single malformed Tier 2 verdict crash
 `_run_message_loop()`/`spork reclassify`/`spork backfill` and leave
 the message stuck retrying forever. Wired into all three real callers.
-**M7 is now 6/10.** **The full suite is now 833 tests, all green** — the
-running per-paragraph totals above this point were not individually
-reconciled to that figure; treat this line as the current authority.
+**M7 is now 6/10.** Updated once more for an M3 follow-up: the model
+was never actually sent this deployment's configured category set
+(`TieringConfig.allowed_categories` only ever reached
+`ValidateVerdictFilter`'s post-hoc check, never the prompt) — fixed via
+`VerdictRequest.available_categories`/`BuildVerdictRequestFilter`;
+`Verdict` also gained a freeform `metadata: dict[str, str]` field for
+extracted data outside any closed/validated set. **The full suite is
+now 837 tests, all green** — the running per-paragraph totals above
+this point were not individually reconciled to that figure; treat this
+line as the current authority.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -494,6 +501,7 @@ Protocol-level seam M3's prompt-building chain is expected to use.
 | `daily_call_budget` + `llm_usage` tracking | ✅ | ✅ — tests 226–239 (14 tests), 100% line coverage |
 | Recorded-response fixtures for CI | ✅ | ✅ — tests 240–252 (13 tests), 100% line coverage |
 | Draft creation path | ✅ | ✅ — tests 253–261 (9 tests), 100% line coverage |
+| Category taxonomy sent to the model + `Verdict.metadata` (follow-up) | ✅ | ✅ — tests 780–786, 100% line coverage on every touched module |
 
 `spork.core.llm.clean.clean_body()` is pure string transformation with
 no dependency on `NormalizedMessage`, JMAP, or the Claude API — HTML
@@ -4205,3 +4213,45 @@ numbering convention.
      Same fix, `spork backfill`: an out-of-set category is quarantined
      (counted separately from Tier 2 verdicts, reported as
      `"1 quarantined"`, `StateDB`-marked) instead of crashing the run.
+
+### tests/core/llm, tests/core/pipeline/tier2 — category taxonomy sent to the model + Verdict.metadata (M3 follow-up)
+
+780. **`test_base.py::test_verdict_request_holds_the_assembled_prompt_inputs`** (updated)
+     `VerdictRequest.available_categories` round-trips like every
+     other field.
+
+781. **`test_base.py::test_verdict_metadata_defaults_to_an_empty_dict_when_omitted`**
+     `metadata` is optional freeform extraction — omitting it from the
+     response is valid, same convention as `draft_reply`.
+
+782. **`test_base.py::test_verdict_accepts_freeform_metadata_key_value_pairs`**
+     A model may surface arbitrary extracted data (dates, order
+     numbers, reference ids) via `metadata` — not a closed set, unlike
+     `category`/`suggested_action.mailbox`.
+
+783. **`test_base_edge_cases.py::test_verdict_rejects_a_non_string_metadata_value`**
+     `metadata` is `dict[str, str]`, not `dict[str, Any]` — an int
+     value is a validation failure. Passes against the existing
+     implementation with no code change: pydantic's default strict
+     string coercion already enforces it.
+
+784. **`test_prompt.py::test_build_prompt_contains_the_complete_message_context`** (updated)
+     `available_categories` now appears in the exact user-message JSON
+     sent upstream, alongside `available_mailboxes`; the system
+     prompt's "Choose category and mailbox only from the values
+     supplied" claim is now literally true. System message also gained
+     a sentence describing the optional `metadata` field.
+
+785. **`test_modules.py::test_build_verdict_request_filter_cleans_the_body_and_builds_the_request`** (updated)
+     `BuildVerdictRequestFilter(available_categories, max_body_chars)`
+     threads `available_categories` into the `VerdictRequest` it
+     builds — a constructor argument (deployment config), not a
+     `Tier2Meta` field (per-message Provider read), same relationship
+     `max_body_chars` already has to this filter.
+
+786. **`test_default.py::test_process_tier2_message_sends_allowed_categories_to_the_model`**
+     `build_tier2_pipeline()` wires `TieringConfig.allowed_categories`
+     into the actual prompt via `BuildVerdictRequestFilter`, not just
+     `ValidateVerdictFilter`'s post-hoc check — a recording `LLMClient`
+     spy asserts the exact `VerdictRequest.available_categories` it
+     received.

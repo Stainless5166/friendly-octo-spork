@@ -387,6 +387,27 @@ drives an action.
       adapter with no `NotImplementedError` anywhere, replaying
       pre-recorded `Verdict`s from a JSON fixture keyed by subject.
 
+- [x] Category taxonomy actually sent to the model, plus a freeform
+      metadata field on `Verdict` (S) — a real gap, not a hypothetical
+      one: `TieringConfig.allowed_categories` only ever reached
+      `ValidateVerdictFilter`'s post-hoc check
+      (`spork.core.llm.validate.validate_verdict()`); the model itself
+      was never told the configured category set, despite the system
+      prompt already claiming "Choose category and mailbox only from
+      the values supplied in the user message" for mailboxes. Fixed:
+      `VerdictRequest` gains `available_categories: tuple[str, ...]`,
+      `build_prompt()` includes it in the exact user-message JSON
+      alongside `available_mailboxes`, and `BuildVerdictRequestFilter`
+      takes `available_categories` as a constructor argument (the same
+      relationship `max_body_chars` already has to it — a
+      deployment-config value, not a per-message `Provider` read).
+      Also added `Verdict.metadata: dict[str, str] = {}` — freeform
+      extracted data (dates, order numbers, reference ids) the model
+      judges worth surfacing from one specific email, deliberately
+      open-ended and never validated against any configured set,
+      unlike `category`/`suggested_action.mailbox`. String-valued
+      only (not `dict[str, Any]`) so the forced tool schema stays a
+      flat, deterministic object.
 - [x] Tier 2 pipeline wired end to end (§10.7) —
       `spork.core.pipeline.tier2` (`Tier2Meta` + 13 modules +
       `build_tier2_pipeline()`/`process_tier2_message()`) composes the

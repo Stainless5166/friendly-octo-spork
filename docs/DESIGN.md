@@ -1218,6 +1218,7 @@ classDiagram
         +thread_prior_subject: Optional~str~
         +thread_user_has_replied: bool
         +available_mailboxes: tuple
+        +available_categories: tuple
     }
     class Verdict {
         <<pydantic BaseModel>>
@@ -1228,6 +1229,7 @@ classDiagram
         +summary: str
         +draft_reply: Optional~str~
         +reasoning: str
+        +metadata: dict~str, str~
     }
     class LLMCallUsage {
         <<dataclass, frozen>>
@@ -1888,6 +1890,7 @@ classDiagram
         +select(payload) tuple
     }
     class BuildVerdictRequestFilter {
+        -available_categories: Sequence~str~
         -max_body_chars: int
         +apply(payload) Payload
     }
@@ -3542,6 +3545,7 @@ class VerdictRequest:
     thread_prior_subject: str | None
     thread_user_has_replied: bool
     available_mailboxes: tuple[str, ...]
+    available_categories: tuple[str, ...]
 
 
 class Verdict(BaseModel):
@@ -3560,6 +3564,7 @@ class Verdict(BaseModel):
     summary: str
     draft_reply: str | None = None
     reasoning: str
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3599,6 +3604,18 @@ without exposing a LiteLLM response object outside the adapter.
   step (`docs/ROADMAP.md`'s "Verdict validation against configured
   mailbox/category set") — `Verdict` only enforces shape, not
   deployment-specific vocabulary.
+- **`VerdictRequest.available_categories`** carries this deployment's
+  configured `TieringConfig.allowed_categories` into the actual prompt
+  (`build_prompt()`, §10.1 below), the same way `available_mailboxes`
+  does — previously the model was only ever validated against that set
+  post-hoc (§10.2), never told what it was.
+- **`Verdict.metadata: dict[str, str]`** is freeform extracted data
+  (dates, order numbers, reference ids) the model judges worth
+  surfacing from one specific email — deliberately open-ended and
+  never validated against any configured set, unlike
+  `category`/`suggested_action.mailbox`. String-valued only, not
+  `dict[str, Any]`, so the forced tool schema stays a flat,
+  deterministic object.
 - **Package layout: `spork.core.llm.clients.<name>`** — mirrors
   `spork.core.providers.<name>`. `LiteLLMClient` is the sole live v1
   implementation; LiteLLM handles provider-specific SDK translation
@@ -3871,9 +3888,13 @@ run:
    `meta.ts`'s date, calls `StateDB.get_llm_usage()` then
    `has_budget_remaining()` (§10.4); routes `"budget_ok"` or
    `"budget_exhausted"`.
-3. **`BuildVerdictRequestFilter(max_body_chars)`** — cleans
+3. **`BuildVerdictRequestFilter(available_categories, max_body_chars)`** — cleans
    `payload.text` via `clean_body()` (§10, body cleaning), assembles a
    `VerdictRequest` from it plus `meta`'s caller-supplied fields.
+   `available_categories` is a constructor argument, not a `meta`
+   field, like `max_body_chars` — a deployment-config value
+   (`TieringConfig.allowed_categories`), not a per-message Provider
+   read the way `available_mailboxes` is.
 4. **`CallLLMAugment(llm_client)`** — the one `Augment` in this
    pipeline, and the only stage that reaches outside the payload:
    calls `llm_client.get_verdict(meta.request)`, sets `meta.verdict`
@@ -3949,7 +3970,7 @@ alert_only = Pipeline(
 )
 budget_ok = Pipeline(
     [
-        BuildVerdictRequestFilter(max_body_chars),
+        BuildVerdictRequestFilter(allowed_categories, max_body_chars),
         CallLLMAugment(llm_client),
         RecordLLMUsageFilter(state_db),
         ValidateVerdictFilter(allowed_categories),
