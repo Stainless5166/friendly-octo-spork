@@ -110,6 +110,13 @@ def _backfill(config: SporkConfig, *, unread_only: bool, limit: int, page_size: 
     )
     default_unmatched_action = Action(type=config.tiering.default_unmatched_action)
     llm_client = build_llm_client(config, secrets)
+    # Built once for the whole run, not once per escalated message
+    # (PR #20 review finding #2) — FileProvider's versions re-read the
+    # whole messages file from disk on every call, so building these
+    # per-escalation would redo that work needlessly on every one.
+    thread_history_reader = provider.build_thread_history_reader()
+    mailbox_lister = provider.build_mailbox_lister()
+    draft_creator = provider.build_draft_creator()
 
     processed = 0
     tier1_actions = 0
@@ -163,11 +170,11 @@ def _backfill(config: SporkConfig, *, unread_only: bool, limit: int, page_size: 
                 if verdict.action.type == "escalate":
                     tier2_verdict = escalate_message(
                         message,
-                        thread_history_reader=provider.build_thread_history_reader(),
-                        mailbox_lister=provider.build_mailbox_lister(),
+                        thread_history_reader=thread_history_reader,
+                        mailbox_lister=mailbox_lister,
                         llm_client=llm_client,
                         executor=executor,
-                        draft_creator=provider.build_draft_creator(),
+                        draft_creator=draft_creator,
                         state_db=state_db,
                         ops=ops,
                         tiering=config.tiering,
