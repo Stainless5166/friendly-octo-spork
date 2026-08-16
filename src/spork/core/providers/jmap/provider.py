@@ -15,6 +15,7 @@ from typing import Protocol
 from spork.core.models import NormalizedMessage
 from spork.core.providers.base import (
     ActionApplier,
+    BackfillPage,
     DraftCreator,
     MailboxLister,
     MessageLookup,
@@ -214,6 +215,24 @@ class JmapProvider:
 
     def build_action_applier(self) -> ActionApplier:
         return _JmapActionApplier(self._client)
+
+    def query_messages(
+        self, *, unread_only: bool = False, position: int = 0, limit: int = 50
+    ) -> BackfillPage:
+        """Delegate to `JmapClient.query_messages()`, wrapped as the
+        backend-agnostic `BackfillPage` (§9.3, M8) rather than the
+        JMAP-specific `JmapQueryResult` — same reasoning as every other
+        `build_*()` method here, presenting jmapc-adjacent types under
+        the shape `Provider` consumers expect."""
+        result = self._client.query_messages(
+            unread_only=unread_only, position=position, limit=limit
+        )
+        return BackfillPage(
+            messages=result.messages,
+            position=result.position,
+            total=result.total,
+            has_more=result.has_more,
+        )
 
     def build_draft_creator(self) -> DraftCreator:
         return _JmapDraftCreator(self._client)

@@ -1,7 +1,8 @@
-"""Behave hooks for the manual acceptance specification.
+"""Behave hooks for the acceptance specification.
 
 The default run is intentionally safe: live scenarios are reported as
 skipped until the operator explicitly opts into the live environment.
+Harness-backed (non-@manual) scenarios run every time.
 """
 
 import os
@@ -22,3 +23,17 @@ def before_scenario(context: Any, scenario: Any) -> None:
             "manual acceptance is disabled; set SPORK_ACCEPTANCE_LIVE=1 "
             "after configuring the dedicated acceptance environment"
         )
+
+
+def after_scenario(context: Any, scenario: Any) -> None:
+    """Tear down the mitmproxy fault-injection harness, if this scenario started one.
+
+    `m1_fault_injection.py` opens jmap_mitm_harness() as a raw context
+    manager (not a `with` block) so it can stay open across a scenario's
+    Given/When/Then steps; this hook is the corresponding __exit__ call,
+    run whether the scenario passed or failed.
+    """
+    del scenario
+    harness_cm = getattr(context, "jmap_harness_cm", None)
+    if harness_cm is not None:
+        harness_cm.__exit__(None, None, None)

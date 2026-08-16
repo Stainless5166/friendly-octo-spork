@@ -49,7 +49,15 @@ read-only. No actions taken yet.
       and checkpoint-preserving polling fallback are implemented. Live
       Fastmail push/reconnect acceptance remains part of the M1 exit
       criterion. Disconnect-duration alerting remains separately tracked
-      under M4.
+      under M4. **Finding from M1c's fault-injection harness** (real
+      transport, not a fake): `jmapc`'s SSE layer (`sseclient`) swallows
+      a clean end-of-stream and silently retries on its own fixed 3s
+      timer *inside* `client.events`, before `JmapPushTrigger` ever sees
+      an exception — `reconnect_backoff` only actually engages once that
+      internal retry itself fails, not on the first disconnect. Not yet
+      a filed gap/fix — recorded here so it isn't lost before a
+      deliberate decision (accept the double-layer retry, or bypass
+      `sseclient`'s reconnect and drive `EventSource` directly).
 - [x] Poll-based fallback when push is unavailable/disconnected (S) —
       real, tested implementation (`spork.core.sources.timer.IntervalTimer`
       + `spork.core.sources.fallback.FallbackSource`), pure control flow
@@ -72,12 +80,18 @@ read-only. No actions taken yet.
 
 **Exit criteria:** `sporkd` runs, logs each new inbox message's subject
 as it arrives (via push, verified by sending a real test email), survives
-a forced network drop and reconnects. **Not yet met.** The authenticated
-client leaf and push/fallback implementation are now real; the remaining
-work for the M1 exit criterion is live acceptance against a delivered test
-message and a forced network drop/reconnect.
-
-The next unit implements the EventSource transport and reconnect path.
+a forced network drop and reconnects. **Partially met.** The
+push-via-real-test-email half is now live-verified:
+`docs/acceptance/steps/m1.py`'s `@push` binding sends a real tagged
+message through the operator's SMTP relay, opens the real EventSource
+connection first, and confirms the resulting state event, fetch, and
+cursor advance all happen for real
+(`SPORK_ACCEPTANCE_LIVE=1 uv run behave --tags="m1 and push"` — 1
+feature passed, 12 steps passed). The forced-network-drop/reconnect
+half remains open — `@network-recovery` needs actual network-level
+outage control (iptables/unplugging) this environment can't safely
+automate; `@cursor-safety` needs a real `sporkd` restart cycle, same
+reason.
 
 ## M1a — Source / dispatch pipeline
 
@@ -150,6 +164,104 @@ the backend underneath it is actually implemented yet. `FileProvider`
 goes one step further: loaded the same way, its `build_source()` and
 `build_action_applier()` both actually work end to end, no live
 network involved. **Met.**
+
+## M1c — Test harness & corpus tooling
+
+**Goal:** a mitmproxy-based fault-injection harness for `JmapClient`
+that doubles as the recorder for a JMAP response corpus, plus a real
+LLM corpus built from the `RecordingLLMClient` wrapper that already
+exists (`spork.core.llm.recording`). Unblocks the two acceptance
+scenarios that are currently manual-only (`@fallback`,
+`@network-recovery` in `docs/acceptance/m1_jmap.feature`) and gives
+M8 (backfill) a real, varied corpus to build the retroactive-run
+against instead of hand-written fixtures. M8 depends on this
+milestone; this milestone does not depend on M8.
+
+- [x] `tests/support/jmap_mitm.py`: an in-process mitmproxy instance
+      driving the real, unmodified production `client_factory` (real
+      `jmapc.Client`, not a fake) through a local proxy, with an addon
+      answering session discovery/API calls/EventSource from canned
+      responses and injecting faults (truncated body, synthetic
+      429+`Retry-After`, added latency, EventSource disconnect) —
+      6 acceptance tests in
+      `tests/core/providers/jmap/test_mitm_fault_injection.py`, all
+      passing against the real `JmapClient`/`JmapPushTrigger` error
+      boundaries (M). Surfaced a real finding about the *existing*
+      push path, not a harness bug — see this file's M1 EventSource
+      item above.
+- [x] `tests/fixtures/jmap/flows/`: recorded `Session`/`Mailbox/get`/
+      `Email/get`/`Email/changes`/EventSource flows captured once
+      against the live read-only account, via the mitm harness's own
+      embedding (`save_stream_file`, mitmdump's underlying mechanism)
+      rather than a separate CLI invocation — `m1_live_session.flow`
+      (baseline + a no-op changes cycle) and `m1_live_push.flow` (a
+      **real** EventSource push event, triggered by one live test
+      email, captured start to finish). Gitignored like
+      `tests/fixtures/corpus/`. The real `Authorization: Bearer …`
+      token was captured in every request by mitmproxy as normal proxy
+      traffic and has been redacted post-capture (rewritten to `Bearer
+      REDACTED` via `mitmproxy.io.FlowWriter`) — the session response
+      body still contains the account's real username/email and its
+      real mailbox name list (no message bodies: every captured fetch
+      returned an empty batch), which is real-account content by the
+      same privacy rule as the corpus, kept local/gitignored only, not
+      further scrubbed (S). **Now wired in:**
+      `jmap_mitm_harness(replay_flows=[...])` loads mitmproxy's own
+      `ServerPlayback` addon against these files — a matching request
+      is answered from the real recorded shape, ahead of and
+      independent from the harness's hand-built canned responses
+      (which still cover anything a recording doesn't).
+      `test_flow_replay.py` proves it end to end with zero canned
+      responses configured, and skips (not fails) when the gitignored
+      flow file isn't present — verified both the pass and the skip
+      path locally. `test_mitm_fault_injection.py`'s existing tests
+      still use hand-built canned responses, unchanged; nothing
+      required them to switch.
+- [x] Automatable, non-`@manual` coverage of the `@fallback` guarantee:
+      `docs/acceptance/m1_jmap_fault_injection.feature` +
+      `docs/acceptance/steps/m1_fault_injection.py`, driving the real
+      `JmapProvider.build_checkpointed_source()` composition (push
+      primary + poll secondary, shared cursor) through the harness (M).
+      Deliberately a new, separate feature rather than binding
+      `m1.py`'s existing `@fallback`/`@network-recovery` steps
+      directly: those scenarios' `Background` requires a real Fastmail
+      account/token, which a harness-driven run doesn't have and
+      shouldn't fake having — see docs/acceptance/README.md. Runs on
+      every `uv run behave`, no opt-in required. `@network-recovery`'s
+      sustained-outage-with-eventual-delivery shape (not just a single
+      disconnect/recover cycle) remains live-only — a real forced
+      network drop against a real account is still the honest way to
+      prove that, not a simulated timer.
+- [x] Build an initial `tests/fixtures/corpus/live.jsonl` by wrapping
+      the configured `LiteLLMClient` with `RecordingLLMClient` and
+      running it over a diverse hand-picked sample of real mail (S) —
+      seeds the corpus ahead of the much larger backfill-driven pass
+      in M8. 14 tagged sample emails (`[spork-corpus-test]` subject
+      prefix) sent via real SMTP across two batches — newsletter,
+      receipt, personal, security-notification, promo/spam-like,
+      urgent-invoice, calendar-invite, shipping-notification,
+      subscription-renewal, recruiting-outreach, event-webinar,
+      survey-request, legal-terms-update, appointment-reminder (a 15th,
+      a push-recording trigger email, has no distinct triage category
+      and wasn't corpus-seeded). Second batch fetched via the new
+      `query_messages()` (M8) rather than a cursor, doubling as a real
+      usage smoke test of it. **13 of 14 categorizable samples produced
+      valid verdicts and are in the corpus** (one, the "50% off"
+      promo, was initially thought Junk-filtered — turned out to be
+      Fastmail indexing lag, not a real spam-filter action, but wasn't
+      re-fetched for the corpus; low priority to backfill). 15 emails
+      sent this session total, within the 25-email session budget.
+      Genuinely large-volume, backfill-driven diversity is still what
+      M8's full backfill run is for — this is a hand-picked seed, not
+      a substitute for that.
+
+**Exit criteria:** `pytest` can force an EventSource disconnect and a
+JMAP request-level fault through the mitmproxy harness and assert
+`JmapClient`'s existing reconnect/backoff/fallback behavior handles
+both, with no real network or live account involved in the test run
+itself; the two previously-manual M1 acceptance scenarios have real
+step bindings; an initial LLM corpus file exists and
+`RecordedLLMClient` can replay it.
 
 ## M2 — Rule engine (Tier 1) + action executor
 
@@ -232,7 +344,30 @@ drives an action.
       `spork.core.llm.confidence.confidence_band()` (§10.3): a pure
       function of confidence + the two `config.toml` thresholds, with
       an eager `ValueError` guard against a misconfigured
-      `alert_threshold > autoact_threshold`.
+      `alert_threshold > autoact_threshold`. **Finding from M1c's live
+      corpus-seeding run** (real Claude call, not a fixture): given a
+      genuinely ambiguous email (a personal "want to get dinner
+      Friday?" note; an overdue-invoice notice), the live model twice
+      returned `suggested_action.type = "escalate"` — the one value
+      `Verdict`'s validator explicitly rejects
+      (`spork.core.llm.base._suggested_action_must_be_terminal`),
+      failing the call outright instead of producing a usable verdict.
+      `alert_only` (low `confidence`, a terminal action) is exactly
+      the schema's intended way to express "a human should look at
+      this" — but `build_prompt()`'s system message
+      (`spork.core.llm.prompt`) never says so, and the tool's JSON
+      schema still legally allows `"escalate"` in the enum (shared
+      with Tier 1's `Action.type`), so the model reaches for the
+      semantically obvious-but-illegal choice. **Fixed:** both
+      candidate fixes applied —
+      `spork.core.llm.prompt.verdict_tool_schema()` strips
+      `"escalate"` from the tool's `suggested_action.type` enum before
+      it reaches the model, and the system prompt now explicitly says
+      uncertainty belongs in `confidence`, not the action type.
+      Live-verified against the same two messages that failed before
+      (no new emails sent): both now return valid terminal actions
+      with appropriately moderate confidence. Corpus grew from 3 to 5
+      entries as a result.
 - [x] `daily_call_budget` enforcement + `llm_usage` tracking (S) —
       `StateDB` gains an `llm_usage` table + `record_llm_call()`/
       `get_llm_usage()` (§7.4, §10.4); `spork.core.llm.budget.has_budget_remaining()`
@@ -765,6 +900,87 @@ tests and stays green (785 tests total); `uv run mutmut run` against
 the four in-scope modules has no surviving mutant that isn't recorded
 as equivalent in `mutation/README.md` — verified reproducible across
 repeated runs.
+
+## M8 — Backfill / retroactive categorization
+
+**Goal:** triage the maintainer's existing several-thousand-message
+Inbox (read and unread), not just mail that arrives after `sporkd` is
+enabled. `fetch_new_messages(since_cursor=None)` deliberately
+baselines and discards history (docs/DESIGN.md §9.3, "a separate
+explicit import/backfill feature would need its own policy and is not
+implicit startup behavior") — this milestone is that separate feature.
+Depends on M1c's harness/corpus existing first: backfill is exactly
+the kind of large, real, varied run that should be developed and
+regression-tested against recorded flows, not live-fired against the
+real account on every test run.
+
+- [x] `JmapClient.query_messages()`: `Email/query` + `Email/get`,
+      windowed by `position`/`limit` paging, filterable (`unread_only`
+      → `notKeyword: $seen`, unconditional for a full sweep) — a new,
+      explicitly-named read path, not a flag on `fetch_new_messages()`
+      (M). `JmapQueryResult` carries `position`/`total`/`has_more`,
+      distinct in shape from `JmapFetchResult`'s cursor semantics — a
+      query page isn't an acknowledgeable Email state. 5 acceptance
+      tests (`tests/core/providers/jmap/test_query.py`), same injected
+      jmapc-shaped fake convention as the rest of the package.
+      Live-verified against the real (read-only) account: 4181 total
+      Inbox messages, 2849 unread, real pagination, no writes.
+- [x] A bounded, resumable backfill CLI command (`spork backfill`),
+      separate from the daemon's steady-state push/poll
+      `TriggeredSource` (M) — standalone like `reclassify`/`logs`
+      (works whether or not `sporkd` is running), reuses
+      `process_message()`/`escalate_message()` exactly as `reclassify`
+      does, over `BackfillProvider.query_messages()` pages instead of
+      one message-id. Not a `Source` — a one-shot CLI run, not part of
+      the daemon's loop. `--unread-only`/`--limit`/`--page-size`
+      options. 6 acceptance tests + 3 edge cases (all 3 passed against
+      the existing implementation with no code change — the
+      idempotency gate, capability check, and per-message limit
+      counter were already correct), same
+      subprocess/FileProvider/RecordedLLMClient convention as
+      `test_reclassify.py`.
+- [x] Backfill reuses `StateDB`/`processed_messages` for dedup so an
+      overlapping backfill run and live ingestion never double-process
+      the same message (S) — comes for free from
+      `process_message()`'s own idempotency gate (docs/DESIGN.md §11):
+      a message already marked processed (by live ingestion or a
+      prior backfill run) returns `verdict=None`, never reprocessed.
+      No new dedup mechanism needed; the existing one already covers
+      backfill honestly.
+- [x] A backfill-specific throttle/budget policy — `tiering.
+      daily_call_budget` (default 200) exists for steady-state live
+      triage and will be exhausted almost immediately by a
+      several-thousand-message sweep; backfill must not silently
+      inherit it unmodified (S) — `--limit` defaults to 50 messages
+      per run (not the Inbox's actual size), an explicit CLI-level cap
+      independent of `daily_call_budget`, which still applies and
+      layers on top: if Tier 2's budget is exhausted mid-run, the loop
+      stops early and reports it (`stderr`), rather than silently
+      continuing to escalate messages that will keep failing budget.
+- [ ] `spork backfill` run against the recorded/replayed corpus from
+      M1c is used to grow `tests/fixtures/corpus/live.jsonl` with real
+      category diversity (newsletters, receipts, personal, spam, …)
+      for prompt/threshold tuning ahead of M7's confidence-tuning item
+      (S). **Not done via `spork backfill` itself** — the corpus
+      already has 13 entries (M1c item 4) from hand-sent tagged
+      samples, not a `spork backfill` run, because `spork backfill`
+      against the real account would hit
+      `JmapClient.apply_action()`/`create_draft()`'s still-`NotImplementedError`
+      write-side stubs the moment any rule resolves to anything but
+      `ignore` — safe (a clean crash, not a mutation, since the JMAP
+      key is read-only anyway), but not something to run live
+      un-gated. A real `spork backfill` corpus-growth run needs either
+      an all-`ignore` rules file or the write-side JMAP stubs resolved
+      first.
+
+**Exit criteria:** a backfill run categorizes a large recorded sample
+of the maintainer's real Inbox end-to-end through the same Tier 1/
+Tier 2 pipeline live ingestion uses, respects its own budget policy,
+and never reprocesses a message the live path has already claimed.
+Applying the resulting categorization as real mailbox actions (labels,
+moves) is gated on write-scoped JMAP credentials, same limitation as
+M2/M3/M5's own live-action items — this milestone's exit criterion is
+about correct read-side categorization, not the write.
 
 ## Stretch / post-v1 (not scoped, not blocking)
 

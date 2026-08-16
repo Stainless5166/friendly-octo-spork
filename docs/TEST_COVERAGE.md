@@ -245,6 +245,25 @@ classifier/dispatch call receiving the wrong argument, two silently-
 dropped injection points, an unverified UTC clock, an unexercised
 default parameter, and one docstring-documented contract with no
 deterministic test). **The full suite is now 785 tests, all green.**
+Updated once more for M1c's fault-injection harness
+(`tests/support/jmap_mitm.py`): a mitmproxy instance driving the real,
+unmodified production `client_factory` (real `jmapc.Client`) through a
+local proxy, so `JmapClient`/`JmapPushTrigger` get exercised against
+genuine wire faults (truncated body, synthetic 429, EventSource death,
+added latency) instead of only injected fake exceptions. Building it
+surfaced a real finding about the *existing* production path, not a
+harness bug: jmapc's SSE transport (`sseclient`) swallows a clean
+end-of-stream and silently reconnects on a fixed 3s timer internally —
+`JmapPushTrigger`'s own `reconnect_backoff` schedule only actually
+engages once that internal reconnect itself fails, not on the first
+disconnect. No code change yet; recorded as-is since M1c's scope was
+the harness, not a push.py behavior change. This section's per-test
+counts elsewhere in the file were not otherwise reconciled to the
+suite's current total in this pass. Combined with M7a and M8's own
+work below, and merged with M7a's own fuzz/mutation-testing work,
+**the full suite is now 815 tests, all green** — the
+running per-paragraph totals above this point were not individually
+reconciled to that figure; treat this line as the current authority.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -378,6 +397,35 @@ sound independent of JMAP ever going live. It is explicitly not a
 "recent mail" fixture mechanism for `spork rules test` (docs/DESIGN.md
 §9.3, §13) — that command still has no fixture-file mode and won't
 until M1's real JMAP fetch exists.
+
+### M1c — Test harness & corpus tooling
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `tests/support/jmap_mitm.py` fault-injection harness | ✅ | ✅ — tests 731–736 (6 tests) |
+| `tests/fixtures/jmap/flows/` recorded flows | ✅ captured, gitignored, token-redacted; wired into the harness as a replay source via mitmproxy's own ServerPlayback addon | ✅ — test 761 (skips, not fails, when the gitignored flow file is absent; verified both paths locally) |
+| Automatable push/fallback acceptance coverage | ✅ (new feature, not a bind of `m1.py`'s live steps) | ✅ — `docs/acceptance/m1_jmap_fault_injection.feature` + `steps/m1_fault_injection.py`, passing in the safe-default `uv run behave` |
+| Initial `tests/fixtures/corpus/live.jsonl` seed | ✅ 13 entries, 13 distinct categories | — (not a pytest-covered artifact) |
+
+**4 of 4 items done.** The harness itself is real and network-free (an
+in-process mitmproxy instance answers every request locally; nothing
+is ever forwarded to a real upstream host), and it drives the actual
+production `client_factory`/`jmapc.Client`, not a fake — the first time
+any test in this repo has exercised `JmapClient`/`JmapPushTrigger`
+against genuine transport failures rather than injected exceptions.
+The Gherkin coverage exercises the real `JmapProvider.
+build_checkpointed_source()` composition (push primary, poll
+secondary, one shared cursor) rather than the lower-level client/push
+tests alone — a disconnected push cycle falls back to polling, and a
+recovered push cycle is served with zero wasted fallback attempts, both
+asserted via the harness's own EventSource connection counter, not
+just cursor values. Recorded flows now exist
+(`tests/fixtures/jmap/flows/`) including a genuine EventSource push
+event triggered by a real test email — replaying them from
+`jmap_mitm.py` instead of hand-built canned responses is still open.
+The LLM corpus grew to 13 entries across 13 distinct categories (M8's
+`query_messages()` used for the second batch's fetch). Larger,
+backfill-driven volume remains M8's job, not this milestone's.
 
 ### M2 — Rule engine (Tier 1) + action executor
 
@@ -749,9 +797,20 @@ own `force` default never exercised, and one docstring-documented
 test) — closed with targeted tests, not implementation changes; no
 `src/spork` behavior changed in this pass.
 
+### M8 — Backfill / retroactive categorization — 4/5
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `JmapClient.query_messages()` | ✅ | ✅ — tests 740–744 (5 tests), live-verified against the real account |
+| `BackfillPage`/`BackfillProvider` capability (`JmapProvider`, `FileProvider`) | ✅ | ✅ — tests 745–751 (7 tests) |
+| Bounded, resumable `spork backfill` CLI | ✅ | ✅ — tests 752–760 (9 tests: 6 acceptance + 3 edge cases) |
+| `StateDB`/`processed_messages` dedup reuse | ✅ (reuses `process_message()`'s existing idempotency gate, no new mechanism) | ✅ — test 758 |
+| Backfill-specific throttle/budget policy | ✅ (`--limit`, default 50) | ✅ — tests 756, 760 |
+| Full backfill run growing the corpus at volume | — | not started — a 13-entry hand-picked seed exists (M1c) via direct SMTP+LLM calls, not a `spork backfill` run; that needs an all-`ignore` rules file or the write-side JMAP stubs resolved first (`apply_action()`/`create_draft()` are still `NotImplementedError`) |
+
 ---
 
-## Full test inventory (785 tests, all passing — 0 xfail)
+## Full test inventory (815 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -3858,3 +3917,167 @@ functions, just harder to fool.
       Calling `build_default_pipeline()` without `force=` still includes
       the idempotency gate — its own default was otherwise never
       exercised, since `process_message()` always passes it explicitly.
+### tests/core/providers/jmap — mitmproxy fault-injection harness (M1c)
+
+`tests/support/jmap_mitm.py` drives the real, unmodified production
+`client_factory` (real `jmapc.Client`) through a local in-process
+mitmproxy instance instead of an injected jmapc-shaped fake, so these
+tests exercise `JmapClient`/`JmapPushTrigger` against genuine transport
+faults. Nothing is ever forwarded to a real upstream host — the addon
+always answers locally, from a canned response or a synthetic fault.
+
+731. **`test_mitm_fault_injection.py::test_client_round_trips_through_real_jmapc_over_the_harness_with_no_live_network`**
+     The production `client_factory`, driven over the harness, completes
+     session discovery and a baseline fetch with zero requests forwarded
+     upstream.
+
+732. **`test_mitm_fault_injection.py::test_truncated_response_body_surfaces_as_jmap_error`**
+     A response body cut short over the real transport still raises
+     `JmapError`, not an unhandled `JSONDecodeError`.
+
+733. **`test_mitm_fault_injection.py::test_eventsource_mid_stream_disconnect_raises_push_disconnected_error_after_backoff`**
+     A real EventSource stream ending with no events reaches
+     `JmapPushDisconnectedError` after one backoff sleep. Building this
+     test found that `jmapc`'s `sseclient` transport silently retries a
+     clean stream end on its own fixed 3s timer before `JmapPushTrigger`
+     ever sees an exception — the harness models a disconnect whose
+     *reconnect* attempt also fails, since that's what actually reaches
+     spork's own backoff (see docs/ROADMAP.md M1's EventSource item).
+
+734. **`test_mitm_fault_injection.py::test_synthetic_429_with_retry_after_surfaces_as_jmap_error`**
+     A real HTTP 429 with `Retry-After` fails closed through `JmapError`
+     rather than an unhandled `requests.HTTPError`.
+
+735. **`test_mitm_fault_injection.py::test_added_latency_does_not_change_the_returned_data`**
+     A deliberately slow-but-complete response still parses correctly —
+     the harness's latency fault doesn't itself corrupt what it delays.
+
+736. **`test_mitm_fault_injection.py::test_harness_refuses_to_forward_a_request_upstream_without_explicit_opt_in`**
+     No canned response configured means every request fails closed
+     locally; `requests_forwarded_upstream()` stays 0 — the harness's
+     core safety property ahead of ever pointing it at a live account.
+
+### tests/core/llm — exclude escalate from the Tier 2 tool schema (M3, live-corpus finding)
+
+Fix for the finding recorded under M3's confidence-band item: a live
+Claude call chose `suggested_action.type = "escalate"` for ambiguous
+mail, which `Verdict`'s own validator rejects. `verdict_tool_schema()`
+now strips it from what the model is offered.
+
+737. **`test_prompt.py::test_build_prompt_forces_one_deliver_verdict_tool_with_the_verdict_schema`**
+     (updated) The tool's `parameters` equal `verdict_tool_schema()`,
+     not the raw, unmodified `Verdict.model_json_schema()`.
+
+738. **`test_prompt.py::test_verdict_tool_schema_excludes_escalate_from_suggested_action_type`**
+     `suggested_action.type`'s enum is exactly `{"move", "tag",
+     "ignore"}` — `"escalate"` is never offered to the model.
+
+739. **`test_prompt.py::test_verdict_tool_schema_leaves_every_other_field_unchanged`**
+     Every other part of the schema is byte-for-byte identical to
+     `Verdict.model_json_schema()` — the fix is a single-field edit,
+     not a schema rewrite.
+
+### tests/core/providers/jmap — query_messages() backfill read path (M8)
+
+740. **`test_query.py::test_query_messages_returns_a_page_of_normalized_messages_and_position`**
+     A two-message `Email/query`+`Email/get` page normalizes correctly
+     and reports `position`/`total`/`has_more` from the response.
+
+741. **`test_query.py::test_query_messages_unread_only_sets_the_not_keyword_filter`**
+     `unread_only=True` sends `Email/query` with `filter.not_keyword ==
+     "$seen"` and `filter.in_mailbox` set to the resolved Inbox id.
+
+742. **`test_query.py::test_query_messages_has_more_true_when_a_later_page_remains`**
+     `position=0, limit=1` against a `total=5` response reports
+     `has_more=True` — the caller can page without re-deriving the
+     arithmetic itself.
+
+743. **`test_query.py::test_query_messages_with_no_matching_ids_skips_the_get_call`**
+     An empty `Email/query` result never issues an `Email/get` call —
+     only `MailboxGet` and `EmailQuery` appear in the request log.
+
+744. **`test_query.py::test_query_messages_passes_the_requested_position_and_limit`**
+     `position=20, limit=10` are forwarded to `Email/query` exactly,
+     unmodified.
+
+### tests/core/providers — BackfillPage/BackfillProvider capability (M8)
+
+745. **`jmap/test_backfill.py::test_provider_satisfies_the_backfill_provider_protocol`**
+     `JmapProvider` structurally satisfies `BackfillProvider`
+     (`isinstance` check, `@runtime_checkable`).
+
+746. **`jmap/test_backfill.py::test_query_messages_delegates_to_the_client_and_wraps_the_result`**
+     `JmapProvider.query_messages()` forwards every argument to the
+     underlying `JmapClient` and wraps its `JmapQueryResult` as the
+     backend-agnostic `BackfillPage`.
+
+747. **`jmap/test_backfill.py::test_query_messages_uses_documented_defaults`**
+     Called with no arguments, the client sees
+     `unread_only=False, position=0, limit=50`.
+
+748. **`file/test_backfill.py::test_provider_satisfies_the_backfill_provider_protocol`**
+     `FileProvider` structurally satisfies `BackfillProvider` too — a
+     second, real implementation, same "the abstraction generalizes"
+     proof `Provider` itself already has (M1b).
+
+749. **`file/test_backfill.py::test_query_messages_returns_a_windowed_page`**
+     A 5-message fixture file, `position=0, limit=2`, returns the
+     first two messages with `total=5, has_more=True`.
+
+750. **`file/test_backfill.py::test_query_messages_has_more_false_on_the_last_page`**
+     `position=4, limit=2` against 5 messages returns the last one with
+     `has_more=False`.
+
+751. **`file/test_backfill.py::test_query_messages_unread_only_is_accepted_but_has_no_filter_to_apply`**
+     `unread_only=True` still returns every message — a fixture file
+     has no "seen" state to filter on, documented rather than silently
+     misleading.
+
+### tests/cli/commands — spork backfill (M8)
+
+752. **`test_backfill.py::test_backfill_help_works`**
+     `spork backfill --help` exits 0 with usage text.
+
+753. **`test_backfill.py::test_backfill_with_no_config_produces_a_clean_error`**
+     No `config.toml` present: exit 1, `Error:` on stderr, no
+     traceback.
+
+754. **`test_backfill.py::test_backfill_processes_every_message_through_tier1`**
+     A 3-message `FileProvider` fixture: every message ends up in
+     `processed_messages` after one run.
+
+755. **`test_backfill.py::test_backfill_escalates_through_tier2_when_rules_say_so`**
+     A message an `always`-matching catch-all rule escalates gets a
+     real Tier 2 verdict via `RecordedLLMClient`, recorded as
+     `tier_reached="tier2"`.
+
+756. **`test_backfill.py::test_backfill_respects_the_limit_option`**
+     5 messages available, `--limit 2`: exactly 2 end up processed.
+
+757. **`test_backfill.py::test_backfill_writes_a_control_plane_audit_entry`**
+     One `backfill_triggered` audit entry per run, same pattern as
+     `reclassify_triggered`.
+
+758. **`test_backfill_edge_cases.py::test_backfill_never_reprocesses_a_message_already_marked_processed`**
+     Running backfill twice: the second run reports 0 Tier 1 actions
+     and 0 Tier 2 verdicts, and `processed_messages` still has exactly
+     3 rows, not 6 — `process_message()`'s idempotency gate is what
+     M8's dedup guarantee actually rests on.
+
+759. **`test_backfill_edge_cases.py::test_backfill_reports_a_clean_error_for_a_provider_without_the_capability`**
+     A provider with no `query_messages()` (`NoBackfillProvider`,
+     `tests/support/`): exit 1, `"does not support backfill"` on
+     stderr, no traceback.
+
+760. **`test_backfill_edge_cases.py::test_backfill_with_a_page_size_larger_than_the_limit_still_stops_at_the_limit`**
+     `--limit 1 --page-size 50` against 5 available messages still
+     processes exactly 1.
+
+### tests/core/providers/jmap — recorded flow replay (M1c)
+
+761. **`test_flow_replay.py::test_baseline_fetch_replays_from_the_recorded_flow_not_a_canned_response`**
+     With zero canned responses configured, `jmap_mitm_harness(replay_flows=[...])`
+     answers `JmapClient.connect()`/`fetch_new_messages()` entirely
+     from the real recorded flow — the real captured account id and
+     baseline cursor come back. Skips (not fails) when the gitignored
+     flow file isn't present on this clone.

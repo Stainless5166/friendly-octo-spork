@@ -113,3 +113,36 @@ class CheckpointedProvider(Protocol):
     def account_id(self) -> str: ...
 
     def build_checkpointed_source(self, cursor: str | None) -> CheckpointedSource: ...
+
+
+@dataclass(frozen=True, slots=True)
+class BackfillPage:
+    """One windowed page of an explicit backfill read (§9.3, M8).
+
+    Deliberately not a `CheckpointedSource`/`MessageBatch` shape:
+    `position`/`total` describe a page in a query's result window, not
+    a durable Email-state checkpoint to acknowledge — backfill is a
+    bounded, resumable *read*, never part of the daemon's steady-state
+    ingestion loop.
+    """
+
+    messages: tuple[NormalizedMessage, ...]
+    position: int
+    total: int | None
+    has_more: bool
+
+
+@runtime_checkable
+class BackfillProvider(Protocol):
+    """Optional provider capability: page through existing mail on request.
+
+    Not every `Provider` implements this — checked structurally
+    (`isinstance(provider, BackfillProvider)`, `@runtime_checkable`
+    same as `CheckpointedProvider`) by callers like `spork backfill`,
+    which reports "not applicable" for a provider that doesn't rather
+    than failing with an `AttributeError`.
+    """
+
+    def query_messages(
+        self, *, unread_only: bool = False, position: int = 0, limit: int = 50
+    ) -> BackfillPage: ...

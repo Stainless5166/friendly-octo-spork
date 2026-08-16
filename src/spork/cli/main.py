@@ -14,6 +14,7 @@ from pathlib import Path
 import typer
 
 from spork import __version__
+from spork.cli.commands.backfill import backfill
 from spork.cli.commands.config import app as config_app
 from spork.cli.commands.doctor import doctor
 from spork.cli.commands.install_service import install_service_command
@@ -41,6 +42,7 @@ app.command("pause")(pause)
 app.command("resume")(resume)
 app.command("logs")(logs)
 app.command("reclassify")(reclassify)
+app.command("backfill")(backfill)
 app.command("install-service")(install_service_command)
 
 

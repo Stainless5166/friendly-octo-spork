@@ -38,6 +38,7 @@ dev = [
     "ruff>=0.6,<1",
     "mypy>=1.11,<2",
     "pdoc>=14.5,<15",
+    "mitmproxy>=11,<12",
 ]
 
 [build-system]

@@ -21,6 +21,7 @@ from pathlib import Path
 from spork.core.models import NormalizedMessage
 from spork.core.providers.base import (
     ActionApplier,
+    BackfillPage,
     DraftCreator,
     MailboxLister,
     MessageLookup,
@@ -200,3 +201,23 @@ class FileProvider:
 
     def build_message_lookup(self) -> MessageLookup:
         return _FileMessageLookup(load_messages(self._messages_path))
+
+    def query_messages(
+        self, *, unread_only: bool = False, position: int = 0, limit: int = 50
+    ) -> BackfillPage:
+        """Page through `messages_path` in-process — no server-side query to delegate to.
+
+        Proves `BackfillProvider` generalizes beyond JMAP the same way
+        `Provider` itself does (§9.3, M1b): a real second implementation,
+        not a stand-in. `unread_only` is accepted for interface parity
+        but has nothing to filter on — a fixture file has no "seen"
+        state — and is a no-op here, not silently misleading (still
+        every message, every time).
+        """
+        del unread_only
+        messages = load_messages(self._messages_path)
+        total = len(messages)
+        page = tuple(messages[position : position + limit])
+        return BackfillPage(
+            messages=page, position=position, total=total, has_more=position + limit < total
+        )

@@ -38,6 +38,9 @@ pip-delete-this-directory.txt
 
 # Unit test / coverage reports
 /tests/fixtures/corpus/
+# Recorded live JMAP traffic (M1c) — real (if boring) account/session
+# shapes, same real-mail-content privacy rule as the corpus above.
+/tests/fixtures/jmap/flows/
 htmlcov/
 .tox/
 .nox/
