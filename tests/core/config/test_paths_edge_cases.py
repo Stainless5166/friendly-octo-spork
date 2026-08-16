@@ -134,4 +134,4 @@ def test_resolve_user_unit_path_treats_relative_or_empty_as_unset(
 
     result = resolve_user_unit_path()
 
-    assert result == Path("/home/will/.config/systemd/user/sporkd.service")
+    assert result == Path("/home/will/.config/systemd/user/sporkd@.service")

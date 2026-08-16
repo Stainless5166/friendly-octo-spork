@@ -200,9 +200,8 @@ def test_process_message_writes_an_audit_entry_for_applied_actions(
 def test_process_message_handles_escalate_without_calling_executor(
     tmp_path: Path, make_message
 ) -> None:
-    """An escalate verdict never reaches the executor (which would
-    reject it anyway) — it's recorded and marked processed as the
-    interim policy pending Tier 2 (docs/DESIGN.md §9)."""
+    """An escalate verdict is recorded pending Tier 2 and never reaches
+    the executor, which would reject it anyway."""
     applier = _RecordingApplier()
     message = make_message(message_id="msg-1")
 
@@ -217,11 +216,40 @@ def test_process_message_handles_escalate_without_calling_executor(
             now=lambda: "t1",
         )
 
-        assert db.has_processed("msg-1") is True
+        assert db.has_processed("msg-1") is False
 
     assert verdict is not None
     assert verdict.action.type == "escalate"
     assert applier.calls == []
+
+
+def test_escalation_remains_retryable_until_tier2_completes(tmp_path: Path, make_message) -> None:
+    """Tier 1 must not permanently consume work owned by Tier 2."""
+    message = make_message(message_id="msg-pending")
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        first = process_message(
+            message,
+            [],
+            default_unmatched_action=Action(type="escalate"),
+            executor=ActionExecutor(_RecordingApplier()),
+            state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
+            now=lambda: "t1",
+        )
+        second = process_message(
+            message,
+            [],
+            default_unmatched_action=Action(type="escalate"),
+            executor=ActionExecutor(_RecordingApplier()),
+            state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
+            now=lambda: "t2",
+        )
+
+        assert db.has_processed(message.message_id) is False
+
+    assert first is not None and first.action.type == "escalate"
+    assert second is not None and second.action.type == "escalate"
 
 
 def test_process_message_alerts_immediately_for_a_vip_sender_rule(

@@ -30,6 +30,18 @@ ENFORCED_CONFIG_PATH = Path("/etc/spork/enforced.toml")
 _DEFAULT_CONFIG_DIRS = "/etc/xdg"
 _FALLBACK_RUNTIME_DIR_TEMPLATE = "/tmp/spork-{uid}"
 
+_runtime_config_path: Path | None = None
+_runtime_secretspec_path: Path | None = None
+
+
+def configure_runtime_paths(
+    *, config_path: Path | None = None, secretspec_path: Path | None = None
+) -> None:
+    """Set process-local diagnostic path overrides for one CLI invocation."""
+    global _runtime_config_path, _runtime_secretspec_path
+    _runtime_config_path = config_path
+    _runtime_secretspec_path = secretspec_path
+
 
 def _env_absolute_path(name: str) -> Path | None:
     """Read `name` from the environment, honoring the XDG spec's rule
@@ -51,6 +63,8 @@ def resolve_user_config_path() -> Path:
     documented default for `XDG_CONFIG_HOME` — when unset, empty, or
     relative.
     """
+    if _runtime_config_path is not None:
+        return _runtime_config_path
     base = _env_absolute_path("XDG_CONFIG_HOME") or Path.home() / ".config"
     return base / _APP_DIR_NAME / _CONFIG_FILENAME
 
@@ -111,11 +125,13 @@ def resolve_secretspec_path() -> Path:
     `resolve_user_config_path()` when `XDG_CONFIG_HOME` is unset,
     empty, or relative.
     """
+    if _runtime_secretspec_path is not None:
+        return _runtime_secretspec_path
     base = _env_absolute_path("XDG_CONFIG_HOME") or Path.home() / ".config"
     return base / _APP_DIR_NAME / _SECRETSPEC_FILENAME
 
 
-def resolve_user_unit_path(unit_name: str = "sporkd") -> Path:
+def resolve_user_unit_path(unit_name: str = "sporkd@") -> Path:
     """`$XDG_CONFIG_HOME/systemd/user/<unit_name>.service`.
 
     systemd's own real user-unit search path (docs/DESIGN.md §14) —

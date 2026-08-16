@@ -62,29 +62,24 @@ you end up with `sporkd` running as a systemd **user** service.
    `RecordedLLMClient` and `FileProvider` need neither extra.
 
 2. **Set up secrets** ([SecretSpec](https://github.com/cachix/secretspec),
-   §7.3 of `docs/DESIGN.md`). `spork` depends only on SecretSpec's
-   *Python SDK* (already installed by `uv sync`) to resolve secrets at
-   runtime — it doesn't need the separate `secretspec` CLI tool. The
+   §7.3 of `docs/DESIGN.md`). `spork` uses SecretSpec's Python SDK
+   (already installed by `uv sync`) to resolve secrets at runtime. The
    repo's own `secretspec.toml` only *declares* what's needed; copy it
-   into place, then tell SecretSpec which *provider* actually stores
-   values. A real credential manager (`keyring://`, `1password://`,
-   ...) needs that separate CLI tool — see SecretSpec's own docs. The
-   simplest path that needs no extra tooling at all is its `env://`
-   provider, set once, globally:
+   into place and enroll the values in the OS keyring:
 
    ```console
-   $ mkdir -p ~/.config/spork ~/.config/secretspec
-   $ cp secretspec.toml ~/.config/spork/secretspec.toml
-   $ printf '[defaults]\nprovider = "env://"\n' > ~/.config/secretspec/config.toml
+    $ mkdir -p ~/.config/spork/default ~/.config/secretspec
+    $ cp secretspec.toml ~/.config/spork/default/secretspec.toml
+   $ printf '[defaults]\nprovider = "keyring"\n' > ~/.config/secretspec/config.toml
+   $ uv run spork secrets enroll
    ```
 
-   Then export the two declared secrets. A systemd **user** unit
-   doesn't inherit your interactive shell's environment, so for
-   `sporkd` (not just `uv run spork doctor`) to see them, put them in
-   `~/.config/environment.d/spork.conf` (systemd's own per-user
-   environment mechanism) rather than `.bashrc`:
+   The command prompts without echoing either value and stores them in
+   the current user's OS keyring. An environment provider remains
+   available for environments that intentionally inject secrets:
 
    ```console
+   $ printf '[defaults]\nprovider = "env://"\n' > ~/.config/secretspec/config.toml
    $ mkdir -p ~/.config/environment.d
    $ cat > ~/.config/environment.d/spork.conf <<EOF
    JMAP_API_TOKEN=your-fastmail-api-token
@@ -92,14 +87,19 @@ you end up with `sporkd` running as a systemd **user** service.
    EOF
    ```
 
-3. **Write `~/.config/spork/config.toml`** (§7.2). This example uses
-   `FileProvider`/`RecordedLLMClient` — no live account needed to try
-   the daemon end to end; swap `[provider]` for
-   `spork.core.providers.jmap.provider:JmapProvider` once M1's live
-   JMAP session lands. `config.toml`'s paths are **not** `~`-expanded
-   (plain `pydantic.Path` fields, verified directly — TOML has no
-   shell-variable syntax of its own either), so write real absolute
-   paths — the heredoc below expands `$HOME` for you:
+3. **Create `config.toml`** (§7.2). For the live JMAP path, use the
+   generated safe starter configuration:
+
+   ```console
+    $ uv run spork --config ~/.config/spork/default/config.toml config init
+   ```
+
+   It creates a JMAP provider, LiteLLM backend, logging alerter, state
+   path, and a disabled starter rule. It never writes credential values.
+   Edit `~/.config/spork/rules.toml` before enabling triage. Paths in
+   `config.toml` are absolute; TOML does not expand `~`.
+
+   For the older offline FileProvider setup, write the following instead:
 
    ```console
    $ mkdir -p ~/.local/share/spork
@@ -143,8 +143,16 @@ you end up with `sporkd` running as a systemd **user** service.
    $ uv run spork doctor
    ```
 
+   Diagnostic launches can override either file without changing XDG
+   state:
+
+   ```console
+   $ uv run spork --config /tmp/spork/config.toml --secretspec /tmp/spork/secretspec.toml doctor
+   $ uv run sporkd --config /tmp/spork/config.toml --secretspec /tmp/spork/secretspec.toml
+   ```
+
 4. **Install the console scripts where the unit file expects them.**
-   The tracked unit (`systemd/sporkd.service`) runs
+    The tracked unit template (`systemd/sporkd@.service`) runs
    `%h/.local/bin/sporkd` — `uv tool install` (not `uv run`, which
    only runs inside this checkout's own venv) puts `spork`/`sporkd`
    there:
@@ -156,12 +164,12 @@ you end up with `sporkd` running as a systemd **user** service.
 5. **Install and enable the systemd user unit.**
 
    ```console
-   $ uv run spork install-service
+    $ uv run spork install-service default
    ```
 
-   This writes `systemd/sporkd.service`'s content to
-   `~/.config/systemd/user/sporkd.service`, runs `systemctl --user
-   daemon-reload`, and enables + starts it (`--no-enable-now` skips
+    This writes `systemd/sporkd@.service`'s content to
+    `~/.config/systemd/user/sporkd@.service`, runs `systemctl --user
+    daemon-reload`, and enables + starts `sporkd@default` (`--no-enable-now` skips
    that last part). Want it running even fully logged out?
    `loginctl enable-linger $USER` — not run automatically, since it
    needs privileges this command has no business assuming it has.

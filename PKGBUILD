@@ -34,14 +34,14 @@ package() {
   cd "$startdir"
   python -m installer --destdir="$pkgdir" "$srcdir"/dist/*.whl
 
-  # The same tracked unit file `spork install-service` embeds a copy
+  # The same tracked unit template `spork install-service` embeds a copy
   # of (spork.core.systemd.template.UNIT_FILE_CONTENT) — one
   # definition, two install paths. The vendor unit dir
   # (/usr/lib/systemd/user/), not ~/.config/systemd/user/: a
   # distro-managed unit belongs in the package tree, never a user's
   # own config directory (docs/DESIGN.md §14).
-  install -Dm644 systemd/sporkd.service \
-    "$pkgdir/usr/lib/systemd/user/sporkd.service"
+  install -Dm644 systemd/sporkd@.service \
+    "$pkgdir/usr/lib/systemd/user/sporkd@.service"
 
   install -Dm644 secretspec.toml \
     "$pkgdir/usr/share/doc/$pkgname/secretspec.toml"

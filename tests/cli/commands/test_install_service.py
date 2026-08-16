@@ -51,7 +51,7 @@ def test_install_service_writes_the_unit_file_even_when_systemctl_fails(
 
     _run("install-service", env=env)
 
-    assert (tmp_path / "systemd" / "user" / "sporkd.service").exists()
+    assert (tmp_path / "systemd" / "user" / "sporkd@.service").exists()
 
 
 def test_install_service_reports_a_clean_error_not_a_traceback(tmp_path: Path) -> None:

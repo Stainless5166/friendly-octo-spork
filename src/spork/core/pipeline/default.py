@@ -86,7 +86,6 @@ def build_default_pipeline(
             [
                 RecordEscalationFilter(ops),
                 WriteAuditEntryFilter(state_db),
-                MarkProcessedFilter(state_db),
             ],
             ops,
         )
@@ -129,11 +128,9 @@ def process_message(
     skips that idempotency check entirely — see
     `build_default_pipeline()`'s docstring for why.
 
-    An `escalate` verdict is handled per the interim policy in
-    docs/DESIGN.md §9: never passed to the action executor (which
-    would reject it), recorded, and marked processed anyway so the
-    daemon doesn't re-evaluate the same message forever while Tier 2
-    (M3) remains unbuilt.
+    An `escalate` verdict is recorded as pending Tier 2 and deliberately
+    remains unprocessed. Tier 2 owns the terminal processed mark, so an
+    LLM/provider failure leaves the message retryable after restart.
     """
     pipeline = build_default_pipeline(
         executor=executor,

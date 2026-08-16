@@ -153,6 +153,7 @@ def test_doctor_fails_every_check_cleanly_against_a_bare_environment(tmp_path: P
     assert "[FAIL] JMAP connectivity" in result.stdout
     assert "Traceback" not in result.stdout
     assert "Traceback" not in result.stderr
+    assert "Field required" not in result.stdout
 
 
 def test_doctor_skips_provider_rules_and_classifier_checks_when_config_fails(
@@ -170,9 +171,9 @@ def test_doctor_skips_provider_rules_and_classifier_checks_when_config_fails(
 
 def test_doctor_passes_every_check_a_full_setup_can_pass(tmp_path: Path) -> None:
     """secrets/config/provider/rules/local-classifier all pass against
-    a fully valid setup — only JMAP connectivity (genuinely blocked,
-    docs/ROADMAP.md M1) and the systemd unit (never installed in this
-    sandbox) keep the overall exit code non-zero."""
+    a fully valid setup — the file provider makes JMAP connectivity
+    not applicable, while the systemd unit remains uninstalled in this
+    sandbox and keeps the overall exit code non-zero."""
     result = _run("doctor", env=_write_full_setup(tmp_path))
 
     assert "[ok] secrets" in result.stdout
@@ -180,7 +181,7 @@ def test_doctor_passes_every_check_a_full_setup_can_pass(tmp_path: Path) -> None
     assert "[ok] provider" in result.stdout
     assert "[ok] rules" in result.stdout
     assert "[ok] local classifier" in result.stdout
-    assert "[FAIL] JMAP connectivity" in result.stdout
+    assert "[ok] JMAP connectivity: not applicable" in result.stdout
     assert result.returncode == 1
 
 

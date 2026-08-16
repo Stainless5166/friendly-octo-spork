@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from spork.core.providers.base import ThreadContext
 from spork.core.providers.jmap.client import JmapClient, JmapFetchResult
 from spork.core.providers.jmap.provider import (
     JmapProvider,
@@ -164,7 +165,7 @@ def test_draft_creator_delegates_to_the_client_directly(make_message) -> None:
 
 
 def test_build_thread_history_reader_returns_something_that_can_get_context(
-    make_message,
+    make_message, monkeypatch
 ) -> None:
     """build_thread_history_reader() returns an object satisfying
     ThreadHistoryReader — the fourth leg of the Provider contract per
@@ -173,44 +174,52 @@ def test_build_thread_history_reader_returns_something_that_can_get_context(
 
     reader = provider.build_thread_history_reader()
 
-    with pytest.raises(NotImplementedError):
-        reader.get_thread_context(make_message())
+    expected = ThreadContext(prior_subject="Earlier", user_has_replied=True)
+    monkeypatch.setattr(JmapClient, "get_thread_context", lambda self, message: expected)
+
+    assert reader.get_thread_context(make_message()) == expected
 
 
-def test_thread_history_reader_delegates_to_the_client_directly(make_message) -> None:
+def test_thread_history_reader_delegates_to_the_client_directly(make_message, monkeypatch) -> None:
     """The thread history reader is a real delegation to
     JmapClient.get_thread_context(), not a second placeholder — mirrors
     test_action_applier_delegates_to_the_client_directly."""
     client = JmapClient(host="api.fastmail.com", api_token="fake-token")
     reader = _JmapThreadHistoryReader(client)
 
-    with pytest.raises(NotImplementedError):
-        reader.get_thread_context(make_message())
+    expected = ThreadContext(prior_subject=None, user_has_replied=False)
+    monkeypatch.setattr(JmapClient, "get_thread_context", lambda self, message: expected)
+
+    assert reader.get_thread_context(make_message()) == expected
 
 
-def test_build_mailbox_lister_returns_something_that_can_list_mailboxes() -> None:
+def test_build_mailbox_lister_returns_something_that_can_list_mailboxes(monkeypatch) -> None:
     """build_mailbox_lister() returns an object satisfying MailboxLister
     — the fifth leg of the Provider contract per docs/DESIGN.md §9.3."""
     provider = JmapProvider(host="api.fastmail.com", api_token="fake-token")
 
     lister = provider.build_mailbox_lister()
 
-    with pytest.raises(NotImplementedError):
-        lister.list_mailboxes()
+    monkeypatch.setattr(JmapClient, "list_mailboxes", lambda self: ["Inbox", "Sent"])
+
+    assert lister.list_mailboxes() == ["Inbox", "Sent"]
 
 
-def test_mailbox_lister_delegates_to_the_client_directly() -> None:
+def test_mailbox_lister_delegates_to_the_client_directly(monkeypatch) -> None:
     """The mailbox lister is a real delegation to
     JmapClient.list_mailboxes(), not a second placeholder — mirrors
     test_action_applier_delegates_to_the_client_directly."""
     client = JmapClient(host="api.fastmail.com", api_token="fake-token")
     lister = _JmapMailboxLister(client)
 
-    with pytest.raises(NotImplementedError):
-        lister.list_mailboxes()
+    monkeypatch.setattr(JmapClient, "list_mailboxes", lambda self: ["Archive"])
+
+    assert lister.list_mailboxes() == ["Archive"]
 
 
-def test_build_message_lookup_returns_something_that_can_get_a_message() -> None:
+def test_build_message_lookup_returns_something_that_can_get_a_message(
+    make_message, monkeypatch
+) -> None:
     """build_message_lookup() returns an object satisfying MessageLookup
     — the sixth leg of the Provider contract, for docs/DESIGN.md §13's
     spork reclassify <id>."""
@@ -218,16 +227,20 @@ def test_build_message_lookup_returns_something_that_can_get_a_message() -> None
 
     lookup = provider.build_message_lookup()
 
-    with pytest.raises(NotImplementedError):
-        lookup.get_message("msg-1")
+    expected = make_message(message_id="msg-1")
+    monkeypatch.setattr(JmapClient, "get_message", lambda self, message_id: expected)
+
+    assert lookup.get_message("msg-1") == expected
 
 
-def test_message_lookup_delegates_to_the_client_directly() -> None:
+def test_message_lookup_delegates_to_the_client_directly(make_message, monkeypatch) -> None:
     """The message lookup is a real delegation to
     JmapClient.get_message(), not a second placeholder — mirrors
     test_action_applier_delegates_to_the_client_directly."""
     client = JmapClient(host="api.fastmail.com", api_token="fake-token")
     lookup = _JmapMessageLookup(client)
 
-    with pytest.raises(NotImplementedError):
-        lookup.get_message("msg-1")
+    expected = make_message(message_id="msg-1")
+    monkeypatch.setattr(JmapClient, "get_message", lambda self, message_id: expected)
+
+    assert lookup.get_message("msg-1") == expected

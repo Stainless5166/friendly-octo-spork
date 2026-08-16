@@ -29,7 +29,7 @@ def test_check_unit_status_reports_installed_enabled_active_when_all_good(
     tmp_path: Path,
 ) -> None:
     """The healthy case: unit file present, systemctl reports enabled/active."""
-    unit_path = tmp_path / "sporkd.service"
+    unit_path = tmp_path / "sporkd@.service"
     unit_path.write_text("[Unit]\n")
 
     def runner(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -47,7 +47,7 @@ def test_check_unit_status_reports_not_installed_when_no_unit_file_exists(
 ) -> None:
     """No unit file at unit_path at all — a plain filesystem check,
     independent of whatever systemctl says."""
-    unit_path = tmp_path / "sporkd.service"
+    unit_path = tmp_path / "sporkd@.service"
 
     def runner(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if "is-enabled" in args:
@@ -66,7 +66,7 @@ def test_check_unit_status_reports_unknown_when_systemctl_is_not_installed(
 ) -> None:
     """No systemctl binary at all — a real, expected case on a non-systemd
     box — never crashes, reports "unknown" for both live checks."""
-    unit_path = tmp_path / "sporkd.service"
+    unit_path = tmp_path / "sporkd@.service"
     unit_path.write_text("[Unit]\n")
 
     def runner(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -85,7 +85,7 @@ def test_check_unit_status_reports_unknown_when_the_user_bus_is_unreachable(
     """The confirmed-real sandbox case: systemctl exists, but
     "Failed to connect to bus" on stderr — a live-session problem, not
     an inactive/disabled unit, so it must not be reported as either."""
-    unit_path = tmp_path / "sporkd.service"
+    unit_path = tmp_path / "sporkd@.service"
     unit_path.write_text("[Unit]\n")
 
     def runner(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:

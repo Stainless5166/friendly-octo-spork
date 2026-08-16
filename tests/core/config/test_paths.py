@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from spork.core.config.paths import (
+    configure_runtime_paths,
     resolve_enforced_config_path,
     resolve_secretspec_path,
     resolve_socket_path,
@@ -162,28 +163,28 @@ def test_resolve_secretspec_path_falls_back_to_home_dot_config_when_unset(
 def test_resolve_user_unit_path_uses_xdg_config_home_when_set(
     monkeypatch: pytest.MonkeyPatch, xdg_config_home: str
 ) -> None:
-    """XDG_CONFIG_HOME/systemd/user/sporkd.service — systemd's own real
+    """XDG_CONFIG_HOME/systemd/user/sporkd@.service — systemd's own real
     user-unit search path (docs/DESIGN.md §14), not spork's own
     subdirectory the way config.toml/secretspec.toml are."""
     monkeypatch.setenv("XDG_CONFIG_HOME", xdg_config_home)
 
     result = resolve_user_unit_path()
 
-    assert result == Path(xdg_config_home) / "systemd" / "user" / "sporkd.service"
+    assert result == Path(xdg_config_home) / "systemd" / "user" / "sporkd@.service"
 
 
 def test_resolve_user_unit_path_falls_back_to_home_dot_config_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No XDG_CONFIG_HOME: falls back to
-    $HOME/.config/systemd/user/sporkd.service — systemd's own
+    $HOME/.config/systemd/user/sporkd@.service — systemd's own
     documented default search path."""
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setenv("HOME", "/home/will")
 
     result = resolve_user_unit_path()
 
-    assert result == Path("/home/will/.config/systemd/user/sporkd.service")
+    assert result == Path("/home/will/.config/systemd/user/sporkd@.service")
 
 
 def test_resolve_user_unit_path_accepts_a_different_unit_name(
@@ -197,3 +198,16 @@ def test_resolve_user_unit_path_accepts_a_different_unit_name(
     result = resolve_user_unit_path("other-name")
 
     assert result == Path("/home/will/.config/systemd/user/other-name.service")
+
+
+def test_runtime_config_overrides_are_explicit_and_resettable() -> None:
+    """Launch-time diagnostic paths override defaults only for the process."""
+    configure_runtime_paths(
+        config_path=Path("/tmp/debug-config.toml"),
+        secretspec_path=Path("/tmp/debug-secretspec.toml"),
+    )
+    try:
+        assert resolve_user_config_path() == Path("/tmp/debug-config.toml")
+        assert resolve_secretspec_path() == Path("/tmp/debug-secretspec.toml")
+    finally:
+        configure_runtime_paths()

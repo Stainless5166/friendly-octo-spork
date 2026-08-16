@@ -19,6 +19,7 @@ import os
 import shlex
 import subprocess
 from datetime import UTC, datetime
+from pathlib import Path
 
 import typer
 
@@ -89,6 +90,69 @@ def _load_config_or_exit() -> SporkConfig:
     except ConfigLoadError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+
+
+@app.command("init")
+def init(
+    force: bool = typer.Option(False, "--force", help="Replace an existing user config."),
+    model: str = typer.Option(
+        "anthropic/claude-sonnet-4-20250514",
+        help="LiteLLM model identifier for Tier 2.",
+    ),
+) -> None:
+    """Create a safe JMAP/LiteLLM user configuration and starter rules file."""
+    config_path = resolve_user_config_path()
+    if config_path.exists() and not force:
+        typer.echo(
+            f"Error: config already exists at {config_path}; use --force to replace it.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    rules_path = config_path.parent / "rules.toml"
+    data_dir = Path.home() / ".local" / "share" / "spork"
+    config_text = f"""rules_path = {json.dumps(str(rules_path))}
+db_path = {json.dumps(str(data_dir / "state.sqlite3"))}
+
+[provider]
+spec = "spork.core.providers.jmap.provider:JmapProvider"
+[provider.kwargs]
+host = "api.fastmail.com"
+poll_interval_seconds = 30.0
+[provider.secret_kwargs]
+api_token = "JMAP_API_TOKEN"
+
+[llm]
+spec = "spork.core.llm.clients.litellm:LiteLLMClient"
+[llm.kwargs]
+model = {json.dumps(model)}
+[llm.secret_kwargs]
+api_key = "ANTHROPIC_API_KEY"
+
+[alerts]
+spec = "spork.core.alerts.log:LoggingAlerter"
+
+[tiering]
+"""
+    rules_text = """[[rule]]
+id = "starter-ignore"
+description = "Disabled starter rule; add explicit rules before enabling triage."
+enabled = false
+when = { always = true }
+action = { type = "ignore", reason = "starter configuration" }
+"""
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(config_text)
+        rules_path.write_text(rules_text)
+    except OSError as exc:
+        typer.echo(f"Error: could not write configuration: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"Created {config_path}")
+    typer.echo(f"Created {rules_path}")
+    typer.echo("Edit rules.toml, then run spork doctor before starting sporkd.")
 
 
 @app.command("show")

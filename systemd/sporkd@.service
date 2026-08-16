@@ -5,7 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-ExecStart=%h/.local/bin/sporkd
+ExecStartPre=%h/.local/bin/spork --secretspec %h/.config/spork/%i/secretspec.toml secrets wait --timeout 120
+ExecStart=%h/.local/bin/sporkd --config %h/.config/spork/%i/config.toml --secretspec %h/.config/spork/%i/secretspec.toml
 Restart=on-failure
 RestartSec=5
 # Secrets are resolved by sporkd itself via the SecretSpec SDK at

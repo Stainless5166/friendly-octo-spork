@@ -36,7 +36,12 @@ class _FakeJmapcClient:
 
 
 def _mailbox_response() -> _Response:
-    return _Response(data=[_Response(id="inbox-id", name="Inbox", role="inbox")])
+    return _Response(
+        data=[
+            _Response(id="inbox-id", name="Inbox", role="inbox"),
+            _Response(id="sent-id", name="Sent", role="sent"),
+        ]
+    )
 
 
 def _email(
@@ -177,29 +182,63 @@ def test_create_draft_raises_not_implemented(make_message) -> None:
         client.create_draft(make_message(), "Friday 2pm works for me.")
 
 
-def test_get_thread_context_raises_not_implemented(make_message) -> None:
-    """get_thread_context() would search a live session's thread history
-    via Email/query (docs/DESIGN.md §9.3) — not built yet."""
-    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+def test_list_mailboxes_returns_names_from_mailbox_get() -> None:
+    """Mailbox names are read from the authenticated JMAP session."""
+    backend = _FakeJmapcClient(
+        [
+            _Response(
+                data=[
+                    _Response(id="inbox-id", name="Inbox", role="inbox"),
+                    _Response(id="sent-id", name="Sent", role="sent"),
+                ]
+            )
+        ]
+    )
+    client = JmapClient(
+        host="api.fastmail.com", api_token="fake-token", client_factory=lambda host, token: backend
+    )
 
-    with pytest.raises(NotImplementedError):
-        client.get_thread_context(make_message())
+    assert client.list_mailboxes() == ["Inbox", "Sent"]
 
 
-def test_list_mailboxes_raises_not_implemented() -> None:
-    """list_mailboxes() would fetch Mailbox/get against a live session
-    (docs/DESIGN.md §9.3) — not built yet."""
-    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+def test_get_thread_context_reads_prior_subject_and_sent_state(make_message) -> None:
+    """Thread context is derived from Thread/get and the related emails."""
+    backend = _FakeJmapcClient(
+        [
+            _mailbox_response(),
+            _Response(data=[_Response(id="thread-1", email_ids=["prior", "current"])]),
+            _Response(
+                data=[
+                    _email("prior", mailbox_ids={"sent-id": True}),
+                    _email("current"),
+                ]
+            ),
+        ]
+    )
+    client = JmapClient(
+        host="api.fastmail.com", api_token="fake-token", client_factory=lambda host, token: backend
+    )
 
-    with pytest.raises(NotImplementedError):
-        client.list_mailboxes()
+    context = client.get_thread_context(make_message(message_id="current", thread_id="thread-1"))
+
+    assert context.prior_subject == "A subject"
+    assert context.user_has_replied is True
+    assert [type(request).__name__ for request in backend.requests] == [
+        "MailboxGet",
+        "ThreadGet",
+        "EmailGet",
+    ]
 
 
-def test_get_message_raises_not_implemented() -> None:
-    """get_message() would fetch one message by id via Email/get
-    against a live session (docs/DESIGN.md §9.3, for spork reclassify)
-    — not built yet."""
-    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+def test_get_message_fetches_and_normalizes_one_email() -> None:
+    """Message lookup returns the same normalized shape as new-mail fetch."""
+    backend = _FakeJmapcClient([_mailbox_response(), _Response(data=[_email("msg-1")])])
+    client = JmapClient(
+        host="api.fastmail.com", api_token="fake-token", client_factory=lambda host, token: backend
+    )
 
-    with pytest.raises(NotImplementedError):
-        client.get_message("msg-1")
+    message = client.get_message("msg-1")
+
+    assert message.message_id == "msg-1"
+    assert message.subject == "A subject"
+    assert type(backend.requests[-1]).__name__ == "EmailGet"

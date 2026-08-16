@@ -22,7 +22,7 @@ def test_check_unit_status_default_unit_path_uses_resolve_user_unit_path(
     """No unit_path override: installed reflects the real
     resolve_user_unit_path() location, not some other path."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    unit_file = tmp_path / "systemd" / "user" / "sporkd.service"
+    unit_file = tmp_path / "systemd" / "user" / "sporkd@.service"
     unit_file.parent.mkdir(parents=True)
     unit_file.write_text("[Unit]\n")
 
@@ -37,7 +37,7 @@ def test_check_unit_status_default_unit_path_uses_resolve_user_unit_path(
 def test_check_unit_status_reports_unknown_on_a_timeout(tmp_path: Path) -> None:
     """systemctl hanging (subprocess.TimeoutExpired) gets the same
     "couldn't ask" treatment as a missing binary, never propagates."""
-    unit_path = tmp_path / "sporkd.service"
+    unit_path = tmp_path / "sporkd@.service"
     unit_path.write_text("[Unit]\n")
 
     def runner(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:

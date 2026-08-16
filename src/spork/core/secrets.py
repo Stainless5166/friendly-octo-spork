@@ -9,11 +9,16 @@ one project-specific error type so callers only need to know about
 
 from __future__ import annotations
 
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
+from getpass import getuser
 from pathlib import Path
 
+import keyring
 import secretspec
+
+_get_password = keyring.get_password
 
 
 class SecretsError(Exception):
@@ -88,6 +93,10 @@ def resolve_secrets(
     partial secrets, not limp along and fail later in a confusing
     place.
     """
+    if provider is None:
+        provider = _manifest_provider(path)
+    if provider == "keyring":
+        return _resolve_keyring(path, profile)
     try:
         resolved = secretspec.resolve(
             path=str(path), provider=provider, profile=profile, reason=reason
@@ -97,3 +106,65 @@ def resolve_secrets(
 
     values = {name: value for name, value in resolved.fields().items() if value is not None}
     return Secrets(values)
+
+
+def _resolve_keyring(path: str | Path, profile: str | None) -> Secrets:
+    """Read SecretSpec's keyring scope through the working Python backend.
+
+    SecretSpec's native keyring resolver can report a usable Secret Service
+    while failing to read values on some Linux keyring setups. The Python
+    backend used by enrollment reads the same documented service/account
+    scope, so this compatibility path keeps the application usable without
+    falling back to files or environment variables.
+    """
+    manifest_path = Path(path)
+    try:
+        with manifest_path.open("rb") as manifest_file:
+            document = tomllib.load(manifest_file)
+        project = document["project"]["name"]
+        selected_profile = profile or "default"
+        declarations = document["profiles"][selected_profile]
+    except (KeyError, OSError, TypeError, tomllib.TOMLDecodeError) as exc:
+        raise SecretsError(f"could not read SecretSpec keyring manifest: {exc}") from exc
+
+    if not isinstance(project, str) or not isinstance(declarations, dict):
+        raise SecretsError("invalid SecretSpec keyring manifest")
+
+    account = getuser()
+    values: dict[str, str] = {}
+    missing: list[str] = []
+    for name, declaration in declarations.items():
+        if not isinstance(name, str) or not isinstance(declaration, dict):
+            raise SecretsError("invalid SecretSpec secret declaration")
+        service = f"secretspec/{project}/{selected_profile}/{name}"
+        try:
+            value = _get_password(service, account)
+        except Exception as exc:
+            raise SecretsError(f"could not read {name} from the OS keyring: {exc}") from exc
+        if value is None:
+            if declaration.get("required", True):
+                missing.append(name)
+        else:
+            values[name] = value
+
+    if missing:
+        raise SecretsError(f"missing required secret(s): {', '.join(sorted(missing))}")
+    return Secrets(values)
+
+
+def _manifest_provider(path: str | Path) -> str | None:
+    """Honor the manifest provider when the SDK's global default is unset."""
+    try:
+        with Path(path).open("rb") as manifest_file:
+            document = tomllib.load(manifest_file)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise SecretsError(f"could not read SecretSpec manifest: {exc}") from exc
+    providers = document.get("providers", {})
+    if not isinstance(providers, dict):
+        raise SecretsError("SecretSpec [providers] must be a table")
+    default = providers.get("default")
+    if default is not None and not isinstance(default, str):
+        raise SecretsError("SecretSpec providers.default must be a string")
+    if default == "keyring://":
+        return "keyring"
+    return default

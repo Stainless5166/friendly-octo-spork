@@ -17,9 +17,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from spork.cli.commands.config import _format_show_lines, _looks_like_secret
+from typer.testing import CliRunner
+
+from spork.cli.commands.config import _format_show_lines, _looks_like_secret, app
 from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
 from spork.core.state.db import StateDB
+
+runner = CliRunner()
 
 
 def _run(*args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -79,6 +83,51 @@ def test_config_show_prints_effective_values(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "spork.core.providers.jmap.provider:JmapProvider" in result.stdout
     assert "api.fastmail.com" in result.stdout
+
+
+def test_config_init_writes_a_valid_jmap_setup_without_credentials(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Initialization creates usable paths and keeps secret values out of TOML."""
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setattr("spork.cli.commands.config.resolve_user_config_path", lambda: config_path)
+
+    result = runner.invoke(app, ["init"], env={"HOME": str(tmp_path)})
+
+    assert result.exit_code == 0
+    assert config_path.is_file()
+    assert (tmp_path / "rules.toml").is_file()
+    text = config_path.read_text()
+    assert "JMAP_API_TOKEN" in text
+    assert "ANTHROPIC_API_KEY" in text
+    assert "api.fastmail.com" in text
+    assert "super-secret" not in text
+
+
+def test_config_init_refuses_to_overwrite_existing_config(tmp_path: Path, monkeypatch) -> None:
+    """An existing user config is protected unless --force is explicit."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("existing = true\n")
+    monkeypatch.setattr("spork.cli.commands.config.resolve_user_config_path", lambda: config_path)
+
+    result = runner.invoke(app, ["init"])
+
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+    assert config_path.read_text() == "existing = true\n"
+
+
+def test_config_init_force_replaces_existing_config(tmp_path: Path, monkeypatch) -> None:
+    """--force is the only path that replaces an existing generated config."""
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("existing = true\n")
+    monkeypatch.setattr("spork.cli.commands.config.resolve_user_config_path", lambda: config_path)
+
+    result = runner.invoke(app, ["init", "--force", "--model", "anthropic/test-model"])
+
+    assert result.exit_code == 0
+    assert "anthropic/test-model" in config_path.read_text()
+    assert "existing = true" not in config_path.read_text()
 
 
 def test_config_show_redacts_a_token_like_kwarg(tmp_path: Path) -> None:
