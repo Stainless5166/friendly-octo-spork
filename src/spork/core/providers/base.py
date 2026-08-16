@@ -6,9 +6,34 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from spork.core.models import NormalizedMessage
+from spork.core.models import Attachment, NormalizedMessage
 from spork.core.rules.schema import Action
 from spork.core.sources.base import CheckpointedSource, Source
+
+
+class AttachmentFetcher(Protocol):
+    """Resolves one message's raw attachments (docs/DESIGN.md §9.5, M10)
+    — a provider's fifth read side, for `archive_receipt`'s "attachments
+    and/or the message itself" PDF (`spork.core.receipts.pdf`).
+    """
+
+    def fetch_attachments(self, message: NormalizedMessage) -> Sequence[Attachment]: ...
+
+
+class KeywordApplier(Protocol):
+    """Applies free-form, per-message keywords to a message (docs/DESIGN.md
+    §9.5, M10) — a second, narrower write side alongside `ActionApplier`.
+
+    Deliberately distinct from the existing mailbox-based `tag` action:
+    §7.5's "mailboxes as tags" fits a small, fixed set of categories a
+    human browses as folders, but `company:<name>`/`date:<iso-date>`
+    are per-message dynamic values, not a mailbox anyone would want to
+    browse by folder-per-company. JMAP's `Email` keywords map (arbitrary
+    per-message string flags, distinct from `mailboxIds`) is the honest
+    fit for that.
+    """
+
+    def apply_keywords(self, message: NormalizedMessage, keywords: Sequence[str]) -> None: ...
 
 
 class ActionApplier(Protocol):
@@ -88,14 +113,16 @@ class Provider(Protocol):
     A provider is the daemon's *entire* relationship to one remote
     source of truth: reading from it (`build_source`), writing an
     action to it (`build_action_applier`), writing a draft to it
-    (`build_draft_creator`), and answering the three read-side
-    questions Tier 2/`spork reclassify` need
-    (`build_thread_history_reader`, `build_mailbox_lister`,
-    `build_message_lookup`) are six operations against the same
-    backend, not separate concerns that happen to share one
-    implementation. Anything else backend-specific (mailbox role
-    resolution) is reached through whatever a provider hands back, not
-    through this Protocol — but every kind of read/write belongs here.
+    (`build_draft_creator`), answering the three read-side questions
+    Tier 2/`spork reclassify` need (`build_thread_history_reader`,
+    `build_mailbox_lister`, `build_message_lookup`), fetching a
+    message's attachments (`build_attachment_fetcher`), and applying
+    free-form per-message keywords (`build_keyword_applier`, §9.5, M10)
+    are eight operations against the same backend, not separate
+    concerns that happen to share one implementation. Anything else
+    backend-specific (mailbox role resolution) is reached through
+    whatever a provider hands back, not through this Protocol — but
+    every kind of read/write belongs here.
     """
 
     def build_source(self) -> Source: ...
@@ -104,6 +131,8 @@ class Provider(Protocol):
     def build_thread_history_reader(self) -> ThreadHistoryReader: ...
     def build_mailbox_lister(self) -> MailboxLister: ...
     def build_message_lookup(self) -> MessageLookup: ...
+    def build_attachment_fetcher(self) -> AttachmentFetcher: ...
+    def build_keyword_applier(self) -> KeywordApplier: ...
 
 
 @runtime_checkable

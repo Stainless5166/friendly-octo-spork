@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Protocol, cast
 
-from spork.core.models import NormalizedMessage
+from spork.core.models import Attachment, NormalizedMessage
 from spork.core.providers.base import ThreadContext
 from spork.core.rules.schema import Action
 
@@ -415,6 +415,28 @@ class JmapClient:
         raise NotImplementedError(
             "JmapClient.create_draft() requires a live jmapc session — "
             "not implemented yet, see docs/ROADMAP.md M3"
+        )
+
+    def fetch_attachments(self, message: NormalizedMessage) -> Sequence[Attachment]:
+        """Resolve `message`'s attachments via `Email/get`'s `blobId`s
+        and a blob download (docs/DESIGN.md §9.5, M10) — unlike
+        `get_thread_context()`/`list_mailboxes()`/`get_message()`
+        (also reads, already real against injected jmapc-shaped
+        responses), this one hasn't been built yet: real and buildable
+        the same way, just out of this pass's scope, not blocked on
+        anything the live account itself would prevent."""
+        raise NotImplementedError(
+            "JmapClient.fetch_attachments() is not implemented yet — see docs/ROADMAP.md M10"
+        )
+
+    def apply_keywords(self, message: NormalizedMessage, keywords: Sequence[str]) -> None:
+        """Mutate `message`'s keywords map via `Email/set` (docs/DESIGN.md
+        §9.5, M10) — the write side, alongside `apply_action()`/
+        `create_draft()`, both also blocked on write-scoped credentials
+        the maintainer's live (read-only) account doesn't have."""
+        raise NotImplementedError(
+            "JmapClient.apply_keywords() requires a live jmapc session with "
+            "write access — not implemented yet, see docs/ROADMAP.md M10"
         )
 
     def get_thread_context(self, message: NormalizedMessage) -> ThreadContext:

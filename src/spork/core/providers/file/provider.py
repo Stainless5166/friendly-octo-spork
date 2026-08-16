@@ -18,17 +18,20 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
-from spork.core.models import NormalizedMessage
+from spork.core.models import Attachment, NormalizedMessage
 from spork.core.providers.base import (
     ActionApplier,
+    AttachmentFetcher,
     BackfillPage,
     DraftCreator,
+    KeywordApplier,
     MailboxLister,
     MessageLookup,
     MessageNotFoundError,
     ThreadContext,
     ThreadHistoryReader,
 )
+from spork.core.providers.file.attachments import load_attachments
 from spork.core.providers.file.messages import load_messages
 from spork.core.rules.schema import Action
 from spork.core.sources.base import Source
@@ -55,6 +58,36 @@ class _FileActionApplier:
         }
         with self._log_path.open("a") as f:
             f.write(json.dumps(entry) + "\n")
+
+
+class _FileKeywordApplier:
+    """Appends each applied keyword set to its own JSON-lines log
+    (docs/DESIGN.md §9.5, M10) — distinct from `_FileActionApplier`'s
+    (a keyword isn't a mailbox action) and from `_FileDraftCreator`'s,
+    same "separate logs stay independently inspectable" reasoning.
+    """
+
+    def __init__(self, log_path: Path) -> None:
+        self._log_path = log_path
+
+    def apply_keywords(self, message: NormalizedMessage, keywords: Sequence[str]) -> None:
+        entry = {"message_id": message.message_id, "keywords": list(keywords)}
+        with self._log_path.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+
+class _FileAttachmentFetcher:
+    """Reads attachments from the same fixture file `build_source()`
+    replays from (docs/DESIGN.md §9.5, M10) — real, inspectable data
+    via `load_attachments()`, matching `_FileThreadHistoryReader`'s own
+    "derive from the fixture" convention.
+    """
+
+    def __init__(self, attachments_by_message_id: dict[str, list[Attachment]]) -> None:
+        self._attachments_by_message_id = attachments_by_message_id
+
+    def fetch_attachments(self, message: NormalizedMessage) -> Sequence[Attachment]:
+        return tuple(self._attachments_by_message_id.get(message.message_id, ()))
 
 
 class _FileDraftCreator:
@@ -154,7 +187,11 @@ class FileProvider:
     that share a `thread_id`; the mailbox list is `available_mailboxes`
     when given, or the sorted union of every message's `mailbox_ids`
     otherwise. `build_message_lookup()` (§7.4/§13) scans the same file
-    for a matching `message_id`.
+    for a matching `message_id`. `build_attachment_fetcher()` (§9.5,
+    M10) reads each message's `"attachments"` array from the same
+    file; `build_keyword_applier()` logs to its own `keywords.jsonl`,
+    defaulting next to `actions_log_path` the same way
+    `drafts_log_path` does.
     """
 
     def __init__(
@@ -163,6 +200,7 @@ class FileProvider:
         actions_log_path: str | Path,
         *,
         drafts_log_path: str | Path | None = None,
+        keywords_log_path: str | Path | None = None,
         available_mailboxes: Sequence[str] | None = None,
     ) -> None:
         self._messages_path = Path(messages_path)
@@ -171,6 +209,11 @@ class FileProvider:
             Path(drafts_log_path)
             if drafts_log_path is not None
             else self._actions_log_path.with_name("drafts.jsonl")
+        )
+        self._keywords_log_path = (
+            Path(keywords_log_path)
+            if keywords_log_path is not None
+            else self._actions_log_path.with_name("keywords.jsonl")
         )
         self._available_mailboxes = available_mailboxes
 
@@ -201,6 +244,12 @@ class FileProvider:
 
     def build_message_lookup(self) -> MessageLookup:
         return _FileMessageLookup(load_messages(self._messages_path))
+
+    def build_attachment_fetcher(self) -> AttachmentFetcher:
+        return _FileAttachmentFetcher(load_attachments(self._messages_path))
+
+    def build_keyword_applier(self) -> KeywordApplier:
+        return _FileKeywordApplier(self._keywords_log_path)
 
     def query_messages(
         self, *, unread_only: bool = False, position: int = 0, limit: int = 50
