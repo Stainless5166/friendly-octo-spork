@@ -80,12 +80,18 @@ read-only. No actions taken yet.
 
 **Exit criteria:** `sporkd` runs, logs each new inbox message's subject
 as it arrives (via push, verified by sending a real test email), survives
-a forced network drop and reconnects. **Not yet met.** The authenticated
-client leaf and push/fallback implementation are now real; the remaining
-work for the M1 exit criterion is live acceptance against a delivered test
-message and a forced network drop/reconnect.
-
-The next unit implements the EventSource transport and reconnect path.
+a forced network drop and reconnects. **Partially met.** The
+push-via-real-test-email half is now live-verified:
+`docs/acceptance/steps/m1.py`'s `@push` binding sends a real tagged
+message through the operator's SMTP relay, opens the real EventSource
+connection first, and confirms the resulting state event, fetch, and
+cursor advance all happen for real
+(`SPORK_ACCEPTANCE_LIVE=1 uv run behave --tags="m1 and push"` — 1
+feature passed, 12 steps passed). The forced-network-drop/reconnect
+half remains open — `@network-recovery` needs actual network-level
+outage control (iptables/unplugging) this environment can't safely
+automate; `@cursor-safety` needs a real `sporkd` restart cycle, same
+reason.
 
 ## M1a — Source / dispatch pipeline
 

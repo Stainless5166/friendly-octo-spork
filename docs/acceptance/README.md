@@ -33,9 +33,13 @@ SPORK_ACCEPTANCE_LIVE=1 uv run behave --tags="m1 and baseline"
 ```
 
 Use `-D jmap_host=...` only when targeting an approved compatible JMAP
-endpoint. `@push`, `@cursor-safety`, and `@network-recovery` in
-`m1_jmap.feature` still expose undefined step bindings — those remain
-live-only evidence. Bindings are being added milestone by milestone.
+endpoint. `@baseline` and `@push` are bound and live-verified
+(`SPORK_ACCEPTANCE_LIVE=1 uv run behave --tags="m1 and push"`).
+`@cursor-safety` and `@network-recovery` in `m1_jmap.feature` still
+expose undefined step bindings — a real `sporkd` restart cycle and
+real network-level outage control (iptables/unplugging) respectively,
+neither safely automatable from here. Bindings are being added
+milestone by milestone.
 
 `m1_jmap_fault_injection.feature` is not `@manual` and needs none of
 the above: it drives the real `JmapProvider` push/fallback composition
@@ -51,7 +55,7 @@ same Source-composition behavior regression-tested on every run.
 
 | Feature | Scope | Current evidence |
 |---|---|---|
-| `m1_jmap.feature` | JMAP session, push, fallback, cursor safety | Baseline binding added; live baseline, `@push`, and `@network-recovery` evidence still open |
+| `m1_jmap.feature` | JMAP session, push, fallback, cursor safety | `@baseline` and `@push` bound, live-verified; `@cursor-safety`/`@network-recovery` still open (need a real restart cycle / real network control) |
 | `m1_jmap_fault_injection.feature` | Push/fallback composition, simulated | Fully bound and passing on every run — mitmproxy harness, no live account |
 | `m2_rules.feature` | Live deterministic rules and actions | Offline pipeline tested; live JMAP actions still open |
 | `m3_tier2.feature` | Live LLM verdicts, confidence, budget, drafts | Recorded/offline pipeline tested; live JMAP writes and live model run open |
