@@ -114,6 +114,18 @@ def test_rule_evaluation_selector_routes_escalate_when_nothing_matches(make_mess
     assert result.meta.verdict.action.type == "escalate"
 
 
+def test_rule_evaluation_selector_routes_archive_receipt_for_a_matched_rule(make_message) -> None:
+    """A message matching an archive_receipt rule routes to its own
+    branch (docs/DESIGN.md §9.5, M10) — distinct from "terminal", since
+    ActionExecutor can't execute it directly."""
+    rules = [Rule(id="r1", when=Condition(always=True), action=Action(type="archive_receipt"))]
+    branch, result = RuleEvaluationSelector().select(_payload(make_message, rules=rules))
+
+    assert branch == "archive_receipt"
+    assert result.meta.verdict is not None
+    assert result.meta.verdict.action.type == "archive_receipt"
+
+
 def test_apply_action_filter_calls_the_executor_and_sets_audit_fields(make_message) -> None:
     """A terminal verdict's action is applied via the executor, and the
     audit fields the next stage needs are set."""
