@@ -121,8 +121,10 @@ class EntityContextProvider:
             return ContextResult(snippets=())
 
         company = self.lookup_company(domain.company)
-        if company is None:
-            return ContextResult(snippets=())
+        # Every Domain in self._domains was built from a Company already
+        # present in self._companies (see __init__) — domain.company
+        # always resolves, this is never a real "not found."
+        assert company is not None, f"domain {domain.name!r} names an untracked company"
 
         snippets = [ContextSnippet(source=domain.name, text=_render_company(company))]
 
