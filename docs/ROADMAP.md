@@ -49,7 +49,15 @@ read-only. No actions taken yet.
       and checkpoint-preserving polling fallback are implemented. Live
       Fastmail push/reconnect acceptance remains part of the M1 exit
       criterion. Disconnect-duration alerting remains separately tracked
-      under M4.
+      under M4. **Finding from M1c's fault-injection harness** (real
+      transport, not a fake): `jmapc`'s SSE layer (`sseclient`) swallows
+      a clean end-of-stream and silently retries on its own fixed 3s
+      timer *inside* `client.events`, before `JmapPushTrigger` ever sees
+      an exception — `reconnect_backoff` only actually engages once that
+      internal retry itself fails, not on the first disconnect. Not yet
+      a filed gap/fix — recorded here so it isn't lost before a
+      deliberate decision (accept the double-layer retry, or bypass
+      `sseclient`'s reconnect and drive `EventSource` directly).
 - [x] Poll-based fallback when push is unavailable/disconnected (S) —
       real, tested implementation (`spork.core.sources.timer.IntervalTimer`
       + `spork.core.sources.fallback.FallbackSource`), pure control flow
@@ -159,15 +167,22 @@ LLM corpus built from the `RecordingLLMClient` wrapper that already
 exists (`spork.core.llm.recording`). Unblocks the two acceptance
 scenarios that are currently manual-only (`@fallback`,
 `@network-recovery` in `docs/acceptance/m1_jmap.feature`) and gives
-[[M8]] (backfill) a real, varied corpus to build the retroactive-run
+M8 (backfill) a real, varied corpus to build the retroactive-run
 against instead of hand-written fixtures. M8 depends on this
 milestone; this milestone does not depend on M8.
 
-- [ ] `tests/support/jmap_mitm.py`: pytest fixture wrapping
-      `mitmproxy.tools.dump.DumpMaster` with an addon exposing a
-      per-test fault-injection surface (drop-after-N-bytes, kill the
-      EventSource stream mid-frame, added latency, synthetic 429 +
-      `Retry-After`) (M)
+- [x] `tests/support/jmap_mitm.py`: an in-process mitmproxy instance
+      driving the real, unmodified production `client_factory` (real
+      `jmapc.Client`, not a fake) through a local proxy, with an addon
+      answering session discovery/API calls/EventSource from canned
+      responses and injecting faults (truncated body, synthetic
+      429+`Retry-After`, added latency, EventSource disconnect) —
+      6 acceptance tests in
+      `tests/core/providers/jmap/test_mitm_fault_injection.py`, all
+      passing against the real `JmapClient`/`JmapPushTrigger` error
+      boundaries (M). Surfaced a real finding about the *existing*
+      push path, not a harness bug — see this file's M1 EventSource
+      item above.
 - [ ] `tests/fixtures/jmap/flows/`: recorded `Session`/`Email/changes`/
       `Email/get`/EventSource flows captured once against the live
       read-only account via `mitmdump -w`, then replayed offline for

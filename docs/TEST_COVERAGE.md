@@ -234,6 +234,21 @@ boundary. The production path was manually verified against Fastmail
 without fetching historical message bodies; CI remains network-free.
 The changed JMAP client has 100% line coverage. That increment brought
 the suite to 704 tests. **The full suite is now 714 tests, all green.**
+Updated once more for M1c's fault-injection harness
+(`tests/support/jmap_mitm.py`): a mitmproxy instance driving the real,
+unmodified production `client_factory` (real `jmapc.Client`) through a
+local proxy, so `JmapClient`/`JmapPushTrigger` get exercised against
+genuine wire faults (truncated body, synthetic 429, EventSource death,
+added latency) instead of only injected fake exceptions. Building it
+surfaced a real finding about the *existing* production path, not a
+harness bug: jmapc's SSE transport (`sseclient`) swallows a clean
+end-of-stream and silently reconnects on a fixed 3s timer internally —
+`JmapPushTrigger`'s own `reconnect_backoff` schedule only actually
+engages once that internal reconnect itself fails, not on the first
+disconnect. No code change yet; recorded as-is since M1c's scope was
+the harness, not a push.py behavior change. This section's per-test
+counts elsewhere in the file were not otherwise reconciled to the
+suite's current total in this pass.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -367,6 +382,25 @@ sound independent of JMAP ever going live. It is explicitly not a
 "recent mail" fixture mechanism for `spork rules test` (docs/DESIGN.md
 §9.3, §13) — that command still has no fixture-file mode and won't
 until M1's real JMAP fetch exists.
+
+### M1c — Test harness & corpus tooling
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `tests/support/jmap_mitm.py` fault-injection harness | ✅ | ✅ — tests 707–712 (6 tests) |
+| `tests/fixtures/jmap/flows/` recorded flows | ❌ not started | — |
+| `@fallback`/`@network-recovery` acceptance step bindings | ❌ not started | — |
+| Initial `tests/fixtures/corpus/live.jsonl` seed | ❌ not started | — |
+
+**1 of 4 items done.** The harness itself is real and network-free (an
+in-process mitmproxy instance answers every request locally; nothing
+is ever forwarded to a real upstream host), and it drives the actual
+production `client_factory`/`jmapc.Client`, not a fake — the first time
+any test in this repo has exercised `JmapClient`/`JmapPushTrigger`
+against genuine transport failures rather than injected exceptions.
+Recording real flows against the maintainer's account, wiring the
+harness into the Gherkin step bindings, and seeding the LLM corpus are
+still open.
 
 ### M2 — Rule engine (Tier 1) + action executor
 
@@ -3707,3 +3741,43 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
 706. **`core/pipeline/test_default.py::test_escalation_remains_retryable_until_tier2_completes`**
       Tier 1 leaves an escalation unprocessed so Tier 2 or a later retry can
       claim terminal ownership.
+
+### tests/core/providers/jmap — mitmproxy fault-injection harness (M1c)
+
+`tests/support/jmap_mitm.py` drives the real, unmodified production
+`client_factory` (real `jmapc.Client`) through a local in-process
+mitmproxy instance instead of an injected jmapc-shaped fake, so these
+tests exercise `JmapClient`/`JmapPushTrigger` against genuine transport
+faults. Nothing is ever forwarded to a real upstream host — the addon
+always answers locally, from a canned response or a synthetic fault.
+
+707. **`test_mitm_fault_injection.py::test_client_round_trips_through_real_jmapc_over_the_harness_with_no_live_network`**
+     The production `client_factory`, driven over the harness, completes
+     session discovery and a baseline fetch with zero requests forwarded
+     upstream.
+
+708. **`test_mitm_fault_injection.py::test_truncated_response_body_surfaces_as_jmap_error`**
+     A response body cut short over the real transport still raises
+     `JmapError`, not an unhandled `JSONDecodeError`.
+
+709. **`test_mitm_fault_injection.py::test_eventsource_mid_stream_disconnect_raises_push_disconnected_error_after_backoff`**
+     A real EventSource stream ending with no events reaches
+     `JmapPushDisconnectedError` after one backoff sleep. Building this
+     test found that `jmapc`'s `sseclient` transport silently retries a
+     clean stream end on its own fixed 3s timer before `JmapPushTrigger`
+     ever sees an exception — the harness models a disconnect whose
+     *reconnect* attempt also fails, since that's what actually reaches
+     spork's own backoff (see docs/ROADMAP.md M1's EventSource item).
+
+710. **`test_mitm_fault_injection.py::test_synthetic_429_with_retry_after_surfaces_as_jmap_error`**
+     A real HTTP 429 with `Retry-After` fails closed through `JmapError`
+     rather than an unhandled `requests.HTTPError`.
+
+711. **`test_mitm_fault_injection.py::test_added_latency_does_not_change_the_returned_data`**
+     A deliberately slow-but-complete response still parses correctly —
+     the harness's latency fault doesn't itself corrupt what it delays.
+
+712. **`test_mitm_fault_injection.py::test_harness_refuses_to_forward_a_request_upstream_without_explicit_opt_in`**
+     No canned response configured means every request fails closed
+     locally; `requests_forwarded_upstream()` stays 0 — the harness's
+     core safety property ahead of ever pointing it at a live account.
