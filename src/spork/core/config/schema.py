@@ -51,17 +51,21 @@ class LLMRecordingConfig(BaseModel):
 
 class ReceiptArchiveConfig(BaseModel):
     """The `[receipt_archive]` table (docs/DESIGN.md §9.5, M10) — where
-    `archive_receipt` rule actions save their combined PDFs. `None`
-    (`SporkConfig.receipt_archive`'s default) means the feature is off
-    entirely: an `archive_receipt` rule with no `[receipt_archive]`
-    configured is a real config error at pipeline composition, same
-    "fail loud on a real gap" stance as every other required-but-unset
-    config dependency in this codebase.
+    `archive_receipt` rule actions save their combined PDFs and which
+    `ReceiptExtractionClient` backend answers the one narrow Tier 2
+    fallback call. `None` (`SporkConfig.receipt_archive`'s default)
+    means the feature is off entirely: an `archive_receipt` rule with
+    no `[receipt_archive]` configured is a real config error at
+    pipeline composition, same "fail loud on a real gap" stance as
+    every other required-but-unset config dependency in this codebase.
+    `extraction` has no default for the same reason `provider`/`llm`/
+    `alerts` don't on `SporkConfig` itself — it must be explicit.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     output_dir: Path
+    extraction: BackendSpec
 
 
 class TieringConfig(BaseModel):
