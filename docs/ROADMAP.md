@@ -947,7 +947,15 @@ real account on every test run.
       idempotency gate, capability check, and per-message limit
       counter were already correct), same
       subprocess/FileProvider/RecordedLLMClient convention as
-      `test_reclassify.py`.
+      `test_reclassify.py`. **PR #20 review finding, fixed:**
+      `build_thread_history_reader()`/`build_mailbox_lister()`/
+      `build_draft_creator()` were built inside the per-message loop,
+      once per escalation — for `FileProvider` that re-reads and
+      re-parses the whole messages file from disk every time. Now
+      built once before the loop and reused across every escalation.
+      A new test (`tests/support/counting_provider.py`'s
+      `CountingFileProvider`) confirms each is built exactly once
+      across 3 escalating messages.
 - [x] Backfill reuses `StateDB`/`processed_messages` for dedup so an
       overlapping backfill run and live ingestion never double-process
       the same message (S) — comes for free from

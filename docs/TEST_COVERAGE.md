@@ -803,14 +803,14 @@ test) — closed with targeted tests, not implementation changes; no
 |---|---|---|
 | `JmapClient.query_messages()` | ✅ | ✅ — tests 740–744, 762 (6 tests), live-verified against the real account |
 | `BackfillPage`/`BackfillProvider` capability (`JmapProvider`, `FileProvider`) | ✅ | ✅ — tests 745–751 (7 tests) |
-| Bounded, resumable `spork backfill` CLI | ✅ | ✅ — tests 752–760 (9 tests: 6 acceptance + 3 edge cases) |
+| Bounded, resumable `spork backfill` CLI | ✅ | ✅ — tests 752–760, 763 (10 tests: 6 acceptance + 4 edge cases) |
 | `StateDB`/`processed_messages` dedup reuse | ✅ (reuses `process_message()`'s existing idempotency gate, no new mechanism) | ✅ — test 758 |
 | Backfill-specific throttle/budget policy | ✅ (`--limit`, default 50) | ✅ — tests 756, 760 |
 | Full backfill run growing the corpus at volume | — | not started — a 13-entry hand-picked seed exists (M1c) via direct SMTP+LLM calls, not a `spork backfill` run; that needs an all-`ignore` rules file or the write-side JMAP stubs resolved first (`apply_action()`/`create_draft()` are still `NotImplementedError`) |
 
 ---
 
-## Full test inventory (816 tests, all passing — 0 xfail)
+## Full test inventory (817 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -4094,3 +4094,11 @@ numbering convention.
      advances by 3 (the actual match count) and `has_more` stays
      correct, instead of drifting from the post-normalize message
      count.
+
+### tests/cli/commands — Tier 2 capability build frequency fix (PR #20 review finding)
+
+763. **`test_backfill_edge_cases.py::test_backfill_builds_tier2_provider_capabilities_once_per_run_not_per_message`**
+     3 escalating messages, `CountingFileProvider`
+     (`tests/support/counting_provider.py`): `build_thread_history_reader()`/
+     `build_mailbox_lister()`/`build_draft_creator()` are each called
+     exactly once for the whole run, not once per escalation.
