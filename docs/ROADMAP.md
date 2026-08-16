@@ -1209,9 +1209,12 @@ learned cache, rather than inventing a second static-seed-file format
       `docs/acceptance/m10b_receipt_senders.feature` (5 scenarios,
       fully bound and passing, including the learn-then-deterministic
       loop end to end minus the Tier 2 call itself).
-- [ ] `spork.core.receipts.llm.ReceiptExtractionClient` Protocol +
+- [x] `spork.core.receipts.llm.ReceiptExtractionClient` Protocol +
       `RecordedReceiptExtractionClient` fixture-replay implementation,
-      mirroring `LLMClient`/`RecordedLLMClient` (§10.1/§10.5) (M)
+      mirroring `LLMClient`/`RecordedLLMClient` (§10.1/§10.5) (M) — 7
+      acceptance tests (`tests/core/receipts/test_llm.py`), plus
+      `docs/acceptance/m10c_receipt_extraction_llm.feature` (3
+      scenarios, fully bound and passing, no live model call).
 - [ ] `rules.schema.Action` gains a fourth terminal type,
       `"archive_receipt"` (S)
 - [x] `spork.core.receipts.pdf.build_receipt_pdf()`: message +
