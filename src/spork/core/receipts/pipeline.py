@@ -43,6 +43,14 @@ class ReceiptArchiveComponents:
     extraction_client: ReceiptExtractionClient
     output_dir: Path
     domain_lookup: SenderDomainLookup | None = None
+    # `sporkd --observe`'s contract ("process and audit messages without
+    # changing mail or creating drafts"): extraction/tagging/audit still
+    # happen, but the PDF is never actually written. `keyword_applier`
+    # itself is what the daemon-wiring layer swaps for an observe-mode
+    # no-op (mirroring _ObserveActionApplier/_ObserveDraftCreator) --
+    # this flag is only about the filesystem write ArchiveReceiptAugment
+    # makes directly, which isn't an injected collaborator to swap.
+    dry_run: bool = False
 
 
 class ArchiveReceiptAugment:
@@ -94,23 +102,26 @@ class ArchiveReceiptAugment:
         keywords = ["receipt", f"company:{extraction.company}", f"date:{extraction.date}"]
         self._components.keyword_applier.apply_keywords(message, keywords)
 
-        attachments = self._components.attachment_fetcher.fetch_attachments(message)
-        pdf_bytes = build_receipt_pdf(
-            message, attachments, company=extraction.company, date=extraction.date
-        )
-        saved_path = save_pdf(
-            pdf_bytes,
-            output_dir=self._components.output_dir,
-            message_id=message.message_id,
-            company=extraction.company,
-            date=extraction.date,
-        )
+        saved_path: Path | None = None
+        if not self._components.dry_run:
+            attachments = self._components.attachment_fetcher.fetch_attachments(message)
+            pdf_bytes = build_receipt_pdf(
+                message, attachments, company=extraction.company, date=extraction.date
+            )
+            saved_path = save_pdf(
+                pdf_bytes,
+                output_dir=self._components.output_dir,
+                message_id=message.message_id,
+                company=extraction.company,
+                date=extraction.date,
+            )
 
         detail_json = json.dumps(
             {
                 "company": extraction.company,
                 "date": extraction.date,
-                "path": str(saved_path),
+                "path": str(saved_path) if saved_path is not None else None,
+                "dry_run": self._components.dry_run,
             }
         )
         return dataclasses.replace(
