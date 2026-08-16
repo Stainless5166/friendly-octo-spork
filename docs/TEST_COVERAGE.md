@@ -388,7 +388,7 @@ until M1's real JMAP fetch exists.
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `tests/support/jmap_mitm.py` fault-injection harness | ✅ | ✅ — tests 707–712 (6 tests) |
-| `tests/fixtures/jmap/flows/` recorded flows | ✅ captured, gitignored, token-redacted; not yet wired into the harness as a replay source | — (nothing to unit-test in a recorded flow file itself) |
+| `tests/fixtures/jmap/flows/` recorded flows | ✅ captured, gitignored, token-redacted; wired into the harness as a replay source via mitmproxy's own ServerPlayback addon | ✅ — test 737 (skips, not fails, when the gitignored flow file is absent; verified both paths locally) |
 | Automatable push/fallback acceptance coverage | ✅ (new feature, not a bind of `m1.py`'s live steps) | ✅ — `docs/acceptance/m1_jmap_fault_injection.feature` + `steps/m1_fault_injection.py`, passing in the safe-default `uv run behave` |
 | Initial `tests/fixtures/corpus/live.jsonl` seed | ✅ 13 entries, 13 distinct categories | — (not a pytest-covered artifact) |
 
@@ -3918,3 +3918,12 @@ now strips it from what the model is offered.
 736. **`test_backfill_edge_cases.py::test_backfill_with_a_page_size_larger_than_the_limit_still_stops_at_the_limit`**
      `--limit 1 --page-size 50` against 5 available messages still
      processes exactly 1.
+
+### tests/core/providers/jmap — recorded flow replay (M1c)
+
+737. **`test_flow_replay.py::test_baseline_fetch_replays_from_the_recorded_flow_not_a_canned_response`**
+     With zero canned responses configured, `jmap_mitm_harness(replay_flows=[...])`
+     answers `JmapClient.connect()`/`fetch_new_messages()` entirely
+     from the real recorded flow — the real captured account id and
+     baseline cursor come back. Skips (not fails) when the gitignored
+     flow file isn't present on this clone.

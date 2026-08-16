@@ -199,10 +199,18 @@ milestone; this milestone does not depend on M8.
       real mailbox name list (no message bodies: every captured fetch
       returned an empty batch), which is real-account content by the
       same privacy rule as the corpus, kept local/gitignored only, not
-      further scrubbed (S). **Not yet done:** wiring these flows into
-      `tests/support/jmap_mitm.py` as a replay source for `pytest` —
-      today's fault-injection tests still use hand-built canned
-      responses, not these recordings.
+      further scrubbed (S). **Now wired in:**
+      `jmap_mitm_harness(replay_flows=[...])` loads mitmproxy's own
+      `ServerPlayback` addon against these files — a matching request
+      is answered from the real recorded shape, ahead of and
+      independent from the harness's hand-built canned responses
+      (which still cover anything a recording doesn't).
+      `test_flow_replay.py` proves it end to end with zero canned
+      responses configured, and skips (not fails) when the gitignored
+      flow file isn't present — verified both the pass and the skip
+      path locally. `test_mitm_fault_injection.py`'s existing tests
+      still use hand-built canned responses, unchanged; nothing
+      required them to switch.
 - [x] Automatable, non-`@manual` coverage of the `@fallback` guarantee:
       `docs/acceptance/m1_jmap_fault_injection.feature` +
       `docs/acceptance/steps/m1_fault_injection.py`, driving the real
