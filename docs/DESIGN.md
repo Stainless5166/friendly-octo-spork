@@ -3604,6 +3604,20 @@ should stop the pipeline, not get silently rewritten);
 `suggested_action.mailbox` is only checked when set (`None` for
 `ignore`, per `rules.schema.Action`'s docstring).
 
+**Open gap found via a live call (docs/ROADMAP.md M1c/M3):** the tool
+schema handed to the model (`Verdict.model_json_schema()`, built in
+`spork.core.llm.prompt.build_prompt()`) reuses `rules.schema.Action`,
+so `"escalate"` is still a legal enum value for `suggested_action.type`
+as far as the model can see — even though §10.1's validator rejects it
+outright for a `Verdict`. Against genuinely ambiguous mail, the live
+model reached for `"escalate"` (the semantically obvious "a human
+should decide" signal) and the call failed validation instead of
+producing `alert_only` (low `confidence` + a terminal action — the
+schema's actual mechanism for exactly this case, §10.3). The system
+prompt doesn't currently explain that distinction. Fix is either
+prompt guidance or a Tier-2-only action schema that excludes
+`"escalate"` from the tool's enum; neither is done yet.
+
 ### 10.3 Confidence-band logic
 
 §11's three bands — autoact silently, autoact + alert, alert-only (no
@@ -4481,3 +4495,15 @@ WantedBy=default.target
   clients/rules concurrently, verify Spork's actions and Fastmail's
   native sort rules don't fight each other (e.g. both trying to move the
   same message).
+- **Tier 2's tool schema still legally allows `"escalate"`** as a
+  `suggested_action.type` value (§10.2's "open gap found via a live
+  call") — the model can and does reach for it on ambiguous mail, and
+  the call fails instead of landing in `alert_only`. Needs either
+  explicit prompt guidance or a narrower Tier-2-only action schema.
+- **Model identifiers drift** — `spork config init`'s default and this
+  deployment's installed `config.toml` had pinned a dated Claude 4
+  snapshot (`claude-sonnet-4-20250514`) that 404s against the live
+  API; found and fixed to `claude-sonnet-5` via M1c's live corpus
+  run, not by CI (nothing here calls a live model). No automated way
+  to catch a model ID going stale short of an occasional live smoke
+  call — worth a periodic manual check, not a CI dependency.

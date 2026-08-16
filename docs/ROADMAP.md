@@ -189,14 +189,38 @@ milestone; this milestone does not depend on M8.
       both ordinary tests and fault injection — gitignored like
       `tests/fixtures/corpus/` already is, same real-mail-content
       privacy rule (S)
-- [ ] Bind `docs/acceptance/steps/m1.py`'s `@fallback` and
-      `@network-recovery` scenarios to the harness, replacing "exposes
-      undefined step bindings" with real, automatable coverage (M)
+- [x] Automatable, non-`@manual` coverage of the `@fallback` guarantee:
+      `docs/acceptance/m1_jmap_fault_injection.feature` +
+      `docs/acceptance/steps/m1_fault_injection.py`, driving the real
+      `JmapProvider.build_checkpointed_source()` composition (push
+      primary + poll secondary, shared cursor) through the harness (M).
+      Deliberately a new, separate feature rather than binding
+      `m1.py`'s existing `@fallback`/`@network-recovery` steps
+      directly: those scenarios' `Background` requires a real Fastmail
+      account/token, which a harness-driven run doesn't have and
+      shouldn't fake having — see docs/acceptance/README.md. Runs on
+      every `uv run behave`, no opt-in required. `@network-recovery`'s
+      sustained-outage-with-eventual-delivery shape (not just a single
+      disconnect/recover cycle) remains live-only — a real forced
+      network drop against a real account is still the honest way to
+      prove that, not a simulated timer.
 - [ ] Build an initial `tests/fixtures/corpus/live.jsonl` by wrapping
       the configured `LiteLLMClient` with `RecordingLLMClient` and
       running it over a diverse hand-picked sample of real mail (S) —
       seeds the corpus ahead of the much larger backfill-driven pass
-      in M8
+      in M8. **Started, not complete:** 6 tagged sample emails (`[spork-
+      corpus-test]` subject prefix — newsletter, receipt, personal,
+      security-notification, promo/spam-like, urgent-invoice) sent via
+      real SMTP to the live account, fetched back via real
+      `Email/changes`/`Email/get` (5 landed in Inbox; the deliberately
+      spammy one was correctly filtered to Junk by Fastmail itself and
+      `fetch_new_messages`'s Inbox-only filter, so never entered the
+      pipeline — expected, not a bug). Of those 5, 3 produced valid
+      verdicts and are in the corpus (newsletter, receipt, security
+      notification); 2 hit the `"escalate"`-rejection gap above and
+      aren't recorded. Corpus has 3 entries — genuinely diverse
+      coverage (more categories, more volume) is still open, and is
+      exactly what M8's backfill run is for.
 
 **Exit criteria:** `pytest` can force an EventSource disconnect and a
 JMAP request-level fault through the mitmproxy harness and assert
@@ -287,7 +311,28 @@ drives an action.
       `spork.core.llm.confidence.confidence_band()` (§10.3): a pure
       function of confidence + the two `config.toml` thresholds, with
       an eager `ValueError` guard against a misconfigured
-      `alert_threshold > autoact_threshold`.
+      `alert_threshold > autoact_threshold`. **Finding from M1c's live
+      corpus-seeding run** (real Claude call, not a fixture): given a
+      genuinely ambiguous email (a personal "want to get dinner
+      Friday?" note; an overdue-invoice notice), the live model twice
+      returned `suggested_action.type = "escalate"` — the one value
+      `Verdict`'s validator explicitly rejects
+      (`spork.core.llm.base._suggested_action_must_be_terminal`),
+      failing the call outright instead of producing a usable verdict.
+      `alert_only` (low `confidence`, a terminal action) is exactly
+      the schema's intended way to express "a human should look at
+      this" — but `build_prompt()`'s system message
+      (`spork.core.llm.prompt`) never says so, and the tool's JSON
+      schema still legally allows `"escalate"` in the enum (shared
+      with Tier 1's `Action.type`), so the model reaches for the
+      semantically obvious-but-illegal choice. Not fixed here — two
+      candidate fixes, either or both: (1) tell the model explicitly
+      in the system prompt to signal uncertainty via low `confidence`
+      instead of `escalate`; (2) expose a narrower Tier-2-only action
+      schema to the tool call that excludes `"escalate"` from the
+      enum entirely, which is stronger than a prompt instruction. 3 of
+      5 seeded emails produced valid verdicts; the other 2 hit this
+      failure and are not in the corpus.
 - [x] `daily_call_budget` enforcement + `llm_usage` tracking (S) —
       `StateDB` gains an `llm_usage` table + `record_llm_call()`/
       `get_llm_usage()` (§7.4, §10.4); `spork.core.llm.budget.has_budget_remaining()`

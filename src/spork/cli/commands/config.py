@@ -96,7 +96,7 @@ def _load_config_or_exit() -> SporkConfig:
 def init(
     force: bool = typer.Option(False, "--force", help="Replace an existing user config."),
     model: str = typer.Option(
-        "anthropic/claude-sonnet-4-20250514",
+        "anthropic/claude-sonnet-5",
         help="LiteLLM model identifier for Tier 2.",
     ),
 ) -> None:
