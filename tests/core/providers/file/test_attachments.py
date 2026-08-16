@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from spork.core.providers.file.attachments import AttachmentsLoadError, load_attachments
 
 
