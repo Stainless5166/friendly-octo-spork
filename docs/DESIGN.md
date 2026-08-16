@@ -187,7 +187,7 @@ flowchart TD
         subgraph classify["classify/"]
             classify_base["base.py<br/>TextClassifier +<br/>ClassificationResult"]
             classify_registry["registry.py<br/>name -> factory lookup"]
-            classify_keyword["keyword.py<br/>default heuristic backend"]:::planned
+            classify_keyword["keyword.py<br/>KeywordClassifier, self-registers<br/>as 'keyword_heuristic'"]
         end
 
         subgraph dispatch["dispatch/"]
@@ -1176,11 +1176,25 @@ classDiagram
         <<function>>
         +get(name: str) TextClassifier
     }
+    class KeywordClassifier {
+        -category_keywords: Mapping
+        -default_category: str
+        +classify(message: NormalizedMessage) ClassificationResult
+    }
 
     TextClassifier ..> ClassificationResult : returns
     get ..> TextClassifier : constructs from registered factory
     get ..> UnknownClassifierError : raises
+    TextClassifier <|.. KeywordClassifier : structurally satisfies
+    KeywordClassifier ..> register : self-registers as "keyword_heuristic" at import time
 ```
+
+`KeywordClassifier` (`classify/keyword.py`) is the shipped,
+dependency-free default backend §9.1 always documented — self-
+registers under `"keyword_heuristic"` as an import-time side effect of
+`spork.core.classify.__init__`, which every real caller already
+imports, so `tiering.local_classifier = "keyword_heuristic"` works
+with zero extra per-call-site wiring.
 
 #### `spork.core.dispatch`
 
@@ -3083,11 +3097,17 @@ class TextClassifier(Protocol):
   `tiering.local_classifier` picks one by name. Swapping techniques is a
   one-line config change, never a code change to the rule engine or the
   daemon pipeline.
-- **Default backend ships dependency-free**: a keyword/regex heuristic
-  (`classify/keyword.py`) so the tool works out of the box with zero
-  extra installs. Anything heavier (spaCy, a local embedding model, a
-  small fine-tuned classifier) is an additional backend module behind
-  the same `Protocol` — added, not swapped in by editing existing code.
+- **Default backend ships dependency-free**: `KeywordClassifier`
+  (`classify/keyword.py`) — case-insensitive substring matching
+  against a configurable `category -> keywords` mapping, scored by
+  the fraction of each category's own keyword list matched (not a raw
+  count, so a category with many keywords isn't unfairly favored over
+  one with few), self-registered as `"keyword_heuristic"` at import
+  time so `tiering.local_classifier = "keyword_heuristic"` works out
+  of the box with zero extra installs and zero per-call-site wiring.
+  Anything heavier (spaCy, a local embedding model, a small fine-tuned
+  classifier) is an additional backend module behind the same
+  `Protocol` — added, not swapped in by editing existing code.
 - **No implicit fallback.** An unresolvable/misconfigured classifier name
   is a startup-time config error (`UnknownClassifierError`, caught and
   reported cleanly by `sporkd`/`spork reclassify`) — a rule that

@@ -116,6 +116,20 @@ be developed or tested.
 - [x] `spork.core.dispatch.combine.DispatchingClassifier`: Dispatcher +
       Combiner wrapped as a `TextClassifier`, so `rules.engine.evaluate`
       needs no changes to consume an ensemble (S)
+- [x] `spork.core.classify.keyword.KeywordClassifier`: the
+      dependency-free default backend §9.1 always documented but never
+      shipped (S) — confirmed via `grep -rn "register(" src/spork`
+      returning nothing outside `registry.py` itself: `tiering.local_classifier`
+      was completely non-functional in every real deployment, since
+      nothing anywhere ever called `registry.register()`. Scores each
+      configured category by the fraction of its own keyword list
+      matched (case-insensitive substring), not a raw count; falls
+      back to a named `"uncategorized"` default when nothing matches.
+      Self-registers as `"keyword_heuristic"` (matching §7.2's example
+      config.toml, which has named it that since before this existed)
+      as an import-time side effect of `spork.core.classify.__init__`
+      — every real caller already imports that package, so this needed
+      zero changes to `daemon/loop.py`/any CLI command.
 
 **Exit criteria:** a `TriggeredSource` built from `ImmediateTrigger` +
 `SequenceContentFetcher` replays a fixture list of messages through the

@@ -285,9 +285,15 @@ undecided retrieval-algorithm choice rather than a live call), wired
 into the Tier 2 pipeline via a new `FetchContextAugment` and
 `VerdictRequest.context_snippets`, `SporkConfig.context` +
 `runtime.build_context_provider()`, threaded through all three real
-Tier 2 callers. **The full suite is now 862 tests, all green** — the
-running per-paragraph totals above this point were not individually
-reconciled to that figure; treat this line as the current authority.
+Tier 2 callers. Updated once more for item 4:
+`spork.core.classify.keyword.KeywordClassifier`, the dependency-free
+default local classifier §9.1 always documented but never shipped —
+self-registers as `"keyword_heuristic"` at import time, fixing
+`tiering.local_classifier`'s previously complete non-functionality in
+every real deployment. **The full suite is now 870 tests, all green**
+— the running per-paragraph totals above this point were not
+individually reconciled to that figure; treat this line as the
+current authority.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -388,12 +394,11 @@ live push/reconnect evidence remains a manual acceptance item.
 | `Dispatcher` | ✅ | ✅ — tests 12, 13, 14, 15 |
 | `Combiner` (`Primary`, `HighestConfidence`) | ✅ | ✅ — tests 5, 6, 8, 9, 10, 11 |
 | `DispatchingClassifier` | ✅ | ✅ — test 7 |
+| `KeywordClassifier` (default backend, item 4) | ✅ | ✅ — tests 812–819 (100% line coverage) |
 | Exit criteria (replay → rule engine; ensemble → rule engine) | ✅ | ✅ — tests 36 and 7 directly demonstrate each half |
 
-**6 of 6 items done, all tested, exit criteria directly demonstrated by
-name.** This is the one milestone where "implemented" and "tested"
-are both complete — 21 of the 45 suite tests exist for this milestone
-alone.
+**7 of 7 items done, all tested, exit criteria directly demonstrated by
+name.**
 
 ### M1b — Provider abstraction
 
@@ -4389,3 +4394,43 @@ numbering convention.
      `VerdictRequest.context_snippets` round-trips like every other
      field — the flattened `"source: text"` strings the prompt
      actually sends.
+
+### tests/core/classify — KeywordClassifier, the default local classifier (item 4, docs/DESIGN.md §9.1)
+
+812. **`test_keyword.py::test_keyword_classifier_picks_the_category_whose_keywords_matched`**
+     A message whose subject/body contain a category's keywords is
+     classified into that category.
+
+813. **`test_keyword.py::test_keyword_classifier_matching_is_case_insensitive`**
+     `"Urgent"`/`"ASAP"` match the same as their lowercase forms.
+
+814. **`test_keyword.py::test_keyword_classifier_falls_back_to_the_default_category_when_nothing_matches`**
+     A message matching no configured category's keywords gets the
+     named `"uncategorized"` default, every score 0.0 — not an
+     arbitrarily-chosen first category.
+
+815. **`test_keyword.py::test_keyword_classifier_exposes_every_configured_categorys_score`**
+     `scores` is an open bag exposing every configured category's
+     fraction, not just the winning one — a rule or a future tuning
+     pass can key off finer-grained signals.
+
+816. **`test_keyword.py::test_keyword_classifier_accepts_a_custom_category_keyword_mapping`**
+     Not hardcoded to the shipped default set — a deployment can
+     supply its own vocabulary entirely via the constructor.
+
+817. **`test_keyword.py::test_keyword_classifier_structurally_satisfies_textclassifier`**
+     Protocol-based DI, same as every other backend seam in this
+     codebase.
+
+818. **`test_registration.py::test_importing_the_classify_package_registers_the_default_keyword_backend`**
+     Importing `spork.core.classify` (as every real caller already
+     does) is enough on its own to make `"keyword_heuristic"`
+     resolvable via `registry.get()` — no extra wiring needed at any
+     call site. Before this fix, nothing anywhere in the codebase ever
+     called `registry.register()`, so `tiering.local_classifier` was
+     completely non-functional in every real deployment.
+
+819. **`test_keyword_edge_cases.py::test_keyword_classifier_scores_a_category_with_an_empty_keyword_list_as_zero`**
+     A misconfigured category (an empty keyword tuple) never crashes
+     with a divide-by-zero — it just can never win, scored 0.0 like
+     any other unmatched category.
