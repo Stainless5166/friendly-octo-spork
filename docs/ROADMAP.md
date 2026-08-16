@@ -710,6 +710,39 @@ verification, crash-loop verification) and the exit criterion all share
 that one blocker — not new scope invented for M7, the same one M1's own
 exit criteria has stated since the beginning.
 
+## M7a — Mutation & fuzz testing hardening
+
+**Goal:** verify that the modules already at 100% line coverage are
+actually *checked*, not just executed — property-based tests catch
+input shapes example-based tests never tried, mutation testing catches
+assertions weak enough to survive a deliberately wrong implementation.
+Scoped to spork's actual decision logic (docs/DESIGN.md §16.1/§16.2):
+`spork.core.rules.engine`, `spork.core.actions.executor`,
+`spork.core.dispatch.combine`, `spork.core.pipeline.default`.
+
+- [x] Design: property-based + mutation testing strategy, scope, and
+      why neither runs in the fast per-push loop (docs/DESIGN.md
+      §16.1/§16.2) (S)
+- [ ] Hypothesis property tests for the four in-scope modules —
+      `test_<module>_fuzz.py` siblings, part of the ordinary `uv run
+      pytest` gate like any other correctness test (M)
+- [ ] `mutmut` wired up: dev dependency, `[tool.mutmut]` scoped to the
+      four in-scope modules, `mutation/README.md` documenting manual
+      invocation and the current baseline mutation score (S)
+- [ ] `.github/workflows/mutation-testing.yml`: weekly + manual
+      (`workflow_dispatch`) run, uploads the result summary as a build
+      artifact — deliberately non-blocking, same reasoning as
+      `benchmarks/` staying outside the PR gate (S)
+- [ ] First baseline mutation run against the four modules; every
+      surviving mutant either killed with a targeted test (committed
+      as an ordinary test-improvement commit) or recorded as
+      equivalent in `mutation/README.md` (M)
+
+**Exit criteria:** `uv run pytest` includes the new property-based
+tests and stays green; `uv run mutmut run` against the four in-scope
+modules has no surviving mutant that isn't recorded as equivalent in
+`mutation/README.md`.
+
 ## Stretch / post-v1 (not scoped, not blocking)
 
 - Webhook `Alerter` backend (ntfy/Pushover-style, URL from secretspec) —
