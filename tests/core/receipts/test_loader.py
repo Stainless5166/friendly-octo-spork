@@ -7,6 +7,7 @@ instantiate mechanics, just for ReceiptExtractionClient specs.
 from __future__ import annotations
 
 import pytest
+
 from spork.core.receipts.loader import (
     ReceiptExtractionClientLoadError,
     load_receipt_extraction_client,

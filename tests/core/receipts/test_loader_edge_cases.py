@@ -6,6 +6,7 @@ Companion to test_loader.py's acceptance tests.
 from __future__ import annotations
 
 import pytest
+
 from spork.core.receipts.loader import (
     ReceiptExtractionClientLoadError,
     load_receipt_extraction_client,
