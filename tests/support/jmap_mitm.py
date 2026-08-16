@@ -66,13 +66,19 @@ class _FaultState:
     session_state: str = "session-state-0"
     mailbox_response: list[dict[str, object]] | None = None
     email_get_response: tuple[str, list[object]] | None = None
+    email_changes_response: tuple[str, bool, list[str]] | None = None
     truncate_after_bytes: int | None = None
     fail_next_status: int | None = None
     fail_next_retry_after: float | None = None
     latency_seconds: float = 0.0
-    disconnect_event_stream_after_events: int | None = None
     forwarded_upstream: int = field(default=0)
-    eventsource_call_count: int = field(default=0)
+    # Queue of one-shot EventSource outcomes, consumed front-to-back, one
+    # per connection attempt. Empty queue defaults to a hard failure (503) —
+    # a test must explicitly queue every EventSource call it expects,
+    # including reconnects, matching sseclient's real internal-retry
+    # behavior (see the request() handler below).
+    event_stream_queue: list[dict[str, object]] = field(default_factory=list)
+    event_stream_connections: int = field(default=0)
 
     def session_json(self) -> dict[str, object]:
         """Build a wire-correct JMAP Session object via jmapc's own Model.to_dict()."""
@@ -131,6 +137,18 @@ class _FaultState:
                 data=list(data),
             )
             return [name, response.to_dict(), call_id]
+        if name == "Email/changes" and self.email_changes_response is not None:
+            new_state, has_more_changes, created = self.email_changes_response
+            response = jmapc_methods.EmailChangesResponse(
+                account_id=_ACCOUNT_ID,
+                old_state="unused",
+                new_state=new_state,
+                has_more_changes=has_more_changes,
+                created=list(created),
+                updated=[],
+                destroyed=[],
+            )
+            return [name, response.to_dict(), call_id]
         return None
 
 
@@ -166,8 +184,9 @@ class _JmapMockAddon:
         elif path == _API_PATH:
             body = self._api_body(flow)
         elif path == _EVENTSOURCE_PATH:
-            state.eventsource_call_count += 1
-            if state.eventsource_call_count > 1:
+            state.event_stream_connections += 1
+            outcome = state.event_stream_queue.pop(0) if state.event_stream_queue else None
+            if outcome is None or outcome["kind"] == "fail":
                 # sseclient (jmapc's SSE transport) swallows a clean end-of-
                 # stream and silently reconnects on its own fixed 3s retry,
                 # never surfacing it to JmapPushTrigger (see
@@ -175,12 +194,16 @@ class _JmapMockAddon:
                 # client-side mirror: sseclient.SSEClient.__next__ catches
                 # StopIteration/RequestException and retries internally).
                 # A real disconnect only reaches spork's own backoff when
-                # the *reconnect* attempt itself fails outright, so that's
-                # what disconnect_event_stream_after models past the first
-                # call.
-                flow.response = http.Response.make(503, b"")
+                # the *reconnect* attempt itself fails outright, so an
+                # unqueued (or explicitly queued "fail") call answers with
+                # an HTTP failure rather than another clean close.
+                status = 503 if outcome is None else outcome.get("status", 503)
+                flow.response = http.Response.make(status, b"")
                 return
-            body = self._eventsource_body(state)
+            if outcome["kind"] == "event":
+                body = self._event_frame(state, relevant=bool(outcome["relevant"]))
+            else:
+                body = self._frames_body(int(outcome["n"]))
             flow.response = self._truncate(
                 http.Response.make(
                     200,
@@ -220,15 +243,18 @@ class _JmapMockAddon:
             {"methodResponses": method_responses, "sessionState": state.session_state}
         ).encode()
 
-    def _eventsource_body(self, state: _FaultState) -> bytes:
-        n_events = state.disconnect_event_stream_after_events
-        if not n_events:
-            return b""
+    def _frames_body(self, n_events: int) -> bytes:
+        state = self.state
         frames = []
         for _ in range(n_events):
             payload = json.dumps({"changed": {_ACCOUNT_ID: {"Email": state.session_state}}})
             frames.append(f"event: state\ndata: {payload}\n\n")
         return "".join(frames).encode()
+
+    def _event_frame(self, state: _FaultState, *, relevant: bool) -> bytes:
+        account = _ACCOUNT_ID if relevant else "other-account"
+        payload = json.dumps({"changed": {account: {"Email": state.session_state}}})
+        return f"event: state\ndata: {payload}\n\n".encode()
 
     def _truncate(self, response: http.Response) -> http.Response:
         state = self.state
@@ -254,6 +280,12 @@ class JmapMitmHarness:
         """Configure the canned Email/get baseline response."""
         self._state.email_get_response = (state, data)
 
+    def set_email_changes_response(
+        self, *, new_state: str, has_more_changes: bool = False, created: list[str] | None = None
+    ) -> None:
+        """Configure the canned Email/changes response used once cursor is non-None."""
+        self._state.email_changes_response = (new_state, has_more_changes, list(created or []))
+
     def truncate_next_response(self, *, after_bytes: int) -> None:
         """Cut the very next response body short, regardless of which request it answers."""
         self._state.truncate_after_bytes = after_bytes
@@ -268,12 +300,34 @@ class JmapMitmHarness:
         self._state.latency_seconds = seconds
 
     def disconnect_event_stream_after(self, *, n_events: int) -> None:
-        """Serve exactly n_events SSE frames on the EventSource path, then close."""
-        self._state.disconnect_event_stream_after_events = n_events
+        """Queue one EventSource connection serving n_events SSE frames, then closing.
+
+        Any *subsequent* EventSource connection (sseclient's own internal
+        reconnect) fails with an HTTP error unless another outcome is
+        queued first — see `push_event()` to model recovery.
+        """
+        self._state.event_stream_queue.append({"kind": "frames", "n": n_events})
+
+    def push_event(self, *, relevant: bool = True) -> None:
+        """Queue one EventSource connection serving a single Email state event.
+
+        Models a push connection that succeeds (immediately, on whichever
+        attempt consumes this queue entry) — e.g. recovery after a prior
+        `disconnect_event_stream_after()`/failed reconnect.
+        """
+        self._state.event_stream_queue.append({"kind": "event", "relevant": relevant})
+
+    def fail_event_stream_once(self, *, status: int = 503) -> None:
+        """Queue one EventSource connection failing outright with an HTTP error."""
+        self._state.event_stream_queue.append({"kind": "fail", "status": status})
 
     def requests_forwarded_upstream(self) -> int:
         """Always 0 today: the addon never dials a real upstream host."""
         return self._state.forwarded_upstream
+
+    def event_stream_connection_count(self) -> int:
+        """Total EventSource connection attempts made so far (every outcome kind)."""
+        return self._state.event_stream_connections
 
     def client_factory(self) -> ClientFactory:
         """Return the real, unmodified production client_factory (not a test double)."""
