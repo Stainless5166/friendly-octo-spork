@@ -315,13 +315,12 @@ def test_process_message_archives_a_matched_receipt_end_to_end(
     components wired, is archived and marked processed via the full
     process_message() call -- not just the standalone Augment
     (docs/DESIGN.md §9.5, M10)."""
-    from spork.core.receipts.pipeline import ReceiptArchiveComponents
-
     from spork.core.receipts.llm import (
         ReceiptExtractionRequest,
         ReceiptExtractionResult,
         ReceiptExtractionUsage,
     )
+    from spork.core.receipts.pipeline import ReceiptArchiveComponents
 
     class _FakeAttachmentFetcher:
         def fetch_attachments(self, message):  # type: ignore[no-untyped-def]

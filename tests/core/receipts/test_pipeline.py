@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfReader
-from spork.core.receipts.pipeline import ArchiveReceiptAugment, ReceiptArchiveComponents
 
 from spork.core.models import Attachment, NormalizedMessage
 from spork.core.pipeline.core import Payload
@@ -24,6 +23,7 @@ from spork.core.receipts.llm import (
     ReceiptExtractionResult,
     ReceiptExtractionUsage,
 )
+from spork.core.receipts.pipeline import ArchiveReceiptAugment, ReceiptArchiveComponents
 from spork.core.receipts.registry import normalize_sender_domain
 from spork.core.rules.schema import Action
 from spork.core.state.db import StateDB
