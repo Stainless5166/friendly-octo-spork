@@ -120,9 +120,7 @@ def test_falls_back_to_a_body_date_marker_when_no_date_header() -> None:
     known_sender = KnownSender(
         from_domain="acmecloud.com", company="Acme Cloud", learned_from="seed", learned_at="t0"
     )
-    message = _message(
-        headers={}, body_text="Thank you.\nInvoice date: 2026-08-01\nAmount: $12.00"
-    )
+    message = _message(headers={}, body_text="Thank you.\nInvoice date: 2026-08-01\nAmount: $12.00")
 
     result = extract_receipt(message, known_sender=known_sender)
 
