@@ -67,6 +67,7 @@ def backfill(
     limit: int = typer.Option(  # noqa: B008 - idiomatic Typer, not a mutable default
         50,
         "--limit",
+        min=1,
         help=(
             "Maximum number of messages to process this run. Deliberately "
             "conservative by default (docs/ROADMAP.md M8): a several-"
@@ -74,7 +75,9 @@ def backfill(
             "accident — raise explicitly for a larger run."
         ),
     ),
-    page_size: int = typer.Option(50, "--page-size", help="Messages fetched per Email/query page."),
+    page_size: int = typer.Option(  # noqa: B008 - idiomatic Typer, not a mutable default
+        50, "--page-size", min=1, help="Messages fetched per Email/query page."
+    ),
 ) -> None:
     """Retroactively categorize existing mail through the same Tier 1/Tier 2
     pipeline live ingestion uses (docs/ROADMAP.md M8)."""
