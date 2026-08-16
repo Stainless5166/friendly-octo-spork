@@ -116,3 +116,6 @@ pytest_add_cli_args_test_selection = [
     "tests/core/dispatch",
     "tests/core/pipeline",
 ]
+
+[tool.uv]
+override-dependencies = ["h11>=0.16"]
