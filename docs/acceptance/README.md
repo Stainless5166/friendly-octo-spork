@@ -51,6 +51,27 @@ those remain the real evidence for M1's exit criterion (an actual
 forced network drop against a real account); this feature makes the
 same Source-composition behavior regression-tested on every run.
 
+`m9_receipt_archiving.feature` is the same "not `@manual`" shape for a
+different reason: the whole pipeline it specifies (docs/DESIGN.md §9.5,
+docs/ROADMAP.md M9) is designed to be offline-testable end to end —
+`FileProvider`, a recorded receipt-extraction fixture, and local PDF
+output, no live account ever required. It's currently also tagged
+`@wip`: `spork.core.receipts` doesn't exist yet, so its step bindings
+(`docs/acceptance/steps/m9_receipt_archiving.py`) are real (behave
+binds every step — nothing is "undefined") but each one raises
+`NotImplementedError` until the module it exercises is built. `@wip`
+scenarios are skipped by the same safe default `@manual` scenarios are,
+via `SPORK_ACCEPTANCE_WIP` instead of `SPORK_ACCEPTANCE_LIVE`:
+
+```bash
+SPORK_ACCEPTANCE_WIP=1 uv run behave --tags=m9   # see the current gap
+```
+
+Drop `@wip` from a scenario (and replace its stub bindings with real
+ones) only once the module it exercises actually exists and the
+scenario passes for real — same discipline as graduating an `xfail`
+test, just for behave instead of pytest.
+
 ## Status
 
 | Feature | Scope | Current evidence |
@@ -63,6 +84,7 @@ same Source-composition behavior regression-tested on every run.
 | `m5_control_surface.feature` | Daemon and CLI control surface | FileProvider/systemd-free integration tested; live JMAP path open |
 | `m6_systemd.feature` | Service install and operational startup | Unit/install behavior tested; real user-session acceptance open |
 | `m7_hardening.feature` | Unattended operation and v1 release | Requires real mailbox, model, rate-limit, and one-week run |
+| `m9_receipt_archiving.feature` | Receipt tagging + combined-PDF archiving, deterministic-first with learned Tier 2 fallback | Scenarios drafted, step bindings scaffolded (`@wip`, all raise `NotImplementedError`); `spork.core.receipts` not yet implemented |
 
 The scenarios are deliberately more demanding than the current automated
 suite. A scenario is complete only when its stated live evidence exists,

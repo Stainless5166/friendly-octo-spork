@@ -23,6 +23,18 @@ def before_scenario(context: Any, scenario: Any) -> None:
             "manual acceptance is disabled; set SPORK_ACCEPTANCE_LIVE=1 "
             "after configuring the dedicated acceptance environment"
         )
+    # @wip is the "not built yet" counterpart to @manual's "needs a live
+    # account": a scenario with real step bindings that intentionally
+    # raise NotImplementedError until the pipeline behind it exists
+    # (docs/ROADMAP.md tracks which milestone). Skipped by the same safe
+    # default so a scaffolded feature doesn't turn `uv run behave` red;
+    # opt in to see the current gap directly.
+    if "wip" in tags and os.environ.get("SPORK_ACCEPTANCE_WIP") != "1":
+        scenario.skip(
+            "work-in-progress acceptance is disabled; the pipeline behind "
+            "this scenario isn't implemented yet (see docs/ROADMAP.md) — "
+            "set SPORK_ACCEPTANCE_WIP=1 to run it and see the current gap"
+        )
 
 
 def after_scenario(context: Any, scenario: Any) -> None:
