@@ -206,7 +206,7 @@ def test_run_daemon_observe_mode_never_enters_tier2(tmp_path: Path, monkeypatch)
     def fail_if_called(*args: object, **kwargs: object) -> None:
         raise AssertionError("observe mode entered Tier 2")
 
-    monkeypatch.setattr("spork.daemon.loop.escalate_message", fail_if_called)
+    monkeypatch.setattr("spork.daemon.loop.escalate_message_or_quarantine", fail_if_called)
     asyncio.run(_run_briefly(config, observe=True))
 
     assert not (tmp_path / "actions.jsonl").exists()

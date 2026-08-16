@@ -27,7 +27,7 @@ from spork.core.llm.base import LLMClient
 from spork.core.llm.budget import has_budget_remaining
 from spork.core.pipeline import process_message
 from spork.core.pipeline.observer import PipelineObserver
-from spork.core.pipeline.tier2.escalate import escalate_message
+from spork.core.pipeline.tier2.escalate import escalate_message_or_quarantine
 from spork.core.providers.base import (
     ActionApplier,
     CheckpointedProvider,
@@ -371,14 +371,18 @@ async def _run_message_loop(
             # condition (§6.2.1) only needs "never concurrent", not
             # "one to_thread wrapper per message" (docs/DESIGN.md). The
             # whole thing (thread-history/mailbox-list reads included)
-            # runs inside one worker-thread call via escalate_message()
+            # runs inside one worker-thread call via
+            # escalate_message_or_quarantine()
             # (spork.core.pipeline.tier2.escalate, M5) — those reads
             # may themselves be real I/O against a live backend, so
             # they belong off the event-loop thread too, not called
-            # directly from this coroutine.
+            # directly from this coroutine. Its own result isn't
+            # branched on here (a QuarantinedMessage is already marked
+            # processed, audited, and alerted internally) — this loop
+            # only needs to know Tier 2 ran, not what it decided.
             if not observe and verdict is not None and verdict.action.type == "escalate":
                 await asyncio.to_thread(
-                    escalate_message,
+                    escalate_message_or_quarantine,
                     message,
                     thread_history_reader=thread_history_reader,
                     mailbox_lister=mailbox_lister,

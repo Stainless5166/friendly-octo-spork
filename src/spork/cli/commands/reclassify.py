@@ -24,7 +24,7 @@ from spork.core.config.schema import SporkConfig
 from spork.core.llm.loader import LLMClientLoadError
 from spork.core.pipeline import process_message
 from spork.core.pipeline.observer import PipelineObserver
-from spork.core.pipeline.tier2.escalate import escalate_message
+from spork.core.pipeline.tier2.escalate import QuarantinedMessage, escalate_message_or_quarantine
 from spork.core.providers.base import MessageNotFoundError
 from spork.core.providers.loader import ProviderLoadError
 from spork.core.rules.loader import RulesLoadError, load_rules
@@ -124,7 +124,7 @@ def _reclassify(message_id: str, config: SporkConfig) -> None:
             typer.echo(f"{message_id}: Tier 1 -> {action_type}")
             return
 
-        tier2_verdict = escalate_message(
+        tier2_verdict = escalate_message_or_quarantine(
             message,
             thread_history_reader=provider.build_thread_history_reader(),
             mailbox_lister=provider.build_mailbox_lister(),
@@ -138,5 +138,7 @@ def _reclassify(message_id: str, config: SporkConfig) -> None:
 
     if tier2_verdict is None:
         typer.echo(f"{message_id}: escalated, but Tier 2's daily call budget is exhausted")
+    elif isinstance(tier2_verdict, QuarantinedMessage):
+        typer.echo(f"{message_id}: escalated -> Tier 2 quarantined it: {tier2_verdict.reason}")
     else:
         typer.echo(f"{message_id}: escalated -> Tier 2 -> {tier2_verdict.suggested_action.type}")
