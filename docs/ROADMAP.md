@@ -1186,13 +1186,17 @@ deterministic extractor can consult *ahead of* its own StateDB-backed
 learned cache, rather than inventing a second static-seed-file format
 — see the extractor item below.
 
-- [ ] `Provider.build_attachment_fetcher()` (§9.3/§9.5): a new
+- [x] `Provider.build_attachment_fetcher()` (§9.3/§9.5): a new
       read-side capability — `FileProvider` real, `JmapProvider` a
       settled-shape `NotImplementedError` (M)
-- [ ] `Provider.build_keyword_applier()` (§9.5): JMAP-keyword-based
+- [x] `Provider.build_keyword_applier()` (§9.5): JMAP-keyword-based
       free-form per-message tagging, distinct from the existing
       mailbox-based `tag` action — `FileProvider` real, `JmapProvider`
-      a settled-shape `NotImplementedError` (S)
+      a settled-shape `NotImplementedError` (S) — 12 acceptance tests
+      across `tests/core/providers/file/test_attachments.py`,
+      `test_provider.py`, and jmap's `test_client.py`/`test_provider.py`,
+      plus `docs/acceptance/m10d_receipt_provider_capabilities.feature`
+      (3 scenarios, fully bound and passing, no live account/network).
 - [x] `spork.core.receipts.registry`: `StateDB` gains
       `known_receipt_senders` (`get_known_sender()`/
       `learn_known_sender()`, matching the existing one-class-owns-

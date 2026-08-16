@@ -100,7 +100,8 @@ note on the collision.
 | `m10a_receipt_pdf.feature` | Receipt PDF building + archiving (`spork.core.receipts.pdf`/`archive`) | Fully bound and passing on every run — no live account, no network |
 | `m10b_receipt_senders.feature` | Known-sender registry + deterministic extraction (`spork.core.receipts.registry`/`extract`) | Fully bound and passing on every run — no live account, no network |
 | `m10c_receipt_extraction_llm.feature` | Recorded Tier 2 receipt-extraction fallback (`spork.core.receipts.llm`) | Fully bound and passing on every run — no live model call |
-| `m10_receipt_archiving.feature` | Receipt tagging + combined-PDF archiving, deterministic-first with learned Tier 2 fallback | Scenarios drafted, step bindings scaffolded (`@wip`, all raise `NotImplementedError`); PDF/archive (`m10a`), registry/extraction (`m10b`), and Tier 2 fallback (`m10c`) modules done, the rest of `spork.core.receipts` not yet implemented |
+| `m10d_receipt_provider_capabilities.feature` | Attachment fetching + keyword tagging as Provider capabilities | Fully bound and passing on every run — no live account, no network |
+| `m10_receipt_archiving.feature` | Receipt tagging + combined-PDF archiving, deterministic-first with learned Tier 2 fallback | Scenarios drafted, step bindings scaffolded (`@wip`, all raise `NotImplementedError`); PDF/archive (`m10a`), registry/extraction (`m10b`), Tier 2 fallback (`m10c`), and provider capabilities (`m10d`) modules done, only pipeline wiring left |
 
 The scenarios are deliberately more demanding than the current automated
 suite. A scenario is complete only when its stated live evidence exists,
