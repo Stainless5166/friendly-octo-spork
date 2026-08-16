@@ -89,6 +89,31 @@ def test_backfill_with_a_page_size_larger_than_the_limit_still_stops_at_the_limi
     assert count == 1
 
 
+def test_backfill_rejects_a_non_positive_limit(tmp_path: Path) -> None:
+    """PR #20 review finding #4: --limit/--page-size had no positivity
+
+    validation. --limit 0 previously ran successfully and reported "0
+    messages processed" instead of being rejected - silently a no-op
+    rather than a caught mistake."""
+    env = _env(tmp_path)
+    _write_config(tmp_path / "xdg-config-home" / "spork", tmp_path, message_count=1)
+
+    result = _run("--limit", "0", env=env)
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+
+
+def test_backfill_rejects_a_non_positive_page_size(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    _write_config(tmp_path / "xdg-config-home" / "spork", tmp_path, message_count=1)
+
+    result = _run("--page-size", "0", env=env)
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+
+
 def test_backfill_builds_tier2_provider_capabilities_once_per_run_not_per_message(
     tmp_path: Path,
 ) -> None:
