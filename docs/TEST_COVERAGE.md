@@ -324,8 +324,21 @@ already was. Backed by 22 Gherkin scenarios across 5 feature files
 (`docs/acceptance/m10_receipt_archiving.feature` — the full pipeline —
 plus `m10a`/`m10b`/`m10c`/`m10d` for the independently-reusable
 sub-modules), all fully bound and passing, no live account or network
-anywhere. **M10 is now built; the full suite is 958 tests, 954 green,
-1 skipped.** The remaining 3 are pre-existing, unrelated
+anywhere. Updated once more to close M10's own stated runtime-wiring
+gap: `spork.core.receipts.loader.load_receipt_extraction_client()` +
+`spork.core.runtime.build_receipt_archive_components()` (the real
+`EntityContextProvider`-as-`domain_lookup` synergy, proven end to end
+this time, not just designed) + `run_daemon()`/`_run_message_loop()`
+actually building and passing `ReceiptArchiveComponents` through to
+`process_message()`, with a new `ArchiveReceiptAugment.dry_run` +
+`_ObserveKeywordApplier` pair making `--observe` genuinely suppress
+receipt archiving's real side effects too. A real circular import this
+surfaced (`spork.core.runtime` -> `spork.core.receipts.pipeline` ->
+`spork.core.pipeline.core`, looping back through
+`spork.core.pipeline.default`'s own import of the same module) was
+found and fixed by making that import function-local. **M10 is now
+fully wired end to end; the full suite is 975 tests, 971 green, 1
+skipped.** The remaining 3 are pre-existing, unrelated
 `test_mitm_fault_injection.py` failures — a sandbox/proxy limitation
 confirmed present on `main` before this work started, not a
 regression this milestone introduced.
@@ -895,7 +908,7 @@ test) — closed with targeted tests, not implementation changes; no
 | A real backend that actually reads content (free-text vault) | — | genuinely undecided design work, not a live-account blocker — `MarkdownVaultContextProvider` (tests 799–800) settles the shape as a stub; the retrieval algorithm choice needs real vault content to validate against |
 | `EntityContextProvider` (structured domain/company/service/person knowledge base, prototype) | ✅ | ✅ — tests 820–841 (100% line coverage on `spork.core.context.clients.entities`); specified in Gherkin (`docs/acceptance/m9_entity_context.feature`) |
 
-### M10 — Receipt archiving — 9/9 built (exit criterion met at the pipeline level)
+### M10 — Receipt archiving — 10/10 built, fully wired end to end
 
 Originally numbered M9; renumbered when the real M9 above landed
 independently on `main` first (see docs/ROADMAP.md M10's own note).
@@ -910,16 +923,20 @@ independently on `main` first (see docs/ROADMAP.md M10's own note).
 | `rules.schema.Action` gains `"archive_receipt"` | ✅ | ✅ — tests 895–896; found and fixed a real cross-cutting gap in `Verdict`/`verdict_tool_schema()` (test 906) |
 | `spork.core.receipts.pdf.build_receipt_pdf()` | ✅ | ✅ — tests 842–849 |
 | `spork.core.receipts.archive.save_pdf()` | ✅ | ✅ — tests 850–855 |
-| `SporkConfig.receipt_archive` | ✅ | ✅ — tests 901–903 |
-| Pipeline wiring (`ArchiveReceiptAugment` + `build_default_pipeline()`/`process_message()`) | ✅ | ✅ — tests 897–900, 904–905 |
+| `SporkConfig.receipt_archive` (`output_dir` + required `extraction: BackendSpec`) | ✅ | ✅ — tests 901–903, 914 |
+| Pipeline wiring (`ArchiveReceiptAugment` + `build_default_pipeline()`/`process_message()`, `dry_run`) | ✅ | ✅ — tests 897–900, 904–905, 920–921 |
 | `docs/acceptance/m10_receipt_archiving.feature` bound for real | ✅ | ✅ — 7 scenarios, fully passing; plus 15 more across `m10a`/`m10b`/`m10c`/`m10d` (22 total) |
+| **Runtime wiring** (`spork.core.receipts.loader` + `spork.core.runtime.build_receipt_archive_components()` + `run_daemon()`/`_run_message_loop()`) | ✅ | ✅ — tests 907–913 (loader), 915–919 (runtime composition, including the real M9/M10 `EntityContextProvider` synergy), 922–923 (`run_daemon()` end to end, including `--observe`) |
 
-Not wired: `spork.core.runtime`'s backend composition doesn't yet build
-`ReceiptArchiveComponents` from `[receipt_archive]`/`[context]` config
-at daemon startup — the acceptance suite wires components directly at
-the pipeline level, which is what's actually proven end to end. Real
-follow-up work, tracked in `docs/ROADMAP.md` M10, not silently assumed
-done.
+`sporkd` now builds `ReceiptArchiveComponents` from
+`[receipt_archive]`/`[context]` config at startup and actually uses
+it — the acceptance suite's pipeline-level wiring and the real daemon
+loop are both proven, not just one or the other. The only genuinely
+open item is a live, LLM-backed `ReceiptExtractionClient`
+implementation (docs/ROADMAP.md's Stretch section) — the `Protocol`,
+loader, and config field are all real; only a second backend beyond
+`RecordedReceiptExtractionClient` is missing, the same shape
+`LiteLLMClient` already has relative to `LLMClient`/`RecordedLLMClient`.
 
 ---
 
@@ -4876,3 +4893,79 @@ doc's stable-numbering convention.
      (`verdict_tool_schema()` also excludes it from the tool's enum,
      covered by the existing `test_prompt.py` tests once updated for
      the new value).
+
+### tests/core/receipts, tests/core/config, tests/core, tests/daemon — M10 runtime wiring (docs/ROADMAP.md M10 follow-up)
+
+907. **`test_loader.py (receipts)::test_load_receipt_extraction_client_imports_and_instantiates_by_spec`**
+     `load_receipt_extraction_client()` (mirrors `load_context_provider()`)
+     imports and constructs a backend by "module:ClassName" spec.
+
+908. **`test_loader.py (receipts)::test_load_receipt_extraction_client_passes_through_constructor_kwargs`**
+     Kwargs reach the backend's constructor unchanged.
+
+909. **`test_loader.py (receipts)::test_load_receipt_extraction_client_raises_for_malformed_spec`**
+     A spec with no `:` separator is `ReceiptExtractionClientLoadError`.
+
+910. **`test_loader.py (receipts)::test_load_receipt_extraction_client_raises_for_an_unimportable_module`**
+     An unimportable module path is the same wrapped error.
+
+911. **`test_loader.py (receipts)::test_load_receipt_extraction_client_raises_for_a_missing_class`**
+     A missing class name is the same wrapped error.
+
+912. **`test_loader.py (receipts)::test_load_receipt_extraction_client_can_load_the_real_recorded_client`**
+     Not just fixture mechanics — proves the loader resolves the one
+     real, shipped backend (`RecordedReceiptExtractionClient`).
+
+913. **`test_loader_edge_cases.py (receipts)::test_load_receipt_extraction_client_raises_when_construction_fails`**
+     A constructor that rejects the given kwargs fails loudly rather
+     than a raw `TypeError` leaking through unwrapped.
+
+914. **`test_schema.py (config)::test_receiptarchiveconfig_requires_an_extraction_backend`**
+     `extraction: BackendSpec` has no default — same "must be
+     explicit" stance `provider`/`llm`/`alerts` have on `SporkConfig`
+     itself.
+
+915. **`test_runtime.py::test_build_receipt_archive_components_returns_none_when_unconfigured`**
+     No `[receipt_archive]` table: the feature is off entirely, not a
+     crash and not an empty-but-present components bundle.
+
+916. **`test_runtime.py::test_build_receipt_archive_components_builds_real_collaborators`**
+     `attachment_fetcher`/`keyword_applier` come from a real
+     `FileProvider` and actually work; `extraction_client` is the real
+     loaded `RecordedReceiptExtractionClient`.
+
+917. **`test_runtime.py::test_build_receipt_archive_components_leaves_domain_lookup_none_for_null_context`**
+     `NullContextProvider` doesn't structurally support `lookup_domain()`
+     — `domain_lookup` stays `None`, same as `[context]` unconfigured.
+
+918. **`test_runtime.py::test_build_receipt_archive_components_wires_an_entitycontextprovider_as_domain_lookup`**
+     The real M9/M10 synergy, proven end to end: a configured
+     `EntityContextProvider` is passed straight through as
+     `domain_lookup`, and a real `lookup_domain()` call against it
+     resolves the expected company.
+
+919. **`test_runtime.py::test_resolve_runtime_secrets_includes_a_configured_receipt_archives_extraction_secret_kwargs`**
+     A `[receipt_archive]` table's `extraction.secret_kwargs` count
+     toward "does anything configured need SecretSpec resolved" the
+     same way provider/llm/alerts/context already do.
+
+920. **`test_pipeline.py (receipts)::test_dry_run_skips_the_pdf_write_but_still_sets_audit_fields`**
+     `ArchiveReceiptAugment(dry_run=True)` never writes a PDF, but
+     still tags (via whatever `keyword_applier` it's given) and sets
+     audit fields — extraction and auditing still happen.
+
+921. **`test_pipeline.py (receipts)::test_dry_run_does_not_require_a_writable_output_dir`**
+     A dry run never touches the filesystem — an unwritable/
+     nonexistent `output_dir` doesn't raise, unlike the real write path.
+
+922. **`test_loop.py (daemon)::test_run_daemon_archives_a_matched_receipt_message`**
+     A known-sender receipt message is archived end to end through the
+     real `run_daemon()` asyncio loop — PDF written, keyword applied,
+     message marked processed — using
+     `build_receipt_archive_components()`'s real composition, not
+     hand-wired collaborators.
+
+923. **`test_loop.py (daemon)::test_run_daemon_observe_mode_does_not_archive_or_tag_receipts`**
+     `--observe` suppresses both the PDF write and the keyword tag for
+     `archive_receipt` too, while the message still ends up marked
+     processed — the same contract every other observe-mode action has.

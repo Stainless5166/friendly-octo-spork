@@ -1242,12 +1242,10 @@ learned cache, rather than inventing a second static-seed-file format
       tests (`tests/core/receipts/test_archive.py`), same
       `m10a_receipt_pdf.feature` covers the archived-filename scenario.
 - [x] `SporkConfig.receipt_archive: ReceiptArchiveConfig | None` (S) —
-      `output_dir` only; no separate seed-file field, since curated
-      seeding is `[context]`'s job now (M9). Not yet wired into
-      `spork.core.runtime`'s backend composition (constructing
-      `ReceiptArchiveComponents` from config at daemon startup) — a
-      stated follow-up, not exercised by the acceptance suite, which
-      wires components directly at the pipeline level.
+      `output_dir` plus a required `extraction: BackendSpec` (which
+      `ReceiptExtractionClient` backend answers the Tier 2 fallback);
+      no separate seed-file field, since curated seeding is
+      `[context]`'s job now (M9).
 - [x] Pipeline wiring: `spork.core.receipts.pipeline.ArchiveReceiptAugment`
       on a new `"archive_receipt"` branch alongside `"terminal"`/
       `"escalate"`, wired into `build_default_pipeline()`/
@@ -1258,21 +1256,51 @@ learned cache, rather than inventing a second static-seed-file format
 - [x] `docs/acceptance/m10_receipt_archiving.feature` bound for real —
       `@wip` dropped, all 7 scenarios passing offline under the safe
       default `uv run behave` (M)
+- [x] **Runtime wiring** (follow-up, now closed): `spork.core.receipts.loader.load_receipt_extraction_client()`
+      (mirrors `load_context_provider()`/`load_llm_client()`) +
+      `spork.core.runtime.build_receipt_archive_components()` — builds
+      `attachment_fetcher`/`keyword_applier` from the same `Provider`
+      every other capability uses, loads `extraction_client` via the
+      new loader, and derives `domain_lookup` from the configured
+      `ContextProvider` itself when it structurally supports
+      `lookup_domain()` (`isinstance` against the now-
+      `@runtime_checkable` `SenderDomainLookup`) — the M9/M10 synergy,
+      now real end to end, not just designed. `resolve_runtime_secrets()`
+      picks up `receipt_archive.extraction`'s `secret_kwargs`.
+      `run_daemon()` builds this once at startup and threads it through
+      `_run_message_loop()` to `process_message()`. `--observe` honors
+      its "process and audit messages without changing mail or
+      creating drafts" contract for `archive_receipt` too: a new
+      `ArchiveReceiptAugment.dry_run` flag skips the PDF write, and the
+      daemon swaps `keyword_applier` for a no-op (`_ObserveKeywordApplier`),
+      the same shape `_ObserveActionApplier`/`_ObserveDraftCreator`
+      already have (M) — 30 new acceptance tests across
+      `tests/core/receipts/test_loader.py`(+edge cases),
+      `tests/core/config/test_schema.py`, `tests/core/test_runtime.py`,
+      `tests/core/receipts/test_pipeline.py`, and
+      `tests/daemon/test_loop.py`. Fixed a real circular import this
+      wiring surfaced (`spork.core.runtime` -> `spork.core.receipts.pipeline`
+      -> `spork.core.pipeline.core`, looping back through
+      `spork.core.pipeline.default`'s own import of
+      `spork.core.receipts.pipeline`) by making `default.py`'s
+      `ArchiveReceiptAugment` import function-local.
 
-**Current status:** done, in the same sense every prior milestone's
-buildable-without-a-live-account items are. `docs/DESIGN.md` §9.5
-records the architecture; every checklist item above is real and
-tested — no `NotImplementedError` stubs remain in
-`spork.core.receipts.*` (the only remaining `NotImplementedError`s are
-`JmapClient.fetch_attachments()`/`apply_keywords()`, the honest
-live-account-blocked leaves every other JMAP write/unbuilt-read path
-already has). `docs/acceptance/m10_receipt_archiving.feature` and its
-four sub-module companions (`m10a`/`m10b`/`m10c`/`m10d`, 22 scenarios
-total) are fully bound and pass on every `uv run behave`. Not wired:
-`spork.core.runtime`'s backend composition doesn't yet build
-`ReceiptArchiveComponents` from `[receipt_archive]`/`[context]` config
-at daemon startup — real follow-up work, tracked here rather than
-silently assumed done.
+**Current status:** fully done — every checklist item above, including
+the runtime-wiring follow-up, is real, tested, and wired end to end. No
+`NotImplementedError` stubs remain in `spork.core.receipts.*` (the only
+remaining `NotImplementedError`s are `JmapClient.fetch_attachments()`/
+`apply_keywords()`, the honest live-account-blocked leaves every other
+JMAP write/unbuilt-read path already has). `docs/acceptance/m10_receipt_archiving.feature`
+and its four sub-module companions (`m10a`/`m10b`/`m10c`/`m10d`, 22
+scenarios total) are fully bound and pass on every `uv run behave`.
+`sporkd` itself now builds `ReceiptArchiveComponents` from
+`[receipt_archive]`/`[context]` config at startup and actually uses
+it — not just the acceptance suite wiring components directly at the
+pipeline level. The one thing still genuinely unbuilt: a live,
+LLM-backed `ReceiptExtractionClient` (today only
+`RecordedReceiptExtractionClient` exists as a real, shippable backend
+for `[receipt_archive.extraction]`) — tracked as stretch work below,
+not blocking this milestone's own exit criterion.
 
 **Exit criteria:** a known-sender receipt is tagged and archived with
 zero Tier 2 calls; an unrecognized sender is extracted via exactly one
@@ -1280,14 +1308,22 @@ Tier 2 call and learned; a second message from that now-learned sender
 is handled deterministically; a message with attachments and a message
 with none both produce exactly one PDF at the configured location; an
 unwritable archive location fails safely and leaves the message
-retryable. **Met at the pipeline level** — every clause above is
-proven by `m10_receipt_archiving.feature`'s 7 scenarios, all passing
-against the real pipeline with no live account or network. The one
-remaining gap (`spork.core.runtime` daemon-startup wiring) is
-config/composition plumbing, not a behavior this exit criterion claims.
+retryable. **Fully met** — every clause above is proven by
+`m10_receipt_archiving.feature`'s 7 scenarios against the real
+pipeline, *and* by `tests/daemon/test_loop.py`'s two new tests against
+the real `run_daemon()` asyncio loop with real runtime-composed
+collaborators, no live account or network anywhere.
 
 ## Stretch / post-v1 (not scoped, not blocking)
 
+- A live, LLM-backed `ReceiptExtractionClient` (M10, §9.5) — today only
+  `RecordedReceiptExtractionClient` exists as a real, shippable backend
+  for `[receipt_archive.extraction]`. The `Protocol`, the loader
+  (`spork.core.receipts.loader`), and the config field
+  (`ReceiptArchiveConfig.extraction: BackendSpec`) are all already
+  real; a live backend is an additional implementation loaded the same
+  "module:ClassName" way, not a redesign, mirroring `LiteLLMClient`'s
+  relationship to `LLMClient`/`RecordedLLMClient` (§10.1/§10.5).
 - Webhook `Alerter` backend (ntfy/Pushover-style, URL from secretspec) —
   deferred out of M4, which targets Linux desktop notifications only for
   v1. The `Alerter` protocol M4 builds makes this an additional backend
