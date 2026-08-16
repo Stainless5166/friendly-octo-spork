@@ -17,6 +17,7 @@ def _request() -> VerdictRequest:
         thread_prior_subject="Thursday call",
         thread_user_has_replied=True,
         available_mailboxes=("Inbox", "Needs-Reply"),
+        available_categories=("needs_reply", "fyi"),
     )
 
 
@@ -42,6 +43,7 @@ def test_build_prompt_contains_the_complete_message_context() -> None:
             "role": "user",
             "content": json.dumps(
                 {
+                    "available_categories": ["needs_reply", "fyi"],
                     "available_mailboxes": ["Inbox", "Needs-Reply"],
                     "cleaned_body": "Can we move Thursday's call to Friday at 2pm?",
                     "from_address": "client@example.com",

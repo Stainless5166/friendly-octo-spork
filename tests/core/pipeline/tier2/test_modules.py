@@ -155,7 +155,7 @@ def test_build_verdict_request_filter_cleans_the_body_and_builds_the_request(
         thread_user_has_replied=True,
     )
 
-    result = BuildVerdictRequestFilter().apply(payload)
+    result = BuildVerdictRequestFilter(available_categories=["needs_reply", "fyi"]).apply(payload)
 
     assert result.text == "Hello there."
     assert result.meta.request is not None
@@ -164,6 +164,7 @@ def test_build_verdict_request_filter_cleans_the_body_and_builds_the_request(
     assert result.meta.request.thread_prior_subject == "Original subject"
     assert result.meta.request.thread_user_has_replied is True
     assert result.meta.request.available_mailboxes == ("Inbox", "Needs-Reply")
+    assert result.meta.request.available_categories == ("needs_reply", "fyi")
 
 
 def test_call_llm_augment_delegates_to_the_client_and_sets_the_verdict(make_message) -> None:
@@ -171,7 +172,9 @@ def test_call_llm_augment_delegates_to_the_client_and_sets_the_verdict(make_mess
     stores the result in meta.verdict — the one I/O stage."""
     verdict = _verdict()
     client = _StubLLMClient(verdict)
-    payload = BuildVerdictRequestFilter().apply(_payload(make_message))
+    payload = BuildVerdictRequestFilter(available_categories=["needs_reply"]).apply(
+        _payload(make_message)
+    )
 
     result = CallLLMAugment(client).augment(payload)
 
