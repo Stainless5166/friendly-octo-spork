@@ -60,3 +60,12 @@ def test_verdict_rejects_a_malformed_nested_suggested_action() -> None:
     transitively, not just Verdict's own top-level fields."""
     with pytest.raises(ValidationError):
         Verdict.model_validate(_verdict_json(suggested_action={"type": "tag", "bogus_field": True}))
+
+
+def test_verdict_rejects_a_non_string_metadata_value() -> None:
+    """metadata is deliberately dict[str, str], not dict[str, Any] —
+    an int/bool/nested-object value is a validation failure, keeping
+    the forced tool schema a flat, deterministic object rather than an
+    arbitrary-JSON blob."""
+    with pytest.raises(ValidationError):
+        Verdict.model_validate(_verdict_json(metadata={"count": 5}))
