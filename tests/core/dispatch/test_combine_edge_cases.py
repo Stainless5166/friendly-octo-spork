@@ -57,6 +57,33 @@ def test_highest_confidence_combiner_raises_when_all_targets_failed() -> None:
     assert str(exc_info.value) == "no target produced a successful classification result"
 
 
+def test_highest_confidence_combiner_treats_no_scores_as_exactly_zero_confidence() -> None:
+    """A target reporting no scores at all is confidence 0.0 — not
+    disqualified, not auto-preferred (combine.py's own docstring: "not
+    preferred by default") — literally 0.0, so it beats a real negative
+    score and loses to a real positive one. HighestConfidenceCombiner's
+    `max(..., default=0.0)` is only exercised on the empty-scores path,
+    which a randomized/property test only reaches sometimes; pinned
+    here deterministically instead."""
+    combiner = HighestConfidenceCombiner()
+
+    beats_negative = combiner.combine(
+        {
+            "quiet": ClassificationResult(category="quiet", scores={}),
+            "negative": ClassificationResult(category="negative", scores={"x": -0.5}),
+        }
+    )
+    assert beats_negative.category == "quiet"
+
+    loses_to_positive = combiner.combine(
+        {
+            "quiet": ClassificationResult(category="quiet", scores={}),
+            "positive": ClassificationResult(category="positive", scores={"x": 0.5}),
+        }
+    )
+    assert loses_to_positive.category == "positive"
+
+
 def test_highest_confidence_combiner_breaks_ties_by_target_order() -> None:
     """Two targets reporting the same top confidence resolve
     deterministically to whichever appears first in the results
