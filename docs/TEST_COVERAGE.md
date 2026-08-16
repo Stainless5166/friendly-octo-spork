@@ -388,11 +388,11 @@ until M1's real JMAP fetch exists.
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `tests/support/jmap_mitm.py` fault-injection harness | ✅ | ✅ — tests 707–712 (6 tests) |
-| `tests/fixtures/jmap/flows/` recorded flows | ❌ not started | — |
+| `tests/fixtures/jmap/flows/` recorded flows | ✅ captured, gitignored, token-redacted; not yet wired into the harness as a replay source | — (nothing to unit-test in a recorded flow file itself) |
 | Automatable push/fallback acceptance coverage | ✅ (new feature, not a bind of `m1.py`'s live steps) | ✅ — `docs/acceptance/m1_jmap_fault_injection.feature` + `steps/m1_fault_injection.py`, passing in the safe-default `uv run behave` |
-| Initial `tests/fixtures/corpus/live.jsonl` seed | ❌ not started | — |
+| Initial `tests/fixtures/corpus/live.jsonl` seed | 🟡 started, 5 entries, not yet diverse | — |
 
-**2 of 4 items done.** The harness itself is real and network-free (an
+**3 of 4 items done** (the 4th, corpus seeding, partially). The harness itself is real and network-free (an
 in-process mitmproxy instance answers every request locally; nothing
 is ever forwarded to a real upstream host), and it drives the actual
 production `client_factory`/`jmapc.Client`, not a fake — the first time
@@ -404,8 +404,11 @@ secondary, one shared cursor) rather than the lower-level client/push
 tests alone — a disconnected push cycle falls back to polling, and a
 recovered push cycle is served with zero wasted fallback attempts, both
 asserted via the harness's own EventSource connection counter, not
-just cursor values. Recording real flows against the maintainer's
-account and seeding the LLM corpus are still open.
+just cursor values. Recorded flows now exist
+(`tests/fixtures/jmap/flows/`) including a genuine EventSource push
+event triggered by a real test email — replaying them from
+`jmap_mitm.py` instead of hand-built canned responses is still open.
+Growing the LLM corpus beyond 5 entries is still open too.
 
 ### M2 — Rule engine (Tier 1) + action executor
 

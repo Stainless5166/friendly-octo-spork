@@ -183,12 +183,26 @@ milestone; this milestone does not depend on M8.
       boundaries (M). Surfaced a real finding about the *existing*
       push path, not a harness bug — see this file's M1 EventSource
       item above.
-- [ ] `tests/fixtures/jmap/flows/`: recorded `Session`/`Email/changes`/
-      `Email/get`/EventSource flows captured once against the live
-      read-only account via `mitmdump -w`, then replayed offline for
-      both ordinary tests and fault injection — gitignored like
-      `tests/fixtures/corpus/` already is, same real-mail-content
-      privacy rule (S)
+- [x] `tests/fixtures/jmap/flows/`: recorded `Session`/`Mailbox/get`/
+      `Email/get`/`Email/changes`/EventSource flows captured once
+      against the live read-only account, via the mitm harness's own
+      embedding (`save_stream_file`, mitmdump's underlying mechanism)
+      rather than a separate CLI invocation — `m1_live_session.flow`
+      (baseline + a no-op changes cycle) and `m1_live_push.flow` (a
+      **real** EventSource push event, triggered by one live test
+      email, captured start to finish). Gitignored like
+      `tests/fixtures/corpus/`. The real `Authorization: Bearer …`
+      token was captured in every request by mitmproxy as normal proxy
+      traffic and has been redacted post-capture (rewritten to `Bearer
+      REDACTED` via `mitmproxy.io.FlowWriter`) — the session response
+      body still contains the account's real username/email and its
+      real mailbox name list (no message bodies: every captured fetch
+      returned an empty batch), which is real-account content by the
+      same privacy rule as the corpus, kept local/gitignored only, not
+      further scrubbed (S). **Not yet done:** wiring these flows into
+      `tests/support/jmap_mitm.py` as a replay source for `pytest` —
+      today's fault-injection tests still use hand-built canned
+      responses, not these recordings.
 - [x] Automatable, non-`@manual` coverage of the `@fallback` guarantee:
       `docs/acceptance/m1_jmap_fault_injection.feature` +
       `docs/acceptance/steps/m1_fault_injection.py`, driving the real
