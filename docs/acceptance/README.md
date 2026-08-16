@@ -98,7 +98,8 @@ note on the collision.
 | `m7_hardening.feature` | Unattended operation and v1 release | Requires real mailbox, model, rate-limit, and one-week run |
 | `m9_entity_context.feature` | Structured domain/company/service/person knowledge base | Fully covered by pytest (`tests/core/context/clients/entities/`); no behave bindings, no live dependency to wait on |
 | `m10a_receipt_pdf.feature` | Receipt PDF building + archiving (`spork.core.receipts.pdf`/`archive`) | Fully bound and passing on every run — no live account, no network |
-| `m10_receipt_archiving.feature` | Receipt tagging + combined-PDF archiving, deterministic-first with learned Tier 2 fallback | Scenarios drafted, step bindings scaffolded (`@wip`, all raise `NotImplementedError`); PDF/archive module done (`m10a`), the rest of `spork.core.receipts` not yet implemented |
+| `m10b_receipt_senders.feature` | Known-sender registry + deterministic extraction (`spork.core.receipts.registry`/`extract`) | Fully bound and passing on every run — no live account, no network |
+| `m10_receipt_archiving.feature` | Receipt tagging + combined-PDF archiving, deterministic-first with learned Tier 2 fallback | Scenarios drafted, step bindings scaffolded (`@wip`, all raise `NotImplementedError`); PDF/archive (`m10a`) and registry/extraction (`m10b`) modules done, the rest of `spork.core.receipts` not yet implemented |
 
 The scenarios are deliberately more demanding than the current automated
 suite. A scenario is complete only when its stated live evidence exists,

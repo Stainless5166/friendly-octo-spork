@@ -1199,12 +1199,16 @@ learned cache, rather than inventing a second static-seed-file format
       every-table convention rather than a separate wrapper class) —
       the "learning system" the milestone is named for.
       `registry.normalize_sender_domain()` is the pure logic half (S)
-- [ ] `spork.core.receipts.extract`: deterministic company/date
+- [x] `spork.core.receipts.extract`: deterministic company/date
       extraction — an optionally-injected `EntityContextProvider`-style
       domain lookup first (M9's curated data), then the learned
       `known_receipt_senders` cache, then a closed set of date patterns;
       declining rather than guessing when company or date doesn't
-      resolve (M)
+      resolve (M) — 7 acceptance tests
+      (`tests/core/receipts/test_extract.py`), plus
+      `docs/acceptance/m10b_receipt_senders.feature` (5 scenarios,
+      fully bound and passing, including the learn-then-deterministic
+      loop end to end minus the Tier 2 call itself).
 - [ ] `spork.core.receipts.llm.ReceiptExtractionClient` Protocol +
       `RecordedReceiptExtractionClient` fixture-replay implementation,
       mirroring `LLMClient`/`RecordedLLMClient` (§10.1/§10.5) (M)
