@@ -389,18 +389,23 @@ until M1's real JMAP fetch exists.
 |---|---|---|
 | `tests/support/jmap_mitm.py` fault-injection harness | ✅ | ✅ — tests 707–712 (6 tests) |
 | `tests/fixtures/jmap/flows/` recorded flows | ❌ not started | — |
-| `@fallback`/`@network-recovery` acceptance step bindings | ❌ not started | — |
+| Automatable push/fallback acceptance coverage | ✅ (new feature, not a bind of `m1.py`'s live steps) | ✅ — `docs/acceptance/m1_jmap_fault_injection.feature` + `steps/m1_fault_injection.py`, passing in the safe-default `uv run behave` |
 | Initial `tests/fixtures/corpus/live.jsonl` seed | ❌ not started | — |
 
-**1 of 4 items done.** The harness itself is real and network-free (an
+**2 of 4 items done.** The harness itself is real and network-free (an
 in-process mitmproxy instance answers every request locally; nothing
 is ever forwarded to a real upstream host), and it drives the actual
 production `client_factory`/`jmapc.Client`, not a fake — the first time
 any test in this repo has exercised `JmapClient`/`JmapPushTrigger`
 against genuine transport failures rather than injected exceptions.
-Recording real flows against the maintainer's account, wiring the
-harness into the Gherkin step bindings, and seeding the LLM corpus are
-still open.
+The Gherkin coverage exercises the real `JmapProvider.
+build_checkpointed_source()` composition (push primary, poll
+secondary, one shared cursor) rather than the lower-level client/push
+tests alone — a disconnected push cycle falls back to polling, and a
+recovered push cycle is served with zero wasted fallback attempts, both
+asserted via the harness's own EventSource connection counter, not
+just cursor values. Recording real flows against the maintainer's
+account and seeding the LLM corpus are still open.
 
 ### M2 — Rule engine (Tier 1) + action executor
 

@@ -33,15 +33,26 @@ SPORK_ACCEPTANCE_LIVE=1 uv run behave --tags="m1 and baseline"
 ```
 
 Use `-D jmap_host=...` only when targeting an approved compatible JMAP
-endpoint. Push, reconnect, and forced-outage scenarios currently expose
-undefined step bindings rather than pretending to execute them. Bindings
-are being added milestone by milestone.
+endpoint. `@push`, `@cursor-safety`, and `@network-recovery` in
+`m1_jmap.feature` still expose undefined step bindings — those remain
+live-only evidence. Bindings are being added milestone by milestone.
+
+`m1_jmap_fault_injection.feature` is not `@manual` and needs none of
+the above: it drives the real `JmapProvider` push/fallback composition
+through the in-process mitmproxy harness (`tests/support/jmap_mitm.py`,
+ROADMAP M1c), so it runs in the safe default `uv run behave` with no
+opt-in, no credentials, and no network. It's a complement to, not a
+replacement for, `m1_jmap.feature`'s `@fallback`/`@network-recovery` —
+those remain the real evidence for M1's exit criterion (an actual
+forced network drop against a real account); this feature makes the
+same Source-composition behavior regression-tested on every run.
 
 ## Status
 
 | Feature | Scope | Current evidence |
 |---|---|---|
-| `m1_jmap.feature` | JMAP session, push, fallback, cursor safety | Baseline binding added; live baseline evidence still open. `@fallback`/`@network-recovery` await the mitmproxy harness (ROADMAP M1c) rather than being manual forever |
+| `m1_jmap.feature` | JMAP session, push, fallback, cursor safety | Baseline binding added; live baseline, `@push`, and `@network-recovery` evidence still open |
+| `m1_jmap_fault_injection.feature` | Push/fallback composition, simulated | Fully bound and passing on every run — mitmproxy harness, no live account |
 | `m2_rules.feature` | Live deterministic rules and actions | Offline pipeline tested; live JMAP actions still open |
 | `m3_tier2.feature` | Live LLM verdicts, confidence, budget, drafts | Recorded/offline pipeline tested; live JMAP writes and live model run open |
 | `m4_alerting.feature` | Alerts, push health, desktop delivery | Logging alerts tested; desktop backend and push-health alert open |
