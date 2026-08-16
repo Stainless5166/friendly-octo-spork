@@ -59,20 +59,21 @@ def test_creates_output_dir_if_missing(tmp_path: Path) -> None:
 
 
 def test_unwritable_output_dir_raises_one_wrapped_error_type(tmp_path: Path) -> None:
-    unwritable = tmp_path / "locked"
-    unwritable.mkdir()
-    unwritable.chmod(0o500)
-    try:
-        with pytest.raises(ReceiptArchiveError):
-            save_pdf(
-                b"x",
-                output_dir=unwritable / "sub",
-                message_id="msg-1",
-                company="Acme Cloud",
-                date="2026-08-01",
-            )
-    finally:
-        unwritable.chmod(0o700)
+    """A path component that's a plain file, not a directory, blocks
+    `mkdir(parents=True)` deterministically regardless of the running
+    user's privilege level (unlike chmod-based permission denial, which
+    a root-run test suite can't exercise honestly)."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+
+    with pytest.raises(ReceiptArchiveError):
+        save_pdf(
+            b"x",
+            output_dir=blocker / "sub",
+            message_id="msg-1",
+            company="Acme Cloud",
+            date="2026-08-01",
+        )
 
 
 def test_two_saves_for_the_same_message_do_not_collide(tmp_path: Path) -> None:
