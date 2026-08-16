@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from spork.core.models import NormalizedMessage
 from spork.core.state.db import KnownSender
@@ -50,6 +50,7 @@ class _DomainRecord(Protocol):
     company: str | None
 
 
+@runtime_checkable
 class SenderDomainLookup(Protocol):
     """Structurally matches `EntityContextProvider.lookup_domain()`.
 
@@ -58,7 +59,11 @@ class SenderDomainLookup(Protocol):
     for a Tier 2 prompt, not a structured company) -- this is its own
     narrow relationship, the same "one Protocol per real relationship"
     call `ThreadHistoryReader`/`MailboxLister`/`MessageLookup` already
-    made (§9.3).
+    made (§9.3). `@runtime_checkable` (same as `CheckpointedProvider`/
+    `BackfillProvider`, §9.3) lets `spork.core.runtime` ask "does the
+    configured `ContextProvider` happen to also support this?" via a
+    plain `isinstance()` check, rather than hard-coding a dependency on
+    the concrete `EntityContextProvider` class.
     """
 
     def lookup_domain(self, domain: str) -> _DomainRecord | None: ...
