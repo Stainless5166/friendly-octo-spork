@@ -12,13 +12,25 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from spork.core.actions.executor import ActionExecutor
+from spork.core.alerts.base import AlertUrgency
 from spork.core.alerts.log import LoggingAlerter
 from spork.core.config.schema import TieringConfig
+from spork.core.context.base import ContextResult, ContextSnippet
+from spork.core.context.clients.null import NullContextProvider
+from spork.core.llm.base import LLMResult, VerdictRequest
+from spork.core.llm.clients.litellm import LiteLLMClientError
 from spork.core.llm.clients.recorded import RecordedLLMClient
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline.observer import PipelineObserver
-from spork.core.pipeline.tier2.escalate import escalate_message, parse_to_addresses
+from spork.core.pipeline.tier2.escalate import (
+    QuarantinedMessage,
+    escalate_message,
+    escalate_message_or_quarantine,
+    parse_to_addresses,
+)
 from spork.core.providers.base import ThreadContext
 from spork.core.rules.schema import Action
 from spork.core.state.db import StateDB
@@ -109,6 +121,7 @@ def test_escalate_message_wires_thread_history_and_mailbox_lister_into_tier2(
             state_db=state_db,
             ops=PipelineObserver(LoggingAlerter()),
             tiering=TieringConfig(allowed_categories=["needs_reply"]),
+            context_provider=NullContextProvider(),
         )
 
     assert verdict is not None
@@ -116,6 +129,73 @@ def test_escalate_message_wires_thread_history_and_mailbox_lister_into_tier2(
     assert thread_history_reader.calls == [message]
     assert mailbox_lister.calls == 1
     assert applier.calls == [(message, Action(type="tag", mailbox="Needs-Reply"))]
+
+
+class _StubContextProvider:
+    def __init__(self, result: ContextResult) -> None:
+        self._result = result
+
+    def get_context(self, message: NormalizedMessage) -> ContextResult:
+        return self._result
+
+
+class _RecordingLLMClient:
+    """Wraps a real client just to capture the exact VerdictRequest it
+    was called with — proves context_provider's result actually
+    reached the prompt, not just that escalate_message() accepts the
+    argument."""
+
+    def __init__(self, inner: RecordedLLMClient) -> None:
+        self._inner = inner
+        self.last_request: VerdictRequest | None = None
+
+    def get_verdict(self, request: VerdictRequest) -> LLMResult:
+        self.last_request = request
+        return self._inner.get_verdict(request)
+
+
+def test_escalate_message_wires_context_provider_into_tier2(tmp_path: Path, make_message) -> None:
+    """docs/DESIGN.md §10.8 (item 3): escalate_message() threads its
+    context_provider argument all the way to the actual prompt, same
+    depth of wiring thread_history_reader/mailbox_lister already get."""
+    message = make_message(message_id="msg-1", subject="Urgent")
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text(
+        json.dumps(
+            {
+                "Urgent": {
+                    "category": "needs_reply",
+                    "urgency": "high",
+                    "confidence": 0.95,
+                    "suggested_action": {"type": "ignore"},
+                    "summary": "s",
+                    "reasoning": "r",
+                }
+            }
+        )
+    )
+    client = _RecordingLLMClient(RecordedLLMClient(responses_path))
+
+    with StateDB(tmp_path / "state.sqlite3") as state_db:
+        escalate_message(
+            message,
+            thread_history_reader=_RecordingThreadHistoryReader(
+                ThreadContext(prior_subject=None, user_has_replied=False)
+            ),
+            mailbox_lister=_RecordingMailboxLister(["Inbox"]),
+            llm_client=client,
+            executor=ActionExecutor(_RecordingApplier()),
+            draft_creator=_RecordingDraftCreator(),
+            state_db=state_db,
+            ops=PipelineObserver(LoggingAlerter()),
+            tiering=TieringConfig(allowed_categories=["needs_reply"]),
+            context_provider=_StubContextProvider(
+                ContextResult(snippets=(ContextSnippet(source="notes/a.md", text="A note."),))
+            ),
+        )
+
+    assert client.last_request is not None
+    assert client.last_request.context_snippets == ("notes/a.md: A note.",)
 
 
 def test_escalate_message_returns_none_when_the_daily_budget_is_exhausted(
@@ -141,6 +221,248 @@ def test_escalate_message_returns_none_when_the_daily_budget_is_exhausted(
             state_db=state_db,
             ops=PipelineObserver(LoggingAlerter()),
             tiering=TieringConfig(daily_call_budget=0),
+            context_provider=NullContextProvider(),
         )
 
     assert verdict is None
+
+
+class _RaisingLLMClient:
+    """Simulates a live LLM call that fails outright (bad JSON, API
+    error) — LiteLLMClient wraps these as LiteLLMClientError."""
+
+    def get_verdict(self, request: VerdictRequest) -> LLMResult:
+        raise LiteLLMClientError("simulated live completion failure")
+
+
+class _RecordingAlerter:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, AlertUrgency]] = []
+
+    def notify(
+        self, title: str, body: str, *, url: str | None = None, urgency: AlertUrgency = "normal"
+    ) -> None:
+        self.calls.append((title, body, urgency))
+
+
+def _base_kwargs(tmp_path: Path, message: NormalizedMessage, state_db: StateDB, alerter=None):
+    return dict(
+        message=message,
+        thread_history_reader=_RecordingThreadHistoryReader(
+            ThreadContext(prior_subject=None, user_has_replied=False)
+        ),
+        mailbox_lister=_RecordingMailboxLister(["Inbox"]),
+        executor=ActionExecutor(_RecordingApplier()),
+        draft_creator=_RecordingDraftCreator(),
+        state_db=state_db,
+        ops=PipelineObserver(alerter or LoggingAlerter()),
+        context_provider=NullContextProvider(),
+    )
+
+
+def test_escalate_message_or_quarantine_passes_through_a_normal_verdict(
+    tmp_path: Path, make_message
+) -> None:
+    """The common path is unaffected: a valid, in-set verdict comes back
+    exactly as escalate_message() itself would return it."""
+    message = make_message(message_id="msg-1", subject="Urgent")
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text(
+        json.dumps(
+            {
+                "Urgent": {
+                    "category": "needs_reply",
+                    "urgency": "high",
+                    "confidence": 0.95,
+                    "suggested_action": {"type": "tag", "mailbox": "Needs-Reply"},
+                    "summary": "s",
+                    "reasoning": "r",
+                }
+            }
+        )
+    )
+    with StateDB(tmp_path / "state.sqlite3") as state_db:
+        kwargs = _base_kwargs(tmp_path, message, state_db)
+        kwargs["mailbox_lister"] = _RecordingMailboxLister(["Needs-Reply", "Inbox"])
+        result = escalate_message_or_quarantine(
+            **kwargs,
+            llm_client=RecordedLLMClient(responses_path),
+            tiering=TieringConfig(allowed_categories=["needs_reply"]),
+        )
+
+    assert result is not None and not isinstance(result, QuarantinedMessage)
+    assert result.suggested_action.mailbox == "Needs-Reply"
+
+
+def test_escalate_message_or_quarantine_still_returns_none_on_budget_exhausted(
+    tmp_path: Path, make_message
+) -> None:
+    """None (budget exhausted) and QuarantinedMessage are distinct signals —
+    a caller must be able to tell them apart."""
+    message = make_message(message_id="msg-1", subject="Urgent")
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text("{}")
+
+    with StateDB(tmp_path / "state.sqlite3") as state_db:
+        result = escalate_message_or_quarantine(
+            **_base_kwargs(tmp_path, message, state_db),
+            llm_client=RecordedLLMClient(responses_path),
+            tiering=TieringConfig(daily_call_budget=0),
+        )
+
+    assert result is None
+
+
+def test_escalate_message_or_quarantine_quarantines_an_out_of_set_category(
+    tmp_path: Path, make_message
+) -> None:
+    """VerdictValidationError (a category outside allowed_categories) is
+    quarantined, not raised: the message is marked processed (never
+    retried forever, never re-burning budget) and audited."""
+    message = make_message(message_id="msg-1", subject="Urgent")
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text(
+        json.dumps(
+            {
+                "Urgent": {
+                    "category": "not_a_configured_category",
+                    "urgency": "high",
+                    "confidence": 0.95,
+                    "suggested_action": {"type": "ignore"},
+                    "summary": "s",
+                    "reasoning": "r",
+                }
+            }
+        )
+    )
+
+    with StateDB(tmp_path / "state.sqlite3") as state_db:
+        result = escalate_message_or_quarantine(
+            **_base_kwargs(tmp_path, message, state_db),
+            llm_client=RecordedLLMClient(responses_path),
+            tiering=TieringConfig(allowed_categories=["needs_reply"]),
+        )
+
+        assert isinstance(result, QuarantinedMessage)
+        assert state_db.has_processed("msg-1")
+        entries = state_db.get_audit_entries(jmap_id="msg-1")
+        assert any(e.event == "tier2_quarantined" for e in entries)
+
+
+def test_escalate_message_or_quarantine_quarantines_a_malformed_action(
+    tmp_path: Path, make_message
+) -> None:
+    """ActionExecutionError (a move with no mailbox — a verdict pydantic's
+    own shape check doesn't catch, since Action.mailbox is optional) is
+    quarantined the same way."""
+    message = make_message(message_id="msg-1", subject="Urgent")
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text(
+        json.dumps(
+            {
+                "Urgent": {
+                    "category": "needs_reply",
+                    "urgency": "high",
+                    "confidence": 0.95,
+                    "suggested_action": {"type": "move"},
+                    "summary": "s",
+                    "reasoning": "r",
+                }
+            }
+        )
+    )
+
+    with StateDB(tmp_path / "state.sqlite3") as state_db:
+        result = escalate_message_or_quarantine(
+            **_base_kwargs(tmp_path, message, state_db),
+            llm_client=RecordedLLMClient(responses_path),
+            tiering=TieringConfig(allowed_categories=["needs_reply"]),
+        )
+
+    assert isinstance(result, QuarantinedMessage)
+
+
+def test_escalate_message_or_quarantine_quarantines_a_failed_llm_call(
+    tmp_path: Path, make_message
+) -> None:
+    """LiteLLMClientError (the live call itself failed) is quarantined
+    the same way as a malformed-but-successful response."""
+    message = make_message(message_id="msg-1", subject="Urgent")
+
+    with StateDB(tmp_path / "state.sqlite3") as state_db:
+        result = escalate_message_or_quarantine(
+            **_base_kwargs(tmp_path, message, state_db),
+            llm_client=_RaisingLLMClient(),
+            tiering=TieringConfig(allowed_categories=["needs_reply"]),
+        )
+
+    assert isinstance(result, QuarantinedMessage)
+
+
+def test_escalate_message_or_quarantine_fires_a_critical_alert(
+    tmp_path: Path, make_message
+) -> None:
+    message = make_message(message_id="msg-1", subject="Urgent")
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text(
+        json.dumps(
+            {
+                "Urgent": {
+                    "category": "not_a_configured_category",
+                    "urgency": "high",
+                    "confidence": 0.95,
+                    "suggested_action": {"type": "ignore"},
+                    "summary": "s",
+                    "reasoning": "r",
+                }
+            }
+        )
+    )
+    alerter = _RecordingAlerter()
+
+    with StateDB(tmp_path / "state.sqlite3") as state_db:
+        escalate_message_or_quarantine(
+            **_base_kwargs(tmp_path, message, state_db, alerter=alerter),
+            llm_client=RecordedLLMClient(responses_path),
+            tiering=TieringConfig(allowed_categories=["needs_reply"]),
+        )
+
+    assert len(alerter.calls) == 1
+    assert alerter.calls[0][2] == "critical"
+
+
+def test_escalate_message_or_quarantine_does_not_catch_a_real_pipeline_bug(
+    tmp_path: Path, make_message
+) -> None:
+    """A MissingMetaError (a genuine wiring bug, not a bad model
+    response) is deliberately not in QUARANTINABLE_ERRORS — it still
+    propagates rather than being silently absorbed as if it were a
+    quarantinable model-output failure."""
+    from spork.core.pipeline.meta import MissingMetaError
+
+    class _BrokenMailboxLister:
+        def list_mailboxes(self) -> list[str]:
+            raise MissingMetaError("simulated real pipeline bug")
+
+    message = make_message(message_id="msg-1", subject="Urgent")
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text("{}")
+
+    with (
+        StateDB(tmp_path / "state.sqlite3") as state_db,
+        pytest.raises(MissingMetaError),
+    ):
+        escalate_message_or_quarantine(
+            message=message,
+            thread_history_reader=_RecordingThreadHistoryReader(
+                ThreadContext(prior_subject=None, user_has_replied=False)
+            ),
+            mailbox_lister=_BrokenMailboxLister(),
+            llm_client=RecordedLLMClient(responses_path),
+            executor=ActionExecutor(_RecordingApplier()),
+            draft_creator=_RecordingDraftCreator(),
+            state_db=state_db,
+            ops=PipelineObserver(LoggingAlerter()),
+            tiering=TieringConfig(allowed_categories=["needs_reply"]),
+            context_provider=NullContextProvider(),
+        )

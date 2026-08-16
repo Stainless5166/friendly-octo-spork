@@ -28,13 +28,14 @@ from spork.core.config.schema import SporkConfig
 from spork.core.llm.loader import LLMClientLoadError
 from spork.core.pipeline import process_message
 from spork.core.pipeline.observer import PipelineObserver
-from spork.core.pipeline.tier2.escalate import escalate_message
+from spork.core.pipeline.tier2.escalate import QuarantinedMessage, escalate_message_or_quarantine
 from spork.core.providers.base import BackfillProvider
 from spork.core.providers.loader import ProviderLoadError
 from spork.core.rules.loader import RulesLoadError, load_rules
 from spork.core.rules.schema import Action
 from spork.core.runtime import (
     build_alerter,
+    build_context_provider,
     build_llm_client,
     build_provider,
     resolve_runtime_secrets,
@@ -113,6 +114,7 @@ def _backfill(config: SporkConfig, *, unread_only: bool, limit: int, page_size: 
     )
     default_unmatched_action = Action(type=config.tiering.default_unmatched_action)
     llm_client = build_llm_client(config, secrets)
+    context_provider = build_context_provider(config, secrets)
     # Built once for the whole run, not once per escalated message
     # (PR #20 review finding #2) — FileProvider's versions re-read the
     # whole messages file from disk on every call, so building these
@@ -124,6 +126,7 @@ def _backfill(config: SporkConfig, *, unread_only: bool, limit: int, page_size: 
     processed = 0
     tier1_actions = 0
     tier2_verdicts = 0
+    tier2_quarantined = 0
     budget_exhausted = False
     position = 0
 
@@ -171,7 +174,7 @@ def _backfill(config: SporkConfig, *, unread_only: bool, limit: int, page_size: 
                     continue
                 tier1_actions += 1
                 if verdict.action.type == "escalate":
-                    tier2_verdict = escalate_message(
+                    tier2_verdict = escalate_message_or_quarantine(
                         message,
                         thread_history_reader=thread_history_reader,
                         mailbox_lister=mailbox_lister,
@@ -181,11 +184,15 @@ def _backfill(config: SporkConfig, *, unread_only: bool, limit: int, page_size: 
                         state_db=state_db,
                         ops=ops,
                         tiering=config.tiering,
+                        context_provider=context_provider,
                     )
                     if tier2_verdict is None:
                         budget_exhausted = True
                         break
-                    tier2_verdicts += 1
+                    if isinstance(tier2_verdict, QuarantinedMessage):
+                        tier2_quarantined += 1
+                    else:
+                        tier2_verdicts += 1
 
             # page.next_position, not position + len(page.messages): those
             # diverge whenever the backend's query matches more items than
@@ -198,7 +205,8 @@ def _backfill(config: SporkConfig, *, unread_only: bool, limit: int, page_size: 
 
     typer.echo(
         f"backfill: processed {processed} messages "
-        f"({tier1_actions} Tier 1 actions, {tier2_verdicts} Tier 2 verdicts)"
+        f"({tier1_actions} Tier 1 actions, {tier2_verdicts} Tier 2 verdicts, "
+        f"{tier2_quarantined} quarantined)"
     )
     if budget_exhausted:
         typer.echo("backfill: stopped early - Tier 2's daily call budget is exhausted", err=True)

@@ -141,3 +141,21 @@ def test_sporkconfig_accepts_optional_llm_recording_configuration(tmp_path: Path
 
     assert config.llm_recording is not None
     assert config.llm_recording.corpus_path == tmp_path / "corpus" / "live.jsonl"
+
+
+def test_sporkconfig_context_defaults_to_none() -> None:
+    """Unset means "no knowledgebase configured" — a real, valid state
+    (spork.core.context.clients.null.NullContextProvider), not a
+    missing-field error; same convention as tiering.local_classifier."""
+    config = _minimal_sporkconfig()
+
+    assert config.context is None
+
+
+def test_sporkconfig_accepts_optional_context_provider_configuration() -> None:
+    config = _minimal_sporkconfig(
+        context=BackendSpec(spec="spork.core.context.clients.null:NullContextProvider")
+    )
+
+    assert config.context is not None
+    assert config.context.spec == "spork.core.context.clients.null:NullContextProvider"

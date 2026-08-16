@@ -116,6 +116,20 @@ be developed or tested.
 - [x] `spork.core.dispatch.combine.DispatchingClassifier`: Dispatcher +
       Combiner wrapped as a `TextClassifier`, so `rules.engine.evaluate`
       needs no changes to consume an ensemble (S)
+- [x] `spork.core.classify.keyword.KeywordClassifier`: the
+      dependency-free default backend §9.1 always documented but never
+      shipped (S) — confirmed via `grep -rn "register(" src/spork`
+      returning nothing outside `registry.py` itself: `tiering.local_classifier`
+      was completely non-functional in every real deployment, since
+      nothing anywhere ever called `registry.register()`. Scores each
+      configured category by the fraction of its own keyword list
+      matched (case-insensitive substring), not a raw count; falls
+      back to a named `"uncategorized"` default when nothing matches.
+      Self-registers as `"keyword_heuristic"` (matching §7.2's example
+      config.toml, which has named it that since before this existed)
+      as an import-time side effect of `spork.core.classify.__init__`
+      — every real caller already imports that package, so this needed
+      zero changes to `daemon/loop.py`/any CLI command.
 
 **Exit criteria:** a `TriggeredSource` built from `ImmediateTrigger` +
 `SequenceContentFetcher` replays a fixture list of messages through the
@@ -387,6 +401,27 @@ drives an action.
       adapter with no `NotImplementedError` anywhere, replaying
       pre-recorded `Verdict`s from a JSON fixture keyed by subject.
 
+- [x] Category taxonomy actually sent to the model, plus a freeform
+      metadata field on `Verdict` (S) — a real gap, not a hypothetical
+      one: `TieringConfig.allowed_categories` only ever reached
+      `ValidateVerdictFilter`'s post-hoc check
+      (`spork.core.llm.validate.validate_verdict()`); the model itself
+      was never told the configured category set, despite the system
+      prompt already claiming "Choose category and mailbox only from
+      the values supplied in the user message" for mailboxes. Fixed:
+      `VerdictRequest` gains `available_categories: tuple[str, ...]`,
+      `build_prompt()` includes it in the exact user-message JSON
+      alongside `available_mailboxes`, and `BuildVerdictRequestFilter`
+      takes `available_categories` as a constructor argument (the same
+      relationship `max_body_chars` already has to it — a
+      deployment-config value, not a per-message `Provider` read).
+      Also added `Verdict.metadata: dict[str, str] = {}` — freeform
+      extracted data (dates, order numbers, reference ids) the model
+      judges worth surfacing from one specific email, deliberately
+      open-ended and never validated against any configured set,
+      unlike `category`/`suggested_action.mailbox`. String-valued
+      only (not `dict[str, Any]`) so the forced tool schema stays a
+      flat, deterministic object.
 - [x] Tier 2 pipeline wired end to end (§10.7) —
       `spork.core.pipeline.tier2` (`Tier2Meta` + 13 modules +
       `build_tier2_pipeline()`/`process_tier2_message()`) composes the
@@ -423,10 +458,12 @@ polling the CLI. **v1 scope: Linux desktop notifications only** — a
 webhook/ntfy/Pushover backend is real and useful but explicitly deferred
 (see Stretch / post-v1 below), not because it's hard, just because
 desktop-only covers the daily-driver use case this project targets.
-**v1 backend is a logging `Alerter`, not a real desktop popup** — a
-genuine, working delivery channel (structured, greppable log output),
-not a stub; a `notify-send`/D-Bus backend is a deliberate near-term
-follow-up behind the same `Alerter` protocol, not built this round.
+**`LoggingAlerter` shipped first as a genuine, working delivery
+channel** (structured, greppable log output, not a stub), with a real
+`notify-send`/D-Bus backend, `DesktopAlerter`, following behind the
+same `Alerter` protocol once this round's other work was done — now
+built, and `LoggingAlerter` stays on as its fallback destination
+rather than being retired.
 
 - [x] `Alerter` protocol (mirrors the `Provider`/`LLMClient` adapter
       pattern, §9.3/§10.1/§12.1 — one Protocol, backends loaded the
@@ -441,6 +478,16 @@ follow-up behind the same `Alerter` protocol, not built this round.
       `spork.core.alerts.smtp.SmtpAlerter` supports authenticated STARTTLS
       delivery and an explicit plaintext mode for the local acceptance sink;
       credentials remain constructor inputs mapped through SecretSpec.
+- [x] Real desktop-notification backend (M) —
+      `spork.core.alerts.desktop.DesktopAlerter` wraps `notify-send(1)`
+      (→ `org.freedesktop.Notifications` over the session D-Bus, no new
+      DBus library dependency, per the design settled in §12.1).
+      `runner` injected the same DI-for-subprocess pattern
+      `install_service()` uses, so no test invokes a real
+      `notify-send`. 5 acceptance tests
+      (`tests/core/alerts/test_desktop.py`), 100% coverage on the new
+      module. This item also closes the graceful-degrade item below —
+      see there rather than duplicating.
 - [ ] Alert triggers wired to confidence bands + VIP rules + daemon health (M)
       — the pipeline-visible half is done: `spork.core.pipeline.observer.PipelineObserver`
       (§12.2, bundles correlation-ID tracing with `Alerter` delegation —
@@ -474,22 +521,37 @@ follow-up behind the same `Alerter` protocol, not built this round.
         the first place (docs/ROADMAP.md M1). The design-gap comment
         lives directly on the stub it blocks:
         `spork.core.providers.jmap.push.JmapPushTrigger`.
-- [ ] Graceful degrade when no DBus session bus is available (e.g. no
+- [x] Graceful degrade when no DBus session bus is available (e.g. no
       active desktop session — sporkd keeps running, alerts just don't
-      display, logged instead) (S) — moot for now: `LoggingAlerter`
-      has no DBus dependency to degrade from; this item is really
-      "graceful degrade for the future desktop backend," revisit when
-      that backend actually exists.
+      display, logged instead) (S) — `DesktopAlerter`'s own job, not a
+      separate mechanism: `notify-send` missing (not installed) or
+      failing (no session D-Bus bus, a headless/SSH-only login) both
+      fall back to a `LoggingAlerter` instead of raising. Two of the
+      five acceptance tests above cover this directly (`FileNotFoundError`,
+      `CalledProcessError`); a third confirms the default fallback
+      (no explicit `fallback=` given) still works without losing the
+      alert.
 
 **Exit criteria:** a VIP-sender test email and a low-confidence test
 email both produce a visible desktop notification; killing network
 connectivity for 10+ minutes produces a "push disconnected" alert.
-The first half is proven at the pipeline level today (`process_message()`/
-`process_tier2_message()` called directly, `LoggingAlerter` standing in
-for the still-future desktop popup); nothing produces a *visible
-desktop* notification yet (that's the deferred `notify-send` backend),
-and neither half runs against a live, running `sporkd` yet — that
-needs M5's daemon loop.
+**Not yet met, but for a narrower reason than before:** the pipeline
+wiring, `DesktopAlerter` itself, and `sporkd`'s daemon loop (M5) are
+all real and tested now — nothing left to build offline.
+`DesktopAlerter().notify(...)` was run live against this environment's
+actual session D-Bus bus (`DISPLAY`/`DBUS_SESSION_BUS_ADDRESS` both
+present) and completed with no exception — real evidence the
+mechanism works end to end, not just against the injected-runner
+tests — but that only confirms `notify-send` accepted and delivered
+the call, not that a human actually saw the popup; visual confirmation
+is the maintainer's to give. The "killing network connectivity for
+10+ minutes" half is the same forced-outage control M1's
+`@network-recovery` scenario is already blocked on, plus the still-open
+"JMAP push disconnected > N minutes" daemon-health signal above.
+Configuring `[alerts] spec =
+"spork.core.alerts.desktop:DesktopAlerter"` on the maintainer's own
+machine and confirming a real popup appears is the actual remaining
+step, not further code.
 
 ## M5 — CLI + daemon control surface
 
@@ -823,6 +885,24 @@ audit correctness once it's running unattended.
       coverage: `spork pause`/`resume` had no test for a missing
       `config.toml` (`spork status` already did). 653 tests, ruff+mypy
       clean.
+- [x] Poison-message resiliency: a single malformed Tier 2 verdict
+      (out-of-set category/mailbox, a malformed suggested action, a
+      failed LLM call) must never crash `_run_message_loop()`/`spork
+      reclassify`/`spork backfill` outright and leave the offending
+      message stuck retrying forever on every subsequent run — it
+      needs to be quarantined once, loudly, and left alone (M) —
+      `spork.core.pipeline.tier2.escalate.escalate_message_or_quarantine()`
+      wraps `escalate_message()`, catching a narrow, explicit tuple
+      (`QUARANTINABLE_ERRORS`: `LiteLLMClientError`,
+      `VerdictValidationError`, `ActionExecutionError` — deliberately
+      not a bare `except Exception`, so a genuine pipeline bug still
+      surfaces instead of being silently swallowed), writing a
+      `tier2_quarantined` audit entry, marking the message processed
+      (`action_taken="quarantined"`) so it isn't retried forever, and
+      firing a `critical`-urgency alert. Returns a new `QuarantinedMessage`
+      dataclass (distinct from `Verdict`/`None`) that all three callers
+      now branch on and report explicitly rather than letting the
+      original `escalate_message()` exception propagate uncaught.
 - [ ] Tag v1.0.0 — not done here: gated on this milestone's own exit
       criteria (below), which are gated on a live account this
       environment doesn't have. A real-world-readiness call for the
@@ -834,9 +914,9 @@ a full week with no manual intervention beyond normal `spork` CLI use, and
 no verdict-schema or action-executor bug reaches an unattended irreversible
 action. A week's worth of triage decisions and every control-plane change
 can be fully reconstructed from logs + the audit trail alone, without
-needing to re-derive anything from memory. **5 of 9 checklist items above
+needing to re-derive anything from memory. **6 of 10 checklist items above
 are done in the same sense every prior milestone's buildable-without-a-
-live-account items are** — real and tested, 653 tests all green. **The
+live-account items are** — real and tested. **The
 exit criterion itself is not met, and can't be from this sandbox**: it
 needs a live JMAP account (still M1's blocker) and a live Anthropic
 account running unattended for a full week, neither available here. The
@@ -1004,6 +1084,56 @@ Applying the resulting categorization as real mailbox actions (labels,
 moves) is gated on write-scoped JMAP credentials, same limitation as
 M2/M3/M5's own live-action items — this milestone's exit criterion is
 about correct read-side categorization, not the write.
+
+## M9 — Read-only knowledgebase context retrieval
+
+**Goal:** a Tier 2 verdict can draw on relevant background beyond the
+email itself — a generic, read-only "context/knowledgebase" seam, not
+a bespoke integration with any one note-taking tool. (Explicit
+correction from an earlier 4-item proposal that pasted Obsidian-
+specific pseudocode: "I do not exactly want a bespoke obsidian config,
+but a read right context/knowledgebase interface.")
+
+- [x] `ContextProvider` Protocol + dynamic loader + pipeline wiring (M) —
+      `spork.core.context.base.ContextProvider` (`get_context(message)
+      -> ContextResult`), `spork.core.context.loader.load_context_provider()`
+      (identical "module:ClassName" mechanics to every other backend
+      loader in this codebase). `FetchContextAugment` (a new Tier 2
+      pipeline Augment) runs before `BuildVerdictRequestFilter`, which
+      flattens the result into `VerdictRequest.context_snippets` —
+      sent in the actual prompt (`build_prompt()`), framed explicitly
+      as reference material, never instructions, and never a
+      substitute for `available_categories`/`available_mailboxes` as
+      the source of truth for what the model may choose.
+      `SporkConfig.context: BackendSpec | None = None` — omitting
+      `[context]` is a fully valid config, same convention
+      `tiering.local_classifier: None` already has.
+- [x] `NullContextProvider` — the real default when `[context]` is
+      unconfigured (S) — always answers "no relevant context," zero
+      configuration, zero I/O. Not a stand-in for a missing backend;
+      "no knowledgebase configured" is a legitimate deployment state
+      in its own right.
+- [ ] A real backend that actually reads content (S/M, genuinely
+      undecided) — `spork.core.context.clients.vault.MarkdownVaultContextProvider`
+      settles the likely real shape (`vault_path` constructor arg) as
+      a stub, `get_context()` raising `NotImplementedError` — but
+      *not* for the usual "blocked on a live network call" reason
+      every other settled-shape stub in this codebase has. The actual
+      blocker is a real design choice: plain substring/keyword match
+      vs. something ranked (embeddings, an LLM re-rank pass) against
+      real note content, and this environment has no real vault to
+      validate either choice against honestly — unlike `FileProvider`,
+      which could be built and tested fully offline from fixtures
+      alone. Needs a decision once real vault content is available to
+      test against, not more design-from-nothing.
+
+**Exit criteria:** a Tier 2 verdict on a test message demonstrably
+changes (a different `suggested_action`, a materially different
+`reasoning`) when relevant context is present in `context_snippets`
+versus absent — proving the seam actually influences the model's
+answer, not just that it's wired through unused. Blocked on the same
+real backend as the second checklist item above; `NullContextProvider`
+alone can't demonstrate this since it never supplies any snippets.
 
 ## Stretch / post-v1 (not scoped, not blocking)
 

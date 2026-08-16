@@ -187,7 +187,7 @@ flowchart TD
         subgraph classify["classify/"]
             classify_base["base.py<br/>TextClassifier +<br/>ClassificationResult"]
             classify_registry["registry.py<br/>name -> factory lookup"]
-            classify_keyword["keyword.py<br/>default heuristic backend"]:::planned
+            classify_keyword["keyword.py<br/>KeywordClassifier, self-registers<br/>as 'keyword_heuristic'"]
         end
 
         subgraph dispatch["dispatch/"]
@@ -207,6 +207,15 @@ flowchart TD
             subgraph llm_clients["clients/"]
                 llm_litellm["litellm.py<br/>LiteLLMClient"]
                 llm_recorded["recorded.py<br/>RecordedLLMClient"]
+            end
+        end
+
+        subgraph context["context/ (§10.8)"]
+            context_base["base.py<br/>ContextProvider +<br/>ContextResult/ContextSnippet"]
+            context_loader["loader.py<br/>load_context_provider()"]
+            subgraph context_clients["clients/"]
+                context_null["null.py<br/>NullContextProvider"]
+                context_vault["vault.py<br/>MarkdownVaultContextProvider"]:::planned
             end
         end
 
@@ -629,6 +638,7 @@ classDiagram
         +provider: BackendSpec
         +llm: BackendSpec
         +alerts: BackendSpec
+        +context: Optional~BackendSpec~
         +llm_recording: Optional~LLMRecordingConfig~
         +rules_path: Path
         +db_path: Path
@@ -702,6 +712,8 @@ classDiagram
     class CheckpointedSource { <<Protocol>> }
     class LLMClient { <<Protocol>> }
     class Alerter { <<Protocol>> }
+    class ContextProvider { <<Protocol>> }
+    class NullContextProvider
     class RecordingLLMClient
     class resolve_runtime_secrets {
         <<function>>
@@ -714,8 +726,9 @@ classDiagram
     class build_provider { <<function>> }
     class build_llm_client { <<function>> }
     class build_alerter { <<function>> }
+    class build_context_provider { <<function>> }
 
-    resolve_runtime_secrets ..> SporkConfig : checks configured secret mappings
+    resolve_runtime_secrets ..> SporkConfig : checks configured secret mappings, including context when set
     resolve_runtime_secrets ..> Secrets : resolves once when needed
     materialize_backend_kwargs ..> BackendSpec : reads kwargs + secret_kwargs
     materialize_backend_kwargs ..> Secrets : reads mapped values
@@ -723,6 +736,8 @@ classDiagram
     build_llm_client ..> LLMClient : loads with materialized kwargs
     build_llm_client ..> RecordingLLMClient : wraps when configured
     build_alerter ..> Alerter : loads with materialized kwargs
+    build_context_provider ..> ContextProvider : loads with materialized kwargs when configured
+    build_context_provider ..> NullContextProvider : returns when config.context is None
 ```
 
 `BackendSpec.secret_kwargs` maps a constructor argument to a SecretSpec
@@ -1161,11 +1176,25 @@ classDiagram
         <<function>>
         +get(name: str) TextClassifier
     }
+    class KeywordClassifier {
+        -category_keywords: Mapping
+        -default_category: str
+        +classify(message: NormalizedMessage) ClassificationResult
+    }
 
     TextClassifier ..> ClassificationResult : returns
     get ..> TextClassifier : constructs from registered factory
     get ..> UnknownClassifierError : raises
+    TextClassifier <|.. KeywordClassifier : structurally satisfies
+    KeywordClassifier ..> register : self-registers as "keyword_heuristic" at import time
 ```
+
+`KeywordClassifier` (`classify/keyword.py`) is the shipped,
+dependency-free default backend §9.1 always documented — self-
+registers under `"keyword_heuristic"` as an import-time side effect of
+`spork.core.classify.__init__`, which every real caller already
+imports, so `tiering.local_classifier = "keyword_heuristic"` works
+with zero extra per-call-site wiring.
 
 #### `spork.core.dispatch`
 
@@ -1218,6 +1247,8 @@ classDiagram
         +thread_prior_subject: Optional~str~
         +thread_user_has_replied: bool
         +available_mailboxes: tuple
+        +available_categories: tuple
+        +context_snippets: tuple
     }
     class Verdict {
         <<pydantic BaseModel>>
@@ -1228,6 +1259,7 @@ classDiagram
         +summary: str
         +draft_reply: Optional~str~
         +reasoning: str
+        +metadata: dict~str, str~
     }
     class LLMCallUsage {
         <<dataclass, frozen>>
@@ -1426,6 +1458,52 @@ The `LLMClient` equivalent of `FileProvider` (§9.3) — a second, fully
 real adapter with no `NotImplementedError` anywhere, for CI/offline use
 (§10.5), never a stand-in for a live verdict in production.
 
+#### `spork.core.context`
+
+```mermaid
+classDiagram
+    class NormalizedMessage
+    class ContextSnippet {
+        <<dataclass, frozen>>
+        +source: str
+        +text: str
+    }
+    class ContextResult {
+        <<dataclass, frozen>>
+        +snippets: tuple
+    }
+    class ContextProvider {
+        <<Protocol>>
+        +get_context(message: NormalizedMessage) ContextResult
+    }
+    class ContextProviderLoadError { <<Exception>> }
+    class load_context_provider {
+        <<function>>
+        +load_context_provider(spec: str, **kwargs) ContextProvider
+    }
+    class NullContextProvider {
+        +get_context(message: NormalizedMessage) ContextResult
+    }
+    class MarkdownVaultContextProvider {
+        -vault_path: Path
+        +get_context(message: NormalizedMessage) ContextResult
+    }
+
+    ContextProvider ..> NormalizedMessage : reads
+    ContextProvider ..> ContextResult : returns
+    ContextResult *-- ContextSnippet
+    ContextProvider <|.. NullContextProvider : structurally satisfies
+    ContextProvider <|.. MarkdownVaultContextProvider : structurally satisfies
+    load_context_provider ..> ContextProviderLoadError : raises
+```
+
+A generic, read-only "give me relevant background for this message"
+seam (§10.8) — deliberately not a bespoke integration with any one
+note-taking tool. `NullContextProvider` is the real default when
+`[context]` is unconfigured; `MarkdownVaultContextProvider` is a
+settled-shape stub, blocked on an undecided retrieval-algorithm design
+question rather than a live network call (docs/ROADMAP.md M9).
+
 #### `spork.core.actions`
 
 ```mermaid
@@ -1470,6 +1548,29 @@ The v1 backend: logs each alert via `logging.getLogger(__name__)`
 rather than showing a GUI popup — a real, inspectable delivery
 channel, not a stub. Never configures handlers itself (Python logging
 best practice — that's the application's job, `docs/ROADMAP.md` M7).
+
+#### `spork.core.alerts.desktop`
+
+```mermaid
+classDiagram
+    class Alerter { <<Protocol>> }
+    class LoggingAlerter { <<structurally satisfies Alerter>> }
+    class DesktopAlerter {
+        +notify(title: str, body: str, url: Optional~str~, urgency: AlertUrgency) None
+    }
+
+    Alerter <|.. DesktopAlerter : structurally satisfies
+    DesktopAlerter --> LoggingAlerter : falls back to, on delivery failure
+```
+
+The real desktop-notification backend: wraps `notify-send(1)` (→
+`org.freedesktop.Notifications` over the session D-Bus, no new DBus
+library dependency). `runner` is injected the same DI-for-subprocess
+pattern `spork.core.systemd.install.install_service()` uses. Graceful
+degrade (`docs/ROADMAP.md` M4): `notify-send` missing or failing (no
+session D-Bus bus — a headless/SSH-only login) falls back to a
+`LoggingAlerter` instead of raising, so `sporkd` keeps running and the
+alert is logged rather than silently lost.
 
 #### `spork.core.alerts.loader`
 
@@ -1826,6 +1927,7 @@ classDiagram
     class MissingMetaError { <<Exception>> }
     class LLMClient { <<Protocol>> }
     class DraftCreator { <<Protocol>> }
+    class ContextProvider { <<Protocol>> }
     class ActionExecutor
     class StateDB
     class PipelineObserver
@@ -1843,6 +1945,7 @@ classDiagram
         +available_mailboxes: Sequence~str~
         +ts: Optional~str~
         +correlation_id: Optional~str~
+        +context: Optional~ContextResult~
         +request: Optional~VerdictRequest~
         +verdict: Optional~Verdict~
         +llm_usage: Optional~LLMCallUsage~
@@ -1864,7 +1967,12 @@ classDiagram
         -daily_call_budget: int
         +select(payload) tuple
     }
+    class FetchContextAugment {
+        -context_provider: ContextProvider
+        +augment(payload) Payload
+    }
     class BuildVerdictRequestFilter {
+        -available_categories: Sequence~str~
         -max_body_chars: int
         +apply(payload) Payload
     }
@@ -1914,6 +2022,7 @@ classDiagram
     Filter <|.. TimestampFilter : structurally satisfies
     Filter <|.. CorrelationIdFilter : structurally satisfies
     Selector <|.. BudgetGateSelector : structurally satisfies
+    Augment <|.. FetchContextAugment : structurally satisfies
     Filter <|.. BuildVerdictRequestFilter : structurally satisfies
     Augment <|.. CallLLMAugment : structurally satisfies
     Filter <|.. RecordLLMUsageFilter : structurally satisfies
@@ -1937,6 +2046,7 @@ classDiagram
     MarkProcessedFilter ..> MissingMetaError : raises
 
     BuildVerdictRequestFilter ..> clean_body : cleans body via
+    FetchContextAugment --> ContextProvider : the other I/O stage — knowledgebase seam
     CallLLMAugment --> LLMClient : the one I/O stage — external API seam
     ValidateVerdictFilter ..> validate_verdict : Tier 2 verdict validation
     ConfidenceBandSelector ..> confidence_band : Tier 2 confidence gating
@@ -1953,15 +2063,16 @@ classDiagram
 
     class build_tier2_pipeline {
         <<function>>
-        +build_tier2_pipeline(llm_client, executor, draft_creator, state_db, ops, allowed_categories, daily_call_budget, alert_threshold, autoact_threshold, max_body_chars, now, new_correlation_id) Pipeline
+        +build_tier2_pipeline(llm_client, executor, draft_creator, state_db, ops, allowed_categories, daily_call_budget, alert_threshold, autoact_threshold, context_provider, max_body_chars, now, new_correlation_id) Pipeline
     }
     class process_tier2_message {
         <<function>>
-        +process_tier2_message(message, to_addresses, ..., ops, ..., now, new_correlation_id) Optional~Verdict~
+        +process_tier2_message(message, to_addresses, ..., ops, ..., context_provider, now, new_correlation_id) Optional~Verdict~
     }
     build_tier2_pipeline ..> TimestampFilter : composes
     build_tier2_pipeline ..> CorrelationIdFilter : composes
     build_tier2_pipeline ..> BudgetGateSelector : composes
+    build_tier2_pipeline ..> FetchContextAugment : composes
     build_tier2_pipeline ..> BuildVerdictRequestFilter : composes
     build_tier2_pipeline ..> CallLLMAugment : composes
     build_tier2_pipeline ..> RecordLLMUsageFilter : composes
@@ -1987,12 +2098,19 @@ classDiagram
         <<function>>
         +escalate_message(message, thread_history_reader, mailbox_lister, llm_client, executor, draft_creator, state_db, ops, tiering) Optional~Verdict~
     }
+    class QuarantinedMessage { <<dataclass, frozen>> }
+    class escalate_message_or_quarantine {
+        <<function>>
+        +escalate_message_or_quarantine(message, ..., now) Verdict|QuarantinedMessage|None
+    }
     escalate_message ..> parse_to_addresses : to_addresses
     escalate_message ..> ThreadHistoryReader : get_thread_context()
     escalate_message ..> MailboxLister : list_mailboxes()
     escalate_message ..> TieringConfig : unpacks into process_tier2_message()'s kwargs
     escalate_message ..> process_tier2_message : assembles the call, returns its result
     parse_to_addresses ..> NormalizedMessage : reads .headers["To"]
+    escalate_message_or_quarantine ..> escalate_message : wraps, catching QUARANTINABLE_ERRORS
+    escalate_message_or_quarantine ..> QuarantinedMessage : returns, instead of raising
 ```
 
 `"autoact"`/`"autoact_alert"` route to the same `act` `Pipeline`
@@ -2010,6 +2128,26 @@ step outside the daemon loop entirely. `daemon/loop.py`'s
 `_run_message_loop()` now calls these instead of defining its own
 copies — one real implementation, two callers, not a daemon-only
 helper duplicated for the CLI.
+
+`escalate_message_or_quarantine()` wraps `escalate_message()`, catching
+`QUARANTINABLE_ERRORS` — `LiteLLMClientError` (the live call itself
+failed), `VerdictValidationError` (a syntactically valid `Verdict`
+whose `category`/`mailbox` falls outside this deployment's configured
+set), `ActionExecutionError` (a `suggested_action` that passed
+`Verdict`'s own shape check but can't actually be executed, e.g.
+`move`/`tag` with no `mailbox` — `Action.mailbox` is `Optional` at the
+pydantic level) — and quarantining the message (`StateDB.mark_processed()`
+with `action_taken="quarantined"`, a `tier2_quarantined` audit entry,
+a critical alert via the existing `PipelineObserver`) instead of
+letting the exception propagate. All three callers
+(`daemon/loop.py`'s `_run_message_loop()`, `spork reclassify`, `spork
+backfill`) use this wrapper, not `escalate_message()` directly — a bad
+live verdict crashing `_run_message_loop()` before the message was
+ever marked processed meant the exact same message would be retried,
+identically, on every restart, re-burning budget each time. Not a bare
+`except Exception`: a `StateDB`/provider I/O failure or a
+`MissingMetaError` (a real pipeline-wiring bug) still propagates,
+matching spork's fail-loud convention everywhere else.
 
 #### `spork.core.secrets`
 
@@ -2218,7 +2356,7 @@ classDiagram
     class build_llm_client { <<function>> }
     class build_alerter { <<function>> }
     class process_message { <<function>> }
-    class escalate_message { <<function>> }
+    class escalate_message_or_quarantine { <<function>> }
     class MessageNotFoundError { <<Exception>> }
     class resolve_secrets { <<function>> }
     class SecretsError { <<Exception>> }
@@ -2289,7 +2427,7 @@ classDiagram
     reclassify ..> build_alerter : builds Alerter
     reclassify ..> MessageNotFoundError : catches, clean CLI error
     reclassify ..> process_message : force=True, bypasses the idempotency gate
-    reclassify ..> escalate_message : when Tier 1 escalates
+    reclassify ..> escalate_message_or_quarantine : when Tier 1 escalates
     reclassify --> StateDB : writes "reclassify_triggered" control-plane audit entry (M7, §7.4), distinct from process_message's own per-message row
     install_service_command ..> install_service : writes unit file, daemon-reload, enable --now
     install_service_command ..> InstallServiceError : catches, clean CLI error
@@ -2333,7 +2471,7 @@ classDiagram
     class StateDB
     class PipelineObserver
     class process_message { <<function>> }
-    class escalate_message { <<function>> }
+    class escalate_message_or_quarantine { <<function>> }
     class IpcServer
 
     class PendingAuditEvent {
@@ -2390,10 +2528,10 @@ classDiagram
     _run_message_loop --> DaemonState : skips poll()+processing while paused; drains pending_control_plane_events each iteration (M7, §6.2.2)
     _run_message_loop --> RulesState : reads .rules fresh every poll iteration (§6.2.2)
     _run_message_loop ..> process_message : Tier 1, via asyncio.to_thread
-    _run_message_loop ..> escalate_message : Tier 2, when Tier 1 escalates, a second sequential asyncio.to_thread (§6.2.1) — spork.core.pipeline.tier2.escalate (M5), also used by spork reclassify
-    escalate_message ..> ThreadHistoryReader : get_thread_context()
-    escalate_message ..> MailboxLister : list_mailboxes()
-    escalate_message --> DraftCreator : passed through to process_tier2_message
+    _run_message_loop ..> escalate_message_or_quarantine : Tier 2, when Tier 1 escalates, a second sequential asyncio.to_thread (§6.2.1) — spork.core.pipeline.tier2.escalate (M5), also used by spork reclassify/spork backfill; result not branched on here, a quarantine already marks processed/audits/alerts internally
+    escalate_message_or_quarantine ..> ThreadHistoryReader : get_thread_context()
+    escalate_message_or_quarantine ..> MailboxLister : list_mailboxes()
+    escalate_message_or_quarantine --> DraftCreator : passed through to process_tier2_message
     IpcServer ..> load_rules : reload handler re-reads rules_path
     load_rules ..> RulesLoadError : reload handler catches, returns ok=False, RulesState untouched
 ```
@@ -2959,11 +3097,17 @@ class TextClassifier(Protocol):
   `tiering.local_classifier` picks one by name. Swapping techniques is a
   one-line config change, never a code change to the rule engine or the
   daemon pipeline.
-- **Default backend ships dependency-free**: a keyword/regex heuristic
-  (`classify/keyword.py`) so the tool works out of the box with zero
-  extra installs. Anything heavier (spaCy, a local embedding model, a
-  small fine-tuned classifier) is an additional backend module behind
-  the same `Protocol` — added, not swapped in by editing existing code.
+- **Default backend ships dependency-free**: `KeywordClassifier`
+  (`classify/keyword.py`) — case-insensitive substring matching
+  against a configurable `category -> keywords` mapping, scored by
+  the fraction of each category's own keyword list matched (not a raw
+  count, so a category with many keywords isn't unfairly favored over
+  one with few), self-registered as `"keyword_heuristic"` at import
+  time so `tiering.local_classifier = "keyword_heuristic"` works out
+  of the box with zero extra installs and zero per-call-site wiring.
+  Anything heavier (spaCy, a local embedding model, a small fine-tuned
+  classifier) is an additional backend module behind the same
+  `Protocol` — added, not swapped in by editing existing code.
 - **No implicit fallback.** An unresolvable/misconfigured classifier name
   is a startup-time config error (`UnknownClassifierError`, caught and
   reported cleanly by `sporkd`/`spork reclassify`) — a rule that
@@ -3492,6 +3636,7 @@ class VerdictRequest:
     thread_prior_subject: str | None
     thread_user_has_replied: bool
     available_mailboxes: tuple[str, ...]
+    available_categories: tuple[str, ...]
 
 
 class Verdict(BaseModel):
@@ -3510,6 +3655,7 @@ class Verdict(BaseModel):
     summary: str
     draft_reply: str | None = None
     reasoning: str
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3549,6 +3695,18 @@ without exposing a LiteLLM response object outside the adapter.
   step (`docs/ROADMAP.md`'s "Verdict validation against configured
   mailbox/category set") — `Verdict` only enforces shape, not
   deployment-specific vocabulary.
+- **`VerdictRequest.available_categories`** carries this deployment's
+  configured `TieringConfig.allowed_categories` into the actual prompt
+  (`build_prompt()`, §10.1 below), the same way `available_mailboxes`
+  does — previously the model was only ever validated against that set
+  post-hoc (§10.2), never told what it was.
+- **`Verdict.metadata: dict[str, str]`** is freeform extracted data
+  (dates, order numbers, reference ids) the model judges worth
+  surfacing from one specific email — deliberately open-ended and
+  never validated against any configured set, unlike
+  `category`/`suggested_action.mailbox`. String-valued only, not
+  `dict[str, Any]`, so the forced tool schema stays a flat,
+  deterministic object.
 - **Package layout: `spork.core.llm.clients.<name>`** — mirrors
   `spork.core.providers.<name>`. `LiteLLMClient` is the sole live v1
   implementation; LiteLLM handles provider-specific SDK translation
@@ -3821,9 +3979,13 @@ run:
    `meta.ts`'s date, calls `StateDB.get_llm_usage()` then
    `has_budget_remaining()` (§10.4); routes `"budget_ok"` or
    `"budget_exhausted"`.
-3. **`BuildVerdictRequestFilter(max_body_chars)`** — cleans
+3. **`BuildVerdictRequestFilter(available_categories, max_body_chars)`** — cleans
    `payload.text` via `clean_body()` (§10, body cleaning), assembles a
    `VerdictRequest` from it plus `meta`'s caller-supplied fields.
+   `available_categories` is a constructor argument, not a `meta`
+   field, like `max_body_chars` — a deployment-config value
+   (`TieringConfig.allowed_categories`), not a per-message Provider
+   read the way `available_mailboxes` is.
 4. **`CallLLMAugment(llm_client)`** — the one `Augment` in this
    pipeline, and the only stage that reaches outside the payload:
    calls `llm_client.get_verdict(meta.request)`, sets `meta.verdict`
@@ -3899,7 +4061,7 @@ alert_only = Pipeline(
 )
 budget_ok = Pipeline(
     [
-        BuildVerdictRequestFilter(max_body_chars),
+        BuildVerdictRequestFilter(allowed_categories, max_body_chars),
         CallLLMAugment(llm_client),
         RecordLLMUsageFilter(state_db),
         ValidateVerdictFilter(allowed_categories),
@@ -3941,6 +4103,106 @@ run this on.** Tier 1 records an escalation as pending but does not call
 `sporkd` main loop still needs to decide "this message escalated and
 hasn't had its Tier 2 run yet" and schedule it; that scheduling half
 needs a live JMAP session and is not faked here.
+
+### 10.8 Read-only knowledgebase context (`spork.core.context`)
+
+A generic, read-only "give me relevant background for this message"
+seam — deliberately **not** a bespoke integration with any one
+note-taking tool. An earlier design proposal pasted Obsidian-specific
+pseudocode for this; the explicit correction that shaped what actually
+got built: "I do not exactly want a bespoke obsidian config, but a
+read right context/knowledgebase interface." `ContextProvider` is a
+`Protocol`, structurally satisfied like every other backend seam in
+this codebase (`LLMClient`, `Provider`, `Alerter`):
+
+```python
+@dataclass(frozen=True, slots=True)
+class ContextSnippet:
+    source: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContextResult:
+    snippets: tuple[ContextSnippet, ...]
+
+
+class ContextProvider(Protocol):
+    def get_context(self, message: NormalizedMessage) -> ContextResult: ...
+```
+
+`get_context()` takes the whole `NormalizedMessage`, not a narrower
+query type — the same shape `ThreadHistoryReader.get_thread_context()`
+already uses — so a real backend can look at whatever fields it needs
+without the Protocol anticipating them in advance. An empty
+`ContextResult` is a real, first-class answer ("no relevant context
+found"), not an error.
+
+**Two backends today, one config field:**
+
+- **`NullContextProvider`** — always returns `ContextResult(snippets=())`.
+  The real, fully-working default when `SporkConfig.context` is `None`
+  (no `[context]` table) — "no knowledgebase configured" is a
+  legitimate deployment state, same relationship
+  `TieringConfig.local_classifier: None` has to the classify registry.
+- **`MarkdownVaultContextProvider`** — a settled-shape stub
+  (`vault_path` constructor argument settled for real,
+  `get_context()` raises `NotImplementedError`). Unlike every other
+  settled-shape stub in this codebase (`JmapClient`, the direct-
+  Anthropic client before LiteLLM replaced it), the blocker here
+  isn't a live network call this environment genuinely can't make —
+  it's an undecided design question (plain substring/keyword match vs.
+  something ranked, e.g. embeddings or an LLM re-rank pass) that this
+  environment has no real vault content to validate honestly either
+  way, unlike `FileProvider`, which was buildable and testable fully
+  offline from fixtures alone (docs/ROADMAP.md M9).
+
+`SporkConfig.context: BackendSpec | None = None`, loaded via
+`spork.core.context.loader.load_context_provider()` — identical
+"module:ClassName" mechanics to every other dynamically-loaded
+backend. `spork.core.runtime.build_context_provider()` returns
+`NullContextProvider()` when `config.context is None`, otherwise loads
+the configured spec; its `secret_kwargs` (if any) are folded into
+`resolve_runtime_secrets()`'s existing check alongside
+provider/llm/alerts.
+
+**Pipeline wiring:** `FetchContextAugment` is a new Tier 2 Augment —
+the second I/O stage besides `CallLLMAugment` — composed into
+`budget_ok` right before `BuildVerdictRequestFilter`:
+
+```python
+budget_ok = Pipeline(
+    [
+        FetchContextAugment(context_provider),
+        BuildVerdictRequestFilter(allowed_categories, max_body_chars),
+        CallLLMAugment(llm_client),
+        ...,
+    ]
+)
+```
+
+`FetchContextAugment.augment()` calls
+`context_provider.get_context(meta.message)` and stores the result in
+`Tier2Meta.context`. `BuildVerdictRequestFilter` then flattens
+`meta.context.snippets` into `VerdictRequest.context_snippets` — plain
+`"source: text"` strings, not structured `ContextSnippet` objects,
+since the prompt only ever needs rendered text — and raises
+`MissingMetaError` if `meta.context` isn't set yet (same ordering
+contract every other stage in this pipeline enforces). `build_prompt()`
+includes `context_snippets` in the exact user-message JSON, and the
+system prompt frames it explicitly: reference material only, never
+instructions, and never a substitute for
+`available_categories`/`available_mailboxes` as the source of truth
+for what the model may actually choose — the same prompt-injection-
+aware framing the email body itself already gets by being sent as
+data, not instructions.
+
+`build_tier2_pipeline()`/`process_tier2_message()`/`escalate_message()`/
+`escalate_message_or_quarantine()` all gained a required
+`context_provider` parameter, threaded through from each of the three
+real Tier 2 callers (`_run_message_loop()`, `spork reclassify`,
+`spork backfill`), each building its own via
+`runtime.build_context_provider()`.
 
 ## 11. Safety & human-in-the-loop
 
@@ -4003,30 +4265,35 @@ critical notifications shouldn't auto-expire. A future desktop backend
 needs no translation layer; a future non-desktop backend maps its own
 scheme onto the same three rather than inventing a fourth.
 
-- **`spork.core.alerts.log.LoggingAlerter`** — the v1 backend. Logs
-  each alert (`logging.getLogger(__name__)`, urgency mapped to a log
-  level — `low`→`INFO`, `normal`→`WARNING`, `critical`→`ERROR`) rather
-  than showing a GUI popup. This is a real, working delivery channel
+- **`spork.core.alerts.log.LoggingAlerter`** — the always-available
+  backend, and `DesktopAlerter`'s own fallback destination. Logs each
+  alert (`logging.getLogger(__name__)`, urgency mapped to a log level
+  — `low`→`INFO`, `normal`→`WARNING`, `critical`→`ERROR`) rather than
+  showing a GUI popup. This is a real, working delivery channel
   (structured, inspectable, greppable output), not a stub standing in
   for one — the same "genuinely real, not fake" bar `FileProvider`
   (§9.3) and `RecordedLLMClient` (§10.5) hold, just a different valid
-  channel, not a placeholder for the channel actually promised. A real
-  desktop-notification backend (`notify-send -u {urgency} title body`,
-  wrapping `org.freedesktop.Notifications` over the session D-Bus —
-  confirmed via `notify-send(1)`, no new DBus library dependency
-  needed) is a deliberate near-term follow-up behind the same
-  `Alerter` Protocol, not built this round; per Python logging best
-  practice, `LoggingAlerter` never configures handlers itself
-  (`logging.basicConfig()` etc.) — that's the application's job
+  channel. Per Python logging best practice, never configures handlers
+  itself (`logging.basicConfig()` etc.) — that's the application's job
   (`docs/ROADMAP.md` M7's structured-logging item), library code only
   emits.
+- **`spork.core.alerts.desktop.DesktopAlerter`** — the real
+  desktop-notification backend (`notify-send -u {urgency} title
+  body`, wrapping `org.freedesktop.Notifications` over the session
+  D-Bus — confirmed via `notify-send(1)`, no new DBus library
+  dependency). `docs/ROADMAP.md` M4's graceful-degrade item is this
+  backend's own job, not a separate mechanism: `notify-send` missing
+  or failing (no session D-Bus bus — a headless/SSH-only login) falls
+  back to a `LoggingAlerter` instead of raising, so `sporkd` keeps
+  running and the alert lands in the log instead of popping up.
 - **`spork.core.alerts.loader.load_alerter()`/`AlerterLoadError`** —
   identical "module.path:ClassName" mechanics to
   `providers.loader.load_provider()`/`llm.loader.load_llm_client()`,
-  so `[alerts] backend = "spork.core.alerts.log:LoggingAlerter"` in
-  `config.toml` is how a deployment picks one, not a hardcoded import
-  — and swapping in a real desktop backend later is the same one-line
-  config change, no code change anywhere that calls `notify()`.
+  so `[alerts] backend = "spork.core.alerts.log:LoggingAlerter"` (or
+  `spork.core.alerts.desktop:DesktopAlerter`) in `config.toml` is how
+  a deployment picks one, not a hardcoded import — swapping backends
+  is a one-line config change, no code change anywhere that calls
+  `notify()`.
 
 ### 12.2 Alert triggers
 
@@ -4108,9 +4375,10 @@ concurrently.
 ID is scoped to one pipeline *run*, not one message's full lifetime.
 `process_message()`'s Tier 1 run and a later `process_tier2_message()`
 run for the same (now-escalated) message each get their own —
-`escalate_message()` (§6.2.1, M5 — the real caller `process_tier2_message()`
-now has, in `_run_message_loop()` and `spork reclassify` alike) doesn't
-thread Tier 1's correlation ID into `Tier2Meta` the way it threads
+`escalate_message()` (§6.2.1, M5 — wrapped by `escalate_message_or_quarantine()`
+as of the poison-message fix below, the real caller `process_tier2_message()`
+now has, in `_run_message_loop()`, `spork reclassify`, and `spork backfill`
+alike) doesn't thread Tier 1's correlation ID into `Tier2Meta` the way it threads
 `to_addresses`/`thread_prior_subject` in. Stitching the two into one
 cross-tier trace is real, wanted work — genuinely unbuilt, not blocked
 on anything missing anymore now that a real caller exists — and is
@@ -4196,8 +4464,8 @@ name; firing it once tells the operator something new.
   — production callers never override it, tests inject a fixed clock
   to control which day's budget row is checked without needing to
   cross an actual midnight.
-- Right after each `escalate_message()` call (the only place Tier 2
-  calls — and therefore budget spend — happen in the loop), a small
+- Right after each `escalate_message_or_quarantine()` call (the only
+  place Tier 2 calls — and therefore budget spend — happen in the loop), a small
   helper checks `state_db.get_llm_usage(today)` against
   `tiering.daily_call_budget` via the existing
   `spork.core.llm.budget.has_budget_remaining()`. If the budget is

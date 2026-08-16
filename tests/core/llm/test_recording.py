@@ -19,6 +19,8 @@ def _request() -> VerdictRequest:
         thread_prior_subject=None,
         thread_user_has_replied=False,
         available_mailboxes=("Inbox",),
+        available_categories=(),
+        context_snippets=(),
     )
 
 
