@@ -60,4 +60,19 @@ def test_install_service_no_enable_now_skips_the_enable_message(tmp_path: Path) 
     result = _run("install-service", "--no-enable-now", env=env)
 
     assert result.returncode == 0
-    assert "Run `systemctl --user enable --now sporkd`" in result.stdout
+    assert "Run `systemctl --user enable --now sporkd@default`" in result.stdout
+
+
+def test_install_service_accepts_an_instance_name(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _install_fake_systemctl(bin_dir)
+
+    env = dict(os.environ)
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "config")
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+
+    result = _run("install-service", "personal", env=env)
+
+    assert result.returncode == 0
+    assert "sporkd@personal" in result.stdout

@@ -9,6 +9,8 @@ inventing subcommand behavior nobody's designed yet.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 
 from spork import __version__
@@ -19,7 +21,9 @@ from spork.cli.commands.logs import logs
 from spork.cli.commands.pause import pause, resume
 from spork.cli.commands.reclassify import reclassify
 from spork.cli.commands.rules import app as rules_app
+from spork.cli.commands.secrets import app as secrets_app
 from spork.cli.commands.status import status
+from spork.core.config.paths import configure_runtime_paths
 from spork.core.logging_setup import configure_logging
 
 app = typer.Typer(
@@ -30,6 +34,7 @@ app = typer.Typer(
 )
 app.add_typer(rules_app, name="rules")
 app.add_typer(config_app, name="config")
+app.add_typer(secrets_app, name="secrets")
 app.command("doctor")(doctor)
 app.command("status")(status)
 app.command("pause")(pause)
@@ -50,8 +55,18 @@ def main(
         help="Log verbosity (DEBUG/INFO/WARNING/ERROR/CRITICAL) — quiet by default, "
         "this is a short-lived CLI, not the daemon (§6.2).",
     ),
+    config_path: str | None = typer.Option(
+        None, "--config", help="Diagnostic override for the user config.toml path."
+    ),
+    secretspec_path: str | None = typer.Option(
+        None, "--secretspec", help="Diagnostic override for the SecretSpec manifest path."
+    ),
 ) -> None:
     """Status, config, and rule management for the sporkd daemon."""
+    configure_runtime_paths(
+        config_path=Path(config_path).expanduser() if config_path else None,
+        secretspec_path=Path(secretspec_path).expanduser() if secretspec_path else None,
+    )
     if version:
         typer.echo(f"spork {__version__}")
         raise typer.Exit()

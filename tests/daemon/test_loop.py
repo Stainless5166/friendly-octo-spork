@@ -199,6 +199,20 @@ def test_run_daemon_runs_an_escalated_message_through_tier2(tmp_path: Path) -> N
     assert row == ("tier2", "ignore")
 
 
+def test_run_daemon_observe_mode_never_enters_tier2(tmp_path: Path, monkeypatch) -> None:
+    """Observe mode must not call Tier 2, even when Tier 1 escalates."""
+    config = _config(tmp_path)
+
+    def fail_if_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError("observe mode entered Tier 2")
+
+    monkeypatch.setattr("spork.daemon.loop.escalate_message", fail_if_called)
+    asyncio.run(_run_briefly(config, observe=True))
+
+    assert not (tmp_path / "actions.jsonl").exists()
+    assert not (tmp_path / "drafts.jsonl").exists()
+
+
 def test_run_daemon_injects_mapped_secrets_and_records_the_live_llm_path(tmp_path: Path) -> None:
     config = _config(tmp_path)
     messages_path = Path(config.provider.kwargs["messages_path"])

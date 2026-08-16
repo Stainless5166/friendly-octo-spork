@@ -61,18 +61,14 @@ read-only. No actions taken yet.
       composing JMAP, processes the complete batch, and persists the candidate
       state only after success. Empty batches advance state; failures and
       shutdowns leave the previous cursor for replay on restart.
-- [x] `spork doctor` reports JMAP auth + connectivity status (S) — CLI
-      wiring is real (the earlier "CLI framework isn't chosen yet"
-      note is stale: Typer's been in use since M2's `spork rules
-      test`); the connectivity check itself is a settled-shape
-      `NotImplementedError`; it is not yet wired to the now-real configured
-      `JmapClient.connect()` path, and is caught as a clean CLI error rather than a
-      traceback. Secrets/systemd/DB checks from docs/DESIGN.md §12
-      aren't wired in yet — this command doesn't pretend to run them
-      until it does. Originally blocked on `spork.core.config` not
-      existing; that landed in M5, so the secrets/DB-path pieces are
-      unblocked now — tracked as its own M6 item (see M6's checklist)
-      rather than assumed done just because the blocker cleared.
+ - [x] `spork doctor` reports JMAP auth + connectivity status (S) — CLI
+       wiring is real (the earlier "CLI framework isn't chosen yet"
+       note is stale: Typer's been in use since M2's `spork rules
+       test`). The check now builds the configured provider and calls its
+       checkpoint capability's `account_id()`; non-JMAP providers report
+       that the check is not applicable. Secrets/systemd/DB checks from
+       docs/DESIGN.md §12 remain independently reported, never hidden behind
+       a failed config or provider check.
 
 **Exit criteria:** `sporkd` runs, logs each new inbox message's subject
 as it arrives (via push, verified by sending a real test email), survives
@@ -279,13 +275,11 @@ end-to-end exit criterion, still blocked on the Fastmail write path
 (`JmapClient.apply_action()`/`create_draft()`) plus a live model API session through
 `LiteLLMClient` to swap in for `RecordedLLMClient`.
 One piece is deliberately still unbuilt even with those two live
-sessions: deciding *which* escalated message needs a Tier 2 run — Tier
-1's escalate branch already marks a message processed (the interim M2
-policy), so `process_tier2_message()` can't reuse that idempotency
-check to find pending work; that scheduling decision is real `sporkd`
-main-loop work (M5), needing a live JMAP session to know what's
-actually pending, not something invented here to appear more done than
-it is.
+  sessions: deciding *which* escalated message needs a Tier 2 run remains
+  real `sporkd` main-loop work (M5). Tier 1 now leaves escalations pending
+  and Tier 2 owns the terminal processed mark, so failed Tier 2 work can
+  be retried; the scheduling decision still needs a live JMAP session and
+  is not invented here to appear more done than it is.
 
 ## M4 — Alerting
 
@@ -307,7 +301,11 @@ follow-up behind the same `Alerter` protocol, not built this round.
       before being settled; `LoggingAlerter` is a genuinely real
       backend (logs each alert via `logging.getLogger(__name__)`,
       never configures handlers itself), not a stub for the future
-      desktop-notification backend.
+       desktop-notification backend.
+- [x] SMTP alert backend for burn-in and unattended acceptance runs (S) —
+      `spork.core.alerts.smtp.SmtpAlerter` supports authenticated STARTTLS
+      delivery and an explicit plaintext mode for the local acceptance sink;
+      credentials remain constructor inputs mapped through SecretSpec.
 - [ ] Alert triggers wired to confidence bands + VIP rules + daemon health (M)
       — the pipeline-visible half is done: `spork.core.pipeline.observer.PipelineObserver`
       (§12.2, bundles correlation-ID tracing with `Alerter` delegation —
@@ -460,7 +458,7 @@ live until M5 needed something to control.
       actually report LLM spend yet, and `spork rules list` doesn't
       have per-rule match stats to show (that's `rule_stats`, a
       separate, still-unbuilt table behind a different command).
-- [x] `spork config show/edit` with validation on save (S) — `show`
+ - [x] `spork config init/show/edit` with validation on save (S) — `init`
       flags every value the enforced tier sets via a new
       `spork.core.config.loader.enforced_override_paths()` (flattens
       the enforced tier's raw TOML into dotted paths, independent of
@@ -507,7 +505,7 @@ tries.
 few documented commands — via the manual systemd install flow, or via
 an Arch Linux package.
 
-- [x] `systemd/sporkd.service` unit file (§14) (S) — tracked at the
+- [x] `systemd/sporkd@.service` unit template (§14) (S) — tracked at the
       repo root, `Type=notify`/`Restart=on-failure`, no secret
       material in the unit itself; `spork.core.systemd.template.UNIT_FILE_CONTENT`
       is a byte-identical copy `install_service()` writes at runtime,
@@ -521,13 +519,16 @@ an Arch Linux package.
       calls it once provider/rules/LLM client/alerter/IPC server have
       all composed successfully, right before opening `StateDB` and
       starting the message loop.
-- [x] Install helper (`spork install-service` or a documented script) (S) —
+- [x] Install helper (`spork install-service [<instance>]` or a documented script) (S) —
       built as a real command: `spork.core.systemd.install.install_service()`
       writes the unit file to `resolve_user_unit_path()` (creating
       `~/.config/systemd/user/` if needed), then `systemctl --user
-      daemon-reload` + (unless `--no-enable-now`) `enable --now`, one
-      `InstallServiceError` wrapping every failure.
+      daemon-reload` + (unless `--no-enable-now`) `enable --now
+      sporkd@<instance>`, one `InstallServiceError` wrapping every failure.
 - [x] README quickstart: secretspec setup → config → rules → enable unit (M)
+- [x] `spork secrets enroll` writes required credentials to the
+      SecretSpec OS keyring scope without requiring the daemon to be running
+      (S)
 - [x] `spork doctor` checks unit install/enabled/active state (S) —
       `spork.core.systemd.unit.check_unit_status()`, reported as one
       of `spork doctor`'s checks; a missing `systemctl` binary or an
@@ -577,7 +578,7 @@ an Arch Linux package.
 **Exit criteria:** on a clean machine, following only the README quickstart
 gets `sporkd` running under systemd at login, with `spork status` reporting
 healthy. On Arch Linux, `makepkg -si` from the `PKGBUILD` produces the
-same result. **All 7 checklist items above are done in the same sense
+same result. **All 8 checklist items above are done in the same sense
 every prior milestone's items are** — everything buildable and testable
 without a live JMAP/Anthropic account or an actual Arch machine is real
 and tested (604 tests, this milestone's own). **The exit criterion
@@ -609,7 +610,7 @@ audit correctness once it's running unattended.
       429 response to verify against without one.
 - [ ] Crash-loop / restart behavior verified (`Restart=on-failure`) (S) —
       the unit file itself has carried `Restart=on-failure` since M6
-      (`systemd/sporkd.service`); *verifying* it needs a real systemd
+      (`systemd/sporkd@.service`); *verifying* it needs a real systemd
       user session actually restarting a crashed `sporkd`, which this
       sandbox doesn't have either (confirmed, M6: no `systemctl`/`pacman`
       tooling here) — not re-confirmed instead of genuinely verified.

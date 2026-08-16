@@ -1,6 +1,6 @@
 # Test Suite Inventory & Milestone Coverage
 
-**Status:** snapshot as of the M1a (source/dispatch pipeline) milestone,
+**Status:** snapshot as of the deployment-hardening work following M6,
 updated to add xfail coverage for two known M0 gaps, then updated again
 to cover most of M1's remainder (state DB, poll fallback, and settled-
 shape `NotImplementedError` stubs for the JMAP client/push listener),
@@ -178,7 +178,7 @@ detection re-scoped to M6/systemd, not this loop's job — see
 docs/ROADMAP.md). Updated once more for M6, all 7 items in one pass:
 `spork.core.systemd` (`notify.py`/`unit.py`/`template.py`/`install.py`,
 all dependency-free, hand-rolled against the stdlib the same way
-`llm/clean.py`'s `HTMLParser` was), the tracked `systemd/sporkd.service`
+`llm/clean.py`'s `HTMLParser` was), the tracked `systemd/sporkd@.service`
 unit file, `spork install-service`, `run_daemon()` signaling readiness
 via `sd_notify`, `spork doctor` rebuilt from one JMAP-only check into
 seven independent checks (secrets/config/provider/rules/local-classifier/
@@ -188,9 +188,9 @@ Python SDK resolves the *provider* from a separate, genuinely global
 `~/.config/secretspec/config.toml`, not the manifest's own `[providers]`
 table `docs/DESIGN.md` §7.3 previously assumed sufficient — confirmed
 empirically, `resolve_secretspec_path()` and §7.3's prose both updated.
-**M6 is 7/7 — the milestone is complete** in the same sense every prior
+**M6 is 8/8 — the milestone is complete** in the same sense every prior
 one is: everything buildable and testable without a live
-account/Arch-tooling-having-machine is real, 604 tests all green.
+account/Arch-tooling-having-machine is real, 753 tests all green.
 Updated once more for M7's five buildable items: structured
 application logging (`spork.core.logging_setup`), per-message pipeline
 tracing (`spork.core.pipeline.tracing`), audit trail completeness
@@ -317,27 +317,12 @@ verified).
 | Poll-based fallback | ✅ (real, network-free) | ✅ — tests 53–61 (9 tests) |
 | State DB (`push_cursor`, `processed_messages`) | ✅ | ✅ — tests 62–71 (10 tests) |
 | Cursor-safe daemon acknowledgement | ✅ | ✅ — tests 652–660; candidate state is written only after a complete batch succeeds |
-| `spork doctor` | 🟡 stub — CLI wiring real, connectivity check raises `NotImplementedError` | ✅ (that it raises cleanly) — tests 147–149 |
+| `spork doctor` | ✅ configured checkpoint-capable providers connect; other providers report not applicable | ✅ — tests 147–149, 684–694 |
 
-Five of these are genuinely done: session bootstrap, read-only fetch,
-mailbox resolution,
-poll-based fallback (`IntervalTimer` + `FallbackSource`, pure control
-flow, no network needed to build or test), and the state DB (SQLite,
-same story). The push-listener's backoff *scheduling* is real and
-tested too, separately from the listener itself.
-
-The actual push listener and `spork doctor`'s connectivity check remain
-stubs. Cursor persistence also still needs a daemon acknowledgement
-contract before this client can ingest mail safely across crashes.
-Their shape remains settled (constructor args, method
-names/signatures, CLI wiring) and each raises a specific
-`NotImplementedError`, verified by a normal *passing* test (not
-`xfail` — the raise is the correct, specified behavior at this stage,
-not a stand-in for a real assertion). `spork doctor`'s CLI command
-itself is real (registered, `--help` works, appears in `spork --help`)
-— only the connectivity check underneath is stubbed, same relationship
-`spork rules test` has to its own live-fetch gap. **Every M1 item now
-has at least a settled shape and a test — none are unspecified.**
+Session bootstrap, read-only fetch, mailbox resolution, poll fallback,
+state persistence, and the configured-provider connectivity check are real
+and tested. The push listener's backoff scheduling is also real and tested;
+live push/reconnect evidence remains a manual acceptance item.
 
 ### M1a — Source / dispatch pipeline
 
@@ -564,7 +549,7 @@ audit-trail completeness beyond triage outcomes.
 | `spork status` | ✅ | ✅ — tests 404–407 (4 tests), including a full end-to-end test against a real `sporkd` subprocess |
 | `spork pause`/`resume` | ✅ | ✅ — tests 408–410 (3 tests), including a full pause→status→resume→status round trip |
 | `spork rules list/edit/enable/disable` w/ live reload | ✅ | ✅ — tests 436–454 (19 tests), 100% line coverage on `spork.core.rules.writer`/`spork.daemon.state`/`spork.cli.commands.rules`, no gaps on the touched part of `spork.daemon.loop` |
-| `spork config show/edit` | ✅ | ✅ — tests 455–478 (24 tests), 100% line coverage on `spork.core.config.*`/`spork.cli.commands.config` |
+| `spork config init/show/edit` | ✅ | ✅ — tests 455–478 plus 695–698, 100% line coverage on `spork.core.config.*`/`spork.cli.commands.config` |
 | `spork logs` | ✅ | ✅ — tests 411–417 (7 tests) |
 | `spork reclassify <id>` | ✅ | ✅ — tests 479–498 + 499–501 (23 tests), 100% line coverage on `spork.core.providers.*`/`spork.core.pipeline.*`/`spork.daemon.loop`/`spork.cli.commands.reclassify` |
 
@@ -639,14 +624,15 @@ subprocess, not simulated.
 filter the already-returned list client-side; `--message-id` reuses
 `get_audit_entries(jmap_id=...)`'s existing storage-side filter.
 
-### M6 — systemd packaging + install flow — 7/7 (complete)
+### M6 — systemd packaging + install flow — 8/8 (complete)
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
-| `systemd/sporkd.service` unit file | ✅ | ✅ — tests 530–533 (drift-guarded against the runtime constant), plus PKGBUILD's own tests 560–565 |
+| `systemd/sporkd@.service` unit template | ✅ | ✅ — tests 530–533 (drift-guarded against the runtime constant), plus PKGBUILD's own tests 560–565 |
 | `Type=notify`/`sd_notify` on ready | ✅ | ✅ — tests 516–522 (`spork.core.systemd.notify`, real `AF_UNIX SOCK_DGRAM` round trips), 558–559 (`run_daemon()` wiring) |
 | Install helper (`spork install-service`) | ✅ | ✅ — tests 534–542 (`install_service()`, 100% line coverage), 543–548 (CLI, including a real fake-`systemctl`-on-`$PATH` success path) |
 | README quickstart | ✅ | Not testable — prose, no test asserts README content (same as every prior README update in this repo's history) |
+| `spork secrets enroll` keyring enrollment | ✅ | ✅ — tests 674–683; values are mocked and never printed or persisted by the test process |
 | `spork doctor` checks unit install/enabled/active state | ✅ | ✅ — tests 523–529 (`check_unit_status()`, 100% line coverage), 553 (CLI) |
 | `spork doctor` wires in secrets/config/backend checks | ✅ | ✅ — tests 509–510 (`resolve_secretspec_path()`), 548–557 and 637–639 (CLI, including provider/LLM/alerter construction with mapped secrets) |
 | Arch Linux packaging (`PKGBUILD`) | ✅ | ✅ — tests 560–565 (syntax, required fields, unit-file install path, version match) — `makepkg -si` itself isn't run (no Arch tooling in this sandbox, confirmed) |
@@ -3059,7 +3045,7 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
     Same `$HOME/.config` fallback as `resolve_user_config_path()`.
 
 511. **`core/config/test_paths.py::test_resolve_user_unit_path_uses_xdg_config_home_when_set`**
-    (parametrized, 8 path shapes) `XDG_CONFIG_HOME/systemd/user/sporkd.service`
+    (parametrized, 8 path shapes) `XDG_CONFIG_HOME/systemd/user/sporkd@.service`
     — systemd's own real user-unit search path, not a spork subdirectory.
 
 512. **`core/config/test_paths.py::test_resolve_user_unit_path_falls_back_to_home_dot_config_when_unset`**
@@ -3123,7 +3109,7 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
     a missing binary (already covered — no code change needed).
 
 530. **`core/systemd/test_template.py::test_unit_file_content_matches_the_tracked_systemd_service_file`**
-    `UNIT_FILE_CONTENT` byte-matches the tracked `systemd/sporkd.service`
+    `UNIT_FILE_CONTENT` byte-matches the tracked `systemd/sporkd@.service`
     — the drift guard.
 
 531. **`core/systemd/test_template.py::test_unit_file_content_is_type_notify`**
@@ -3197,8 +3183,8 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
     separate *global* `~/.config/secretspec/config.toml` SecretSpec's
     SDK actually reads the provider from — verified empirically):
     secrets/config/provider/rules/local-classifier all `[ok]`, only
-    JMAP connectivity (M1) and the systemd unit (never installed here)
-    keep exit code 1.
+     the systemd unit (never installed here) keeps exit code 1; JMAP is
+     not applicable to this fixture's FileProvider.
 
 553. **`cli/commands/test_doctor.py::test_doctor_reports_systemd_unit_state`**
     `"installed=False"` in an isolated `$XDG_CONFIG_HOME` that never
@@ -3240,7 +3226,7 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
 563. **`test_pkgbuild.py::test_pkgbuild_has_build_and_package_functions`**
 
 564. **`test_pkgbuild.py::test_pkgbuild_installs_the_tracked_systemd_unit_file`**
-    The same `systemd/sporkd.service` `spork install-service` embeds a
+    The same `systemd/sporkd@.service` `spork install-service` embeds a
     copy of — one unit definition, two install paths.
 
 565. **`test_pkgbuild.py::test_pkgbuild_pkgver_matches_pyproject`**
@@ -3601,3 +3587,123 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
 
 673. **`core/sources/test_checkpoint_fallback.py::test_checkpoint_fallback_propagates_secondary_failures`**
     Polling failures are not hidden after push has already disconnected.
+
+### M6 SecretSpec keyring enrollment follow-up (tests 674–683)
+
+674. **`core/test_secret_store.py::test_keyring_service_name_matches_secretspec_scope`**
+     Enrollment derives the exact `secretspec/{project}/{profile}/{key}`
+     service path consumed by the native keyring provider.
+
+675. **`core/test_secret_store.py::test_store_secret_uses_current_user_as_keyring_account`**
+     A secret is sent to the OS keyring with the current user as account,
+     never to a file or environment variable.
+
+676. **`core/test_secret_store.py::test_store_secret_wraps_keyring_failures_without_echoing_value`**
+     Backend failures cross the boundary as `SecretStoreError` without
+     including the credential in the error.
+
+677. **`cli/commands/test_secrets.py::test_enroll_prompts_for_both_credentials_without_printing_values`**
+     The enrollment command prompts for both required names, stores them,
+     and does not echo either value.
+
+678. **`cli/commands/test_secrets.py::test_enroll_reports_keyring_failure_without_traceback`**
+     A keyring failure produces a clean CLI failure rather than a traceback.
+
+679. **`core/test_secret_store.py::test_keyring_service_name_rejects_a_malformed_manifest`**
+     Malformed manifests fail before any keyring write is attempted.
+
+680. **`core/test_secret_store.py::test_store_secret_rejects_an_empty_value`**
+     Empty credentials are rejected at the storage boundary.
+
+681. **`core/test_secrets.py::test_resolve_secrets_wraps_keyring_backend_failure`**
+     OS keyring read failures become one catchable `SecretsError`.
+
+682. **`core/test_secrets.py::test_resolve_secrets_rejects_an_invalid_keyring_declaration`**
+     Non-table SecretSpec declarations fail closed.
+
+683. **`core/test_secrets.py::test_resolve_secrets_rejects_a_missing_keyring_profile`**
+     An unknown profile cannot silently fall back to the default profile.
+
+### M6 doctor failure-boundary follow-up (tests 684–692)
+
+684. **`cli/commands/test_doctor_unexpected_failures.py::test_secrets_check_catches_unexpected_failure`**
+     An unexpected secret backend error becomes a single-line failed check.
+
+685. **`cli/commands/test_doctor_unexpected_failures.py::test_config_check_catches_unexpected_failure`**
+     Unexpected configuration failures are caught and summarized without
+     validation-detail leakage.
+
+686. **`cli/commands/test_doctor_unexpected_failures.py::test_backend_checks_catch_unexpected_failure[provider]`**
+     Provider construction failures are contained at the doctor boundary.
+
+687. **`cli/commands/test_doctor_unexpected_failures.py::test_backend_checks_catch_unexpected_failure[LLM client]`**
+     LLM construction failures are contained at the doctor boundary.
+
+688. **`cli/commands/test_doctor_unexpected_failures.py::test_backend_checks_catch_unexpected_failure[alerter]`**
+     Alerter construction failures are contained at the doctor boundary.
+
+689. **`cli/commands/test_doctor_unexpected_failures.py::test_rules_check_catches_unexpected_failure`**
+     Rules loading failures are caught and reported as one line.
+
+690. **`cli/commands/test_doctor_unexpected_failures.py::test_classifier_check_catches_unexpected_failure`**
+     Classifier registry failures are caught and reported as one line.
+
+691. **`cli/commands/test_doctor_unexpected_failures.py::test_jmap_check_catches_unexpected_failure`**
+     JMAP connectivity failures are caught separately from the planned
+     M1 not-implemented result.
+
+692. **`cli/commands/test_doctor_unexpected_failures.py::test_systemd_check_catches_unexpected_failure`**
+     Systemd inspection failures are caught and reported as one line.
+
+693. **`cli/commands/test_doctor_unexpected_failures.py::test_jmap_check_connects_checkpointed_provider`**
+     Doctor calls `account_id()` on a configured checkpoint-capable
+     provider and reports the connected account.
+
+694. **`cli/commands/test_doctor_unexpected_failures.py::test_jmap_check_rejects_an_empty_account_id`**
+     A provider that cannot identify an account fails the connectivity check.
+
+695. **`cli/commands/test_config.py::test_config_init_writes_a_valid_jmap_setup_without_credentials`**
+     Initialization creates a JMAP/LiteLLM configuration and disabled
+     starter rules without writing secret values.
+
+696. **`cli/commands/test_config.py::test_config_init_refuses_to_overwrite_existing_config`**
+     Existing configuration is protected unless `--force` is explicit.
+
+697. **`cli/commands/test_config.py::test_config_init_force_replaces_existing_config`**
+     Explicit force replacement writes the requested model and removes the
+     old configuration.
+
+698. **`core/config/test_paths.py::test_runtime_config_overrides_are_explicit_and_resettable`**
+      Launch-time config and SecretSpec path overrides are process-local and
+      resettable.
+
+699. **`core/alerts/test_smtp.py::test_smtp_alerter_sends_urgency_and_url`**
+      SMTP alerts preserve urgency, body, and URL context while authenticating
+      through STARTTLS.
+
+700. **`core/alerts/test_smtp.py::test_smtp_alerter_can_send_to_local_plaintext_harness`**
+      The local acceptance profile can disable TLS and authentication without
+      changing the alert contract.
+
+701. **`core/alerts/test_smtp_edge_cases.py::test_smtp_username_requires_password`**
+      Authenticated SMTP configuration fails closed before opening a relay
+      connection when its password is missing.
+
+702. **`daemon/test_loop.py::test_run_daemon_observe_mode_never_enters_tier2`**
+      Observe mode processes an escalation without entering Tier 2, creating
+      a draft, or invoking a provider action path.
+
+703. **`core/providers/jmap/test_client.py::test_list_mailboxes_returns_names_from_mailbox_get`**
+      Read-only mailbox listing uses the authenticated Mailbox/get response.
+
+704. **`core/providers/jmap/test_client.py::test_get_thread_context_reads_prior_subject_and_sent_state`**
+      Thread context uses Thread/get and Email/get to identify prior subject
+      and whether Spork has already replied.
+
+705. **`core/providers/jmap/test_client.py::test_get_message_fetches_and_normalizes_one_email`**
+      Read-only message lookup returns the same normalized shape as new-mail
+      acquisition.
+
+706. **`core/pipeline/test_default.py::test_escalation_remains_retryable_until_tier2_completes`**
+      Tier 1 leaves an escalation unprocessed so Tier 2 or a later retry can
+      claim terminal ownership.

@@ -30,8 +30,9 @@ class InstallServiceError(Exception):
 
 
 def install_service(
-    unit_name: str = "sporkd",
+    unit_name: str = "sporkd@",
     *,
+    instance: str = "default",
     unit_path: Path | None = None,
     enable_now: bool = True,
     runner: _Runner = subprocess.run,
@@ -61,7 +62,7 @@ def install_service(
         )
         if enable_now:
             runner(
-                ["systemctl", "--user", "enable", "--now", unit_name],
+                ["systemctl", "--user", "enable", "--now", f"{unit_name}{instance}"],
                 check=True,
                 capture_output=True,
                 text=True,

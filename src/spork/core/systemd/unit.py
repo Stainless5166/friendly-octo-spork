@@ -66,7 +66,7 @@ def _query(unit_name: str, subcommand: str, runner: _Runner) -> str:
 
 
 def check_unit_status(
-    unit_name: str = "sporkd",
+    unit_name: str = "sporkd@default",
     *,
     unit_path: Path | None = None,
     runner: _Runner = subprocess.run,
@@ -80,7 +80,11 @@ def check_unit_status(
     systemd-less sandbox can still say whether `spork install-service`
     has been run.
     """
-    path = unit_path if unit_path is not None else resolve_user_unit_path(unit_name)
+    path = (
+        unit_path
+        if unit_path is not None
+        else resolve_user_unit_path("sporkd@" if unit_name == "sporkd@default" else unit_name)
+    )
     installed = path.exists()
     enabled = _query(unit_name, "is-enabled", runner)
     active = _query(unit_name, "is-active", runner)

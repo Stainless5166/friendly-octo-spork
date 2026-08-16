@@ -8,6 +8,7 @@ license = { text = "MIT" }
 dependencies = [
     "pydantic>=2.7,<3",
     "secretspec>=0.18,<1",
+    "keyring>=25,<26",
     "typer>=0.27,<1",
 ]
 
@@ -31,6 +32,7 @@ dev = [
     "pytest>=9.0.3,<10",
     "pytest-cov>=5.0,<6",
     "pytest-benchmark>=4.0,<5",
+    "behave>=1.2.6,<2",
     "ruff>=0.6,<1",
     "mypy>=1.11,<2",
     "pdoc>=14.5,<15",

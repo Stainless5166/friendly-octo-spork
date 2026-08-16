@@ -29,6 +29,7 @@ from spork.core.pipeline import process_message
 from spork.core.pipeline.observer import PipelineObserver
 from spork.core.pipeline.tier2.escalate import escalate_message
 from spork.core.providers.base import (
+    ActionApplier,
     CheckpointedProvider,
     DraftCreator,
     MailboxLister,
@@ -49,6 +50,20 @@ from spork.core.systemd.notify import notify
 from spork.daemon.state import DaemonState, PendingAuditEvent, RulesState
 
 
+class _ObserveActionApplier:
+    """Suppress provider mutations while preserving pipeline audit records."""
+
+    def apply(self, message: Any, action: Action) -> None:
+        return
+
+
+class _ObserveDraftCreator:
+    """Suppress draft creation in observe mode."""
+
+    def create_draft(self, in_reply_to: Any, body: str) -> None:
+        return
+
+
 def _utc_now_iso() -> str:
     """Default `now` for `_run_message_loop()`'s budget-alert check —
     same shape as every other `now: Callable[[], str]` DI default in
@@ -64,6 +79,7 @@ async def run_daemon(
     idle_delay_seconds: float = 1.0,
     notify_fn: Callable[[str], bool] = notify,
     secrets: Secrets | None = None,
+    observe: bool = False,
 ) -> None:
     """Compose `config` into a running Tier 1+2 daemon loop + IPC server.
 
@@ -85,8 +101,9 @@ async def run_daemon(
         secrets if secrets is not None else resolve_runtime_secrets(config, reason="start sporkd")
     )
     provider = build_provider(config, runtime_secrets)
-    executor = ActionExecutor(provider.build_action_applier())
-    draft_creator = provider.build_draft_creator()
+    applier: ActionApplier = _ObserveActionApplier() if observe else provider.build_action_applier()
+    executor = ActionExecutor(applier)
+    draft_creator = _ObserveDraftCreator() if observe else provider.build_draft_creator()
     thread_history_reader = provider.build_thread_history_reader()
     mailbox_lister = provider.build_mailbox_lister()
 
@@ -151,6 +168,7 @@ async def run_daemon(
                     stop_event=stop_event,
                     idle_delay_seconds=idle_delay_seconds,
                     cursor_account_id=checkpoint_account_id,
+                    observe=observe,
                 )
             )
             tg.create_task(ipc_server.serve(stop_event))
@@ -265,6 +283,7 @@ async def _run_message_loop(
     idle_delay_seconds: float,
     now: Callable[[], str] = _utc_now_iso,
     cursor_account_id: str | None = None,
+    observe: bool = False,
 ) -> None:
     """Repeatedly poll `source` and run each message through Tier 1,
     escalating to Tier 2 in the same cycle when Tier 1 routes
@@ -357,7 +376,7 @@ async def _run_message_loop(
             # may themselves be real I/O against a live backend, so
             # they belong off the event-loop thread too, not called
             # directly from this coroutine.
-            if verdict is not None and verdict.action.type == "escalate":
+            if not observe and verdict is not None and verdict.action.type == "escalate":
                 await asyncio.to_thread(
                     escalate_message,
                     message,

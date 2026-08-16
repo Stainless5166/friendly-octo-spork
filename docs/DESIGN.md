@@ -2031,6 +2031,24 @@ classDiagram
     Secrets ..> SecretsError : raises, on an unresolved get()
 ```
 
+#### `spork.core.secret_store`
+
+```mermaid
+classDiagram
+    class SecretStoreError { <<Exception>> }
+    class keyring_service_name {
+        <<function>>
+        +keyring_service_name(manifest_path, name, profile) str
+    }
+    class store_secret {
+        <<function>>
+        +store_secret(manifest_path, name, value, profile) None
+    }
+
+    store_secret ..> keyring_service_name : derives SecretSpec scope
+    store_secret ..> SecretStoreError : raises
+```
+
 #### `spork.core.systemd`
 
 ```mermaid
@@ -2096,7 +2114,7 @@ writes `UNIT_FILE_CONTENT` (below) to that same path, then runs
 as `RulesLoadError`/`ProviderLoadError`.
 
 `UNIT_FILE_CONTENT` is a plain string constant, not read from the
-repo-root `systemd/sporkd.service` file at runtime (§7.1) — an
+    repo-root `systemd/sporkd@.service` file at runtime (§7.1) — an
 installed `spork` has no guarantee that file is reachable relative to
 wherever its package ended up (a venv, an `uv tool install` location,
 a distro package's site-packages), so the content is duplicated in
@@ -2104,7 +2122,7 @@ exactly one place a test can hold to the tracked file byte-for-byte
 (`tests/core/systemd/test_template.py`), the same "single logical
 source of truth, drift caught by a test rather than assumed" choice
 this codebase already makes for `rules.writer.dump_rules()`'s
-round-trip guarantee. The tracked `systemd/sporkd.service` file itself
+    round-trip guarantee. The tracked `systemd/sporkd@.service` file itself
 is what a human reads on GitHub and what the Arch `PKGBUILD` (§14)
 installs directly from a full source checkout — it doesn't need
 `install_service()`'s runtime lookup problem solved, since packaging
@@ -2163,6 +2181,10 @@ classDiagram
         <<Typer command "edit">>
         +edit() None
     }
+    class config_init {
+        <<Typer command "init">>
+        +init(force: bool, model: str) None
+    }
     class status {
         <<Typer command>>
         +status() None
@@ -2191,6 +2213,7 @@ classDiagram
         <<Typer command "install-service">>
         +install_service_command(enable_now: bool) None
     }
+    class CheckpointedProvider { <<Protocol>> }
     class build_provider { <<function>> }
     class build_llm_client { <<function>> }
     class build_alerter { <<function>> }
@@ -2222,6 +2245,7 @@ classDiagram
     rules_app --> disable : command("disable")
     config_app --> config_show : command("show")
     config_app --> config_edit : command("edit")
+    config_app --> config_init : command("init")
 
     test ..> load_rules : loads/validates rules.toml
     test ..> RulesLoadError : catches, clean CLI error
@@ -2257,7 +2281,7 @@ classDiagram
     doctor ..> load_rules : rules check (needs config)
     doctor ..> RulesLoadError : catches, reported as one failed check
     doctor ..> UnknownClassifierError : local_classifier check, catches
-    doctor ..> NotImplementedError : catches JMAP-connectivity stub, one more failed check
+     doctor ..> CheckpointedProvider : connects configured JMAP-capable provider
     doctor ..> check_unit_status : systemd unit install/enabled/active check (§14)
     reclassify ..> load_config : locates provider/rules/db
     reclassify ..> build_provider : builds Provider, standalone (§7.4)
@@ -2274,8 +2298,8 @@ classDiagram
 Unlike every other CLI command in this diagram, `doctor` never stops
 at its first failure: it runs each of its nine checks independently
 (secrets, config, provider, LLM client, alerter, rules, the configured
-local classifier if any, JMAP connectivity, the systemd unit), catching each check's own
-specific exception type and printing one `[ok]`/`[FAIL]` line per
+local classifier if any, JMAP connectivity, the systemd unit), catching
+each check's failures and printing one `[ok]`/`[FAIL]` line per
 check, only exiting non-zero (still never a raw traceback) once all
 checks have run and at least one failed. The backend/rules/classifier
 checks are skipped (reported, not silently omitted) when the config
@@ -2609,6 +2633,19 @@ default = "keyring://"
   SDK (not by shelling out to `secretspec run`, since it's a long-lived
   process) and holds them in memory only; they are never written to the
   state DB or logs.
+- `spork secrets enroll` prompts without echoing values and writes the
+  required credentials to SecretSpec's OS keyring scope
+  (`secretspec/{project}/{profile}/{key}`), using the current OS user as
+  the keyring account. It does not use the daemon IPC socket: the daemon
+  cannot open that socket until required startup secrets already resolve.
+- When no provider is passed explicitly, Spork honors the installed
+  manifest's `[providers].default` value before falling back to SecretSpec's
+  global default. This keeps enrollment and daemon resolution on the same
+  backend without overwriting unrelated global SecretSpec settings.
+- On Linux, the `keyring` provider uses Python Secret Service access for
+  reads because SecretSpec's native resolver can report a usable keyring
+  during inventory while failing to retrieve values from the unlocked Login
+  collection. The service/account scope remains SecretSpec-compatible.
 - `spork doctor` (§13, M6) runs the equivalent of `secretspec check`
   as its first check: `resolve_secrets(resolve_secretspec_path(),
   reason="spork doctor")`, reporting a missing/malformed manifest or
@@ -3880,21 +3917,12 @@ meta=Tier2Meta(...))`, runs it, returns `result.meta.verdict` (`None`
 on the budget-exhausted branch).
 
 **Deliberately not built here: deciding *which* escalated message to
-run this on.** This pipeline doesn't duplicate Tier 1's
-`IdempotencyGateSelector`/`has_processed()` check — Tier 1's escalate
-branch already calls `mark_processed()` for an escalated message (the
-interim M2 policy, §9), so `has_processed()` would already read `True`
-before Tier 2 ever runs; a naive reuse would skip every message it's
-supposed to process. `MarkProcessedFilter`'s upsert (`StateDB.mark_processed()`'s
-existing `ON CONFLICT DO UPDATE`, built for `spork reclassify`) means a
-Tier 2 run simply overwrites Tier 1's row with `tier_reached="tier2"`
-and the real outcome — correct once *something* calls
-`process_tier2_message()` for the right message. That *something* —
-`sporkd`'s main loop deciding "this message escalated and hasn't had
-its Tier 2 run yet" — needs a live JMAP session to know what's
-actually pending, same blocker M1's daemon loop already has (M5). This
-pipeline is the part of "wire Tier 2 up" that's honestly buildable
-without one; the scheduling half isn't faked here.
+run this on.** Tier 1 records an escalation as pending but does not call
+`mark_processed()`. This leaves a failed Tier 2 attempt retryable, while
+`MarkProcessedFilter` remains the terminal write owned by Tier 2. The
+`sporkd` main loop still needs to decide "this message escalated and
+hasn't had its Tier 2 run yet" and schedule it; that scheduling half
+needs a live JMAP session and is not faked here.
 
 ## 11. Safety & human-in-the-loop
 
@@ -4220,7 +4248,14 @@ spork config edit             # open the *user* tier's config.toml in $EDITOR,
                                # system-default or enforced tiers; those are
                                # edited directly with real filesystem permissions.
                                # Writes a "config_edit" control-plane audit_log
-                               # entry on a successful save (§7.4, M7)
+                                # entry on a successful save (§7.4, M7)
+spork config init [--force] [--model <id>]  # create a safe JMAP/LiteLLM
+                                # config and disabled starter rules; never
+                                # writes credential values
+
+spork [--config <path>] [--secretspec <path>] <command>
+                                # process-local diagnostic path overrides;
+                                # sporkd accepts the same two options
 
 spork logs [--tail] [--since] [--message-id]  # reads StateDB directly,
                                                # works even if sporkd isn't running.
@@ -4247,13 +4282,18 @@ spork reclassify <message-id> # standalone, like spork logs — works whether
 spork doctor                  # secretspec check, config/provider/LLM/
                                # alerter/rules/local-classifier load checks, JMAP auth
                                # check, systemd unit install/enabled/
-                               # active state — DB migration status
-                               # isn't wired in yet
+                                # active state — DB migration status
+                                # isn't wired in yet
 
-spork install-service [--no-enable-now]  # writes the unit file to
-                               # ~/.config/systemd/user/sporkd.service,
+spork secrets enroll          # prompt for JMAP_API_TOKEN and
+                                # ANTHROPIC_API_KEY; store both in the
+                                # current user's OS keyring, never config/files
+
+spork install-service [INSTANCE] [--no-enable-now]  # writes the unit template to
+                               # ~/.config/systemd/user/sporkd@.service,
                                # systemctl --user daemon-reload, and
                                # (unless --no-enable-now) enable --now
+                               # sporkd@<instance>
                                # (§14)
 ```
 
@@ -4274,8 +4314,8 @@ it deliberately doesn't have.
 
 ## 14. systemd integration
 
-`systemd/sporkd.service` (repo root, §7.1; user unit, installed to
-`~/.config/systemd/user/sporkd.service` — `resolve_user_unit_path()`,
+`systemd/sporkd@.service` (repo root, §7.1; user-unit template, installed to
+`~/.config/systemd/user/sporkd@.service` — `resolve_user_unit_path()`,
 `spork.core.config.paths`, M6):
 
 ```ini
@@ -4286,7 +4326,7 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-ExecStart=%h/.local/bin/sporkd
+ExecStart=%h/.local/bin/sporkd --config %h/.config/spork/%i/config.toml --secretspec %h/.config/spork/%i/secretspec.toml
 Restart=on-failure
 RestartSec=5
 # Secrets are resolved by sporkd itself via the SecretSpec SDK at
@@ -4318,13 +4358,13 @@ WantedBy=default.target
   up on login whether or not a graphical session is present; the desktop
   alert backend degrades to "unavailable, log only" if there's no DBus
   session bus, rather than failing the whole unit.
-- **Install flow: `spork install-service [--no-enable-now]`**
+- **Install flow: `spork install-service [INSTANCE] [--no-enable-now]`**
   (`spork.core.systemd.install.install_service()`, M6) — writes the
   unit file's content (`spork.core.systemd.template.UNIT_FILE_CONTENT`,
-  byte-identical to the tracked `systemd/sporkd.service`) to
+  byte-identical to the tracked `systemd/sporkd@.service`) to
   `resolve_user_unit_path()`, creating parent directories as needed,
   then runs `systemctl --user daemon-reload` and, unless
-  `--no-enable-now` is passed, `systemctl --user enable --now sporkd`.
+  `--no-enable-now` is passed, `systemctl --user enable --now sporkd@<instance>`.
   Every `systemctl` failure — including "not installed" and "can't
   connect to the user bus," both real, expected outcomes in a
   container/CI environment with no systemd user session — is caught
@@ -4337,10 +4377,10 @@ WantedBy=default.target
   `spork.core.systemd.unit.check_unit_status()` this command's
   `daemon-reload`/`enable --now` calls change the answer to.
 - **Arch Linux packaging**: `PKGBUILD` (repo root, §7.1, M6) builds
-  `spork`/`sporkd` (via `uv build`) and installs `systemd/sporkd.service`
+  `spork`/`sporkd` (via `uv build`) and installs `systemd/sporkd@.service`
   directly — the same tracked file `spork install-service` embeds a
   copy of, not a second, divergent unit definition — to
-  `/usr/lib/systemd/user/sporkd.service`, the standard vendor-supplied
+  `/usr/lib/systemd/user/sporkd@.service`, the standard vendor-supplied
   user-unit search path (distinct from `~/.config/systemd/user/`,
   where a manual/`pip`-style install places it): a distro package
   belongs in the package-managed tree, never a user's own config
@@ -4388,10 +4428,11 @@ WantedBy=default.target
   against the live API.
 - **End-to-end (manual, pre-release):** point at a real test Fastmail
   account, verify push connectivity, rule firing, draft creation, and
-  systemd unit lifecycle. `docs/acceptance/m1_jmap.feature` is the
-  Gherkin-form acceptance specification for the live read/push/fallback
-  evidence; it is deliberately manual until a dedicated live-account
-  harness exists.
+  systemd unit lifecycle. `docs/acceptance/` contains the milestone-scoped
+  Gherkin acceptance specifications for that evidence; they are deliberately
+  manual until a dedicated live-account harness exists. The acceptance
+  directory README records prerequisites, evidence status, and the boundary
+  between offline tests and live verification.
 
 ## 17. Open questions / risks
 

@@ -66,7 +66,7 @@ def _default_client_factory(host: str, api_token: str) -> _JmapcClient:
     )
 
 
-def _method_types() -> tuple[type[Any], type[Any], type[Any]]:
+def _method_types() -> tuple[type[Any], type[Any], type[Any], type[Any]]:
     """Load request classes lazily for the same optional-dependency boundary."""
     try:
         methods = import_module("jmapc.methods")
@@ -74,7 +74,7 @@ def _method_types() -> tuple[type[Any], type[Any], type[Any]]:
         raise JmapError(
             "JMAP support requires the optional dependency: install spork[jmap]"
         ) from exc
-    return methods.EmailChanges, methods.EmailGet, methods.MailboxGet
+    return methods.EmailChanges, methods.EmailGet, methods.MailboxGet, methods.ThreadGet
 
 
 class JmapClient:
@@ -97,13 +97,14 @@ class JmapClient:
         self._client: _JmapcClient | None = None
         self._account_id: str | None = None
         self._inbox_id: str | None = None
+        self._mailboxes: dict[str, tuple[str, str | None]] = {}
 
     def connect(self) -> None:
         """Authenticate once and resolve the primary account and Inbox."""
         if self._client is not None:
             return
 
-        _, _, mailbox_get = _method_types()
+        _, _, mailbox_get, _ = _method_types()
         try:
             client = self._client_factory(self._host, self._api_token)
             _ = client.jmap_session
@@ -129,6 +130,11 @@ class JmapClient:
         self._client = client
         self._account_id = account_id
         self._inbox_id = inbox_ids[0]
+        self._mailboxes = {
+            mailbox_id: (getattr(mailbox, "name", mailbox_id), getattr(mailbox, "role", None))
+            for mailbox in mailboxes
+            if isinstance((mailbox_id := getattr(mailbox, "id", None)), str)
+        }
 
     @property
     def account_id(self) -> str:
@@ -145,7 +151,7 @@ class JmapClient:
         the daemon owns persistence after processing the whole batch.
         """
         self.connect()
-        email_changes, email_get, _ = _method_types()
+        email_changes, email_get, _, _ = _method_types()
 
         if since_cursor is None:
             response = self._request(email_get(ids=[]))
@@ -311,28 +317,66 @@ class JmapClient:
         )
 
     def get_thread_context(self, message: NormalizedMessage) -> ThreadContext:
-        """Resolve `message`'s thread history via `Email/query` against
-        `message.thread_id` (docs/DESIGN.md §9.3) — the fifth
-        `NotImplementedError` stub, same reason as the other four."""
-        raise NotImplementedError(
-            "JmapClient.get_thread_context() requires a live jmapc session — "
-            "not implemented yet, see docs/ROADMAP.md M5"
+        """Resolve prior subject and Sent-mail state through Thread/get."""
+        self.connect()
+        _, email_get, _, thread_get = _method_types()
+        thread_response = self._request(thread_get(ids=[message.thread_id]))
+        threads = getattr(thread_response, "data", None)
+        if not isinstance(threads, list) or not threads:
+            return ThreadContext(prior_subject=None, user_has_replied=False)
+        email_ids = getattr(threads[0], "email_ids", None)
+        if not isinstance(email_ids, list) or not all(isinstance(item, str) for item in email_ids):
+            raise JmapError("Thread/get returned invalid email IDs")
+        other_ids = [email_id for email_id in email_ids if email_id != message.message_id]
+        if not other_ids:
+            return ThreadContext(prior_subject=None, user_has_replied=False)
+        response = self._request(email_get(ids=other_ids, properties=self._email_properties()))
+        emails = getattr(response, "data", None)
+        if not isinstance(emails, list):
+            raise JmapError("Email/get returned no thread message list")
+        sent_ids = {
+            mailbox_id for mailbox_id, (_, role) in self._mailboxes.items() if role == "sent"
+        }
+        prior_subject = getattr(emails[0], "subject", None) if emails else None
+        user_has_replied = any(
+            bool(set(getattr(email, "mailbox_ids", {}).keys()) & sent_ids)
+            for email in emails
+            if isinstance(getattr(email, "mailbox_ids", None), dict)
+        )
+        return ThreadContext(
+            prior_subject=prior_subject if isinstance(prior_subject, str) else None,
+            user_has_replied=user_has_replied,
         )
 
     def list_mailboxes(self) -> Sequence[str]:
-        """Fetch the account's mailbox names via `Mailbox/get`
-        (docs/DESIGN.md §9.3) — the sixth `NotImplementedError` stub,
-        same reason as the other five."""
-        raise NotImplementedError(
-            "JmapClient.list_mailboxes() requires a live jmapc session — "
-            "not implemented yet, see docs/ROADMAP.md M5"
-        )
+        """Return mailbox names from the authenticated Mailbox/get response."""
+        self.connect()
+        return [name for name, _ in self._mailboxes.values()]
 
     def get_message(self, message_id: str) -> NormalizedMessage:
-        """Fetch one message by id via `Email/get` (docs/DESIGN.md §7.4/§13,
-        for `spork reclassify <id>`) — the seventh `NotImplementedError`
-        stub, same reason as the other six."""
-        raise NotImplementedError(
-            "JmapClient.get_message() requires a live jmapc session — "
-            "not implemented yet, see docs/ROADMAP.md M5"
-        )
+        """Fetch and normalize one message by ID without mailbox mutation."""
+        self.connect()
+        _, email_get, _, _ = _method_types()
+        response = self._request(email_get(ids=[message_id], properties=self._email_properties()))
+        emails = getattr(response, "data", None)
+        if not isinstance(emails, list) or not emails:
+            raise JmapError(f"Email/get returned no message for {message_id!r}")
+        return self._normalize(emails[0])
+
+    @staticmethod
+    def _email_properties() -> list[str]:
+        """Keep read-side lookups aligned with new-mail normalization."""
+        return [
+            "id",
+            "threadId",
+            "mailboxIds",
+            "from",
+            "to",
+            "cc",
+            "subject",
+            "textBody",
+            "bodyValues",
+            "messageId",
+            "inReplyTo",
+            "references",
+        ]

@@ -148,11 +148,9 @@ def process_tier2_message(
     way `process_message()`'s `None` doubles as "wasn't acted on."
 
     Deciding *which* escalated message to call this on isn't this
-    function's job (docs/DESIGN.md §10.7) — it doesn't re-check Tier 1's
-    idempotency table (Tier 1's escalate branch already marked the
-    message processed, so `has_processed()` would already read `True`).
-    `MarkProcessedFilter`'s upsert simply overwrites that row with
-    `tier_reached="tier2"` and the real outcome once this runs.
+    function's job (docs/DESIGN.md §10.7). Tier 1 leaves an escalation
+    pending, and this pipeline owns the terminal processed mark after its
+    action, alert-only, or budget-exhausted outcome succeeds.
     """
     pipeline = build_tier2_pipeline(
         llm_client=llm_client,

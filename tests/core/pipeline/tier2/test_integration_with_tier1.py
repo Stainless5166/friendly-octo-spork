@@ -95,8 +95,7 @@ def test_tier2_run_overwrites_tier1s_escalation_row(tmp_path: Path, make_message
         )
         assert tier1_verdict is not None
         assert tier1_verdict.action.type == "escalate"
-        assert db.has_processed("msg-1") is True
-        assert _row(db_path, "msg-1")[:2] == ("tier1", "escalate")
+        assert db.has_processed("msg-1") is False
 
         # Tier 2: processes the same escalated message.
         applier = _RecordingApplier()
@@ -118,9 +117,8 @@ def test_tier2_run_overwrites_tier1s_escalation_row(tmp_path: Path, make_message
             now=lambda: "2026-08-12T09:05:00Z",
         )
 
-        # Never briefly "unprocessed" between the two runs, and the
-        # row now reflects Tier 2's real outcome, not Tier 1's
-        # escalation placeholder.
+        # Tier 1 leaves the message pending; Tier 2 owns the terminal
+        # processed mark and replaces the escalation placeholder.
         assert db.has_processed("msg-1") is True
         tier_reached, action_taken, verdict_json = _row(db_path, "msg-1")
         assert tier_reached == "tier2"

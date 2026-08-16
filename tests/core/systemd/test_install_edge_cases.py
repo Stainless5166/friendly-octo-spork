@@ -20,7 +20,7 @@ def test_install_service_raises_when_the_unit_file_cannot_be_written(tmp_path: P
     (an OSError subclass), wrapped as one InstallServiceError."""
     blocker = tmp_path / "blocker"
     blocker.write_text("not a directory")
-    unit_path = blocker / "sporkd.service"
+    unit_path = blocker / "sporkd@.service"
 
     def runner(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         raise AssertionError("systemctl should never be reached")

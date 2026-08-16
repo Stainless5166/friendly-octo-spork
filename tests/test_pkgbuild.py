@@ -49,13 +49,13 @@ def test_pkgbuild_has_build_and_package_functions() -> None:
 
 
 def test_pkgbuild_installs_the_tracked_systemd_unit_file() -> None:
-    """The same systemd/sporkd.service spork install-service embeds a
+    """The same systemd/sporkd@.service spork install-service embeds a
     copy of (spork.core.systemd.template.UNIT_FILE_CONTENT) — one unit
     definition, two install paths, not a second divergent one."""
     text = PKGBUILD.read_text()
 
-    assert "systemd/sporkd.service" in text
-    assert "/usr/lib/systemd/user/sporkd.service" in text
+    assert "systemd/sporkd@.service" in text
+    assert "/usr/lib/systemd/user/sporkd@.service" in text
 
 
 def test_pkgbuild_pkgver_matches_pyproject(tmp_path: Path) -> None:
