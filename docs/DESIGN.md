@@ -3642,25 +3642,28 @@ change to *what pipeline that route points at*, never a rewrite of
   `Filter`/`Augment` chain over the same `Payload`/`Pipeline` machinery,
   not a new abstraction).
 
-### 9.5 Receipt archiving (M10, in progress)
+### 9.5 Receipt archiving (M10, built)
 
-**In progress, originally numbered M9** — renumbered to M10 when M9
-landed independently as §10.8's "read-only knowledgebase context
-retrieval" (an unrelated, concurrently-developed milestone that
-reached `main` first). `docs/ROADMAP.md` M10 tracks this as its own
-milestone; `docs/acceptance/m10_receipt_archiving.feature` specifies
-the full pipeline's target behavior, still `@wip` with scaffolded
-(`NotImplementedError`) step bindings for what isn't built yet.
-`docs/acceptance/m10a_receipt_pdf.feature` is fully bound and passing
-for the one sub-module (PDF building/archiving) that is. This section
-is the design those scenarios were written against, per CLAUDE.md's
-"design first, then tests, then implementation" order — recorded here
-before any of it existed so the acceptance spec wasn't inventing
-behavior with nowhere else it was written down. One real synergy with
-§10.8's `EntityContextProvider`, noted where relevant below: its
-`lookup_domain()` is a curated, read-only domain→company source this
-milestone's deterministic extractor can consult ahead of its own
-learned cache, rather than inventing a second static-seed-file format.
+**Built — originally numbered M9**, renumbered to M10 when M9 landed
+independently as §10.8's "read-only knowledgebase context retrieval"
+(an unrelated, concurrently-developed milestone that reached `main`
+first). `docs/ROADMAP.md` M10 tracks this milestone; every scenario in
+`docs/acceptance/m10_receipt_archiving.feature` (the full pipeline)
+and its four sub-module companions
+(`m10a`/`m10b`/`m10c`/`m10d_receipt_*.feature`, 22 scenarios total) is
+fully bound and passes on every `uv run behave`, no live account or
+network required. This section is the design those scenarios were
+written against, per CLAUDE.md's "design first, then tests, then
+implementation" order. One real synergy with §10.8's
+`EntityContextProvider`, built as designed: its `lookup_domain()` is a
+curated, read-only domain→company source this milestone's
+deterministic extractor consults ahead of its own learned cache,
+rather than inventing a second static-seed-file format. One stated gap
+remains: `spork.core.runtime`'s backend composition doesn't yet build
+`ReceiptArchiveComponents` from `[receipt_archive]`/`[context]` config
+at daemon startup — the acceptance suite wires components directly at
+the pipeline level, which is what's actually proven end to end;
+real daemon-startup wiring is follow-up work (docs/ROADMAP.md M10).
 
 **Goal:** recognize an automatic-payment receipt email, tag it
 (`receipt`, `company:<name>`, `date:<iso-date>`), and archive a single
@@ -3692,18 +3695,22 @@ fields only receipts need; this gets its own small Protocol instead,
 the same "one Protocol per real relationship" call `ThreadHistoryReader`/
 `MailboxLister`/`MessageLookup` already made (§9.3).
 
-**New pieces, none of which exist yet:**
+**New pieces, all built:**
 
 - **`Provider.build_attachment_fetcher()`** — a new capability
-  alongside the six `Provider` already has (§9.3): resolves a
+  alongside the six `Provider` already had (§9.3): resolves a
   message's raw attachments (filename, content type, bytes).
-  `FileProvider` gets a real implementation (attachments as
-  base64-or-path-referenced fields in the same fixture JSON
-  `load_messages()` already reads); `JmapProvider` is a settled-shape
-  `NotImplementedError` like every other JMAP leaf still blocked on a
-  live account (`JMAP-Mail`'s `Email/get` with `bodyValues`/`blobId`
-  fetching is real and buildable, just not exercisable honestly from
-  here yet).
+  `FileProvider`'s implementation is real (attachments as a
+  base64-encoded `"attachments"` array in the same fixture JSON
+  `load_messages()` already reads, via a sibling
+  `providers.file.attachments.load_attachments()` loader);
+  `JmapProvider` is a settled-shape `NotImplementedError` — unlike
+  `get_thread_context()`/`list_mailboxes()`/`get_message()` (also
+  reads, already real against injected jmapc-shaped responses), this
+  one wasn't built this pass, noted honestly as out of scope rather
+  than a genuine live-account blocker (`JMAP-Mail`'s `Email/get` with
+  `bodyValues`/`blobId` fetching is real and buildable the same way,
+  just not done here).
 - **`Provider.build_keyword_applier()`** — also new. §7.5's "mailboxes
   as tags" is the right model for a small, fixed set of categories a
   human browses as folders (`Calendar`, `Reading`), but `company:<name>`
@@ -3772,20 +3779,23 @@ the same "one Protocol per real relationship" call `ThreadHistoryReader`/
   else noted by filename/type rather than silently dropped. No
   attachments at all still produces a one-page PDF from the cover
   content alone (the "message itself" half of the feature request).
-  Planned dependencies (not yet added to `pyproject.toml`): `pypdf`
-  for merging, `reportlab` for rendering the cover/text pages, `Pillow`
-  for image-to-PDF-page conversion — behind a new optional
-  `spork[receipts]` extra, same lazy-optional-import pattern `litellm`
-  already uses (§10.1).
+  Dependencies (`pypdf` for merging, `reportlab` for rendering the
+  cover/text pages, `Pillow` for image-to-PDF-page conversion) live
+  behind the new optional `spork[receipts]` extra, lazily imported
+  inside this module — same lazy-optional-import pattern `litellm`
+  already uses (§10.1) — so importing `spork.core.receipts.pdf` never
+  requires them unless a caller actually builds a PDF.
 - **`spork.core.receipts.archive.save_pdf()`** — writes the built PDF
   to `SporkConfig.receipt_archive.output_dir` under a deterministic
   filename (`{date}-{company-slug}-{message_id}.pdf`); a write failure
   (unwritable directory, full disk) raises one wrapped error, same
   one-error-type-per-boundary convention as `RulesLoadError`/
-  `ProviderLoadError`/etc. (Conventions, above) — caught by the
-  pipeline stage so the message is **not** marked processed, the same
-  fail-open-for-retry behavior `m2_rules.feature`'s `@audit` scenario
-  already specifies for a transient action-applier failure.
+  `ProviderLoadError`/etc. (Conventions, above) — `ArchiveReceiptAugment`
+  doesn't catch it, so it propagates out of the pipeline run entirely:
+  `WriteAuditEntryFilter`/`MarkProcessedFilter` never run, and the
+  message is **not** marked processed, the same fail-open-for-retry
+  behavior `m2_rules.feature`'s `@audit` scenario already specifies for
+  a transient action-applier failure.
 - **`SporkConfig.receipt_archive: ReceiptArchiveConfig | None = None`**
   — a new, optional config table (`output_dir: Path`). No separate
   seed-file field: curated domain→company seeding is `[context]`'s job
@@ -3793,20 +3803,26 @@ the same "one Protocol per real relationship" call `ThreadHistoryReader`/
   reads it through the same optionally-configured collaborator
   described above, so `[receipt_archive]` only needs to say where
   PDFs go, not repeat a second seed-data mechanism. `None` (the
-  default) means the feature is off entirely — an `archive_receipt`
-  rule with no `[receipt_archive]` configured is a config error,
-  reported the same
-  clean way a missing `provider`/`llm`/`alerts` table already is.
-- **Pipeline wiring** — a new `Augment`/`Filter` pair (§9.4) composed
-  into the `"terminal"` branch alongside `ApplyActionFilter`,
-  triggered specifically by `meta.verdict.action.type ==
-  "archive_receipt"`: look up or learn the sender, extract, tag via
-  `KeywordApplier`, build and save the PDF, record the audit entry.
-  Same "independently testable against a bare `Payload`, no full
+  default) means the feature is off entirely: an `archive_receipt`
+  rule matched with no `receipt_archive` components wired reaches
+  `RuleEvaluationSelector` with nowhere to route to, so `Pipeline.run()`
+  raises `UnknownBranchError` — a real error at pipeline-composition
+  time, not a silent no-op, though not (yet) a dedicated config-loading-
+  time check the way a missing `provider`/`llm`/`alerts` table is.
+- **Pipeline wiring** — `ArchiveReceiptAugment` (§9.4) on a new
+  `"archive_receipt"` branch alongside `"terminal"`/`"escalate"`,
+  selected by `RuleEvaluationSelector` when `meta.verdict.action.type
+  == "archive_receipt"`: look up or learn the sender, extract, tag via
+  `KeywordApplier`, build and save the PDF, then `WriteAuditEntryFilter`/
+  `MarkProcessedFilter` same as the `"terminal"` branch's own tail.
+  `build_default_pipeline()`/`process_message()` gain one new optional
+  `receipt_archive: ReceiptArchiveComponents | None` parameter wiring
+  it in — every existing caller (unaffected, defaults to `None`). Same
+  "independently testable against a bare `Payload`, no full
   `process_message()` needed" shape every other module in §9.4 already
   has.
 
-**Exit criteria (once built):** a known-sender receipt is tagged and
+**Exit criteria:** a known-sender receipt is tagged and
 archived with zero Tier 2 calls; a message from an unrecognized sender
 makes exactly one Tier 2 extraction call and is learned; a second
 message from that now-learned sender is handled deterministically; a

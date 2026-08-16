@@ -64,25 +64,17 @@ behavior is covered directly by
 different reason: the whole pipeline it specifies (docs/DESIGN.md §9.5,
 docs/ROADMAP.md M10) is designed to be offline-testable end to end —
 `FileProvider`, a recorded receipt-extraction fixture, and local PDF
-output, no live account ever required. It's currently also tagged
-`@wip`: most of `spork.core.receipts` doesn't exist yet, so its step
-bindings (`docs/acceptance/steps/m10_receipt_archiving.py`) are real
-(behave binds every step — nothing is "undefined") but each one raises
-`NotImplementedError` until the module it exercises is built. `@wip`
-scenarios are skipped by the same safe default `@manual` scenarios are,
-via `SPORK_ACCEPTANCE_WIP` instead of `SPORK_ACCEPTANCE_LIVE`:
-
-```bash
-SPORK_ACCEPTANCE_WIP=1 uv run behave --tags=m10   # see the current gap
-```
-
-Drop `@wip` from a scenario (and replace its stub bindings with real
-ones) only once the module it exercises actually exists and the
-scenario passes for real — same discipline as graduating an `xfail`
-test, just for behave instead of pytest. Originally numbered M9;
-renumbered to M10 when the real M9 (`m9_entity_context.feature`, above)
-landed independently on `main` first — see `docs/ROADMAP.md` M10's own
-note on the collision.
+output, no live account ever required. Fully bound and passing
+(`docs/acceptance/steps/m10_receipt_archiving.py`) — the integration
+proof composing the modules `m10a`/`m10b`/`m10c`/`m10d` already prove
+independently. (`@wip` was used while `spork.core.receipts` was being
+built, same mechanism `@manual` uses for "needs a live account" but
+for "not built yet" instead, via `SPORK_ACCEPTANCE_WIP` — dropped once
+the real step bindings replaced the `NotImplementedError` stubs and
+every scenario passed for real, same discipline as graduating an
+`xfail` test.) Originally numbered M9; renumbered to M10 when the real
+M9 (`m9_entity_context.feature`, above) landed independently on `main`
+first — see `docs/ROADMAP.md` M10's own note on the collision.
 
 ## Status
 
@@ -101,7 +93,7 @@ note on the collision.
 | `m10b_receipt_senders.feature` | Known-sender registry + deterministic extraction (`spork.core.receipts.registry`/`extract`) | Fully bound and passing on every run — no live account, no network |
 | `m10c_receipt_extraction_llm.feature` | Recorded Tier 2 receipt-extraction fallback (`spork.core.receipts.llm`) | Fully bound and passing on every run — no live model call |
 | `m10d_receipt_provider_capabilities.feature` | Attachment fetching + keyword tagging as Provider capabilities | Fully bound and passing on every run — no live account, no network |
-| `m10_receipt_archiving.feature` | Receipt tagging + combined-PDF archiving, deterministic-first with learned Tier 2 fallback | Scenarios drafted, step bindings scaffolded (`@wip`, all raise `NotImplementedError`); PDF/archive (`m10a`), registry/extraction (`m10b`), Tier 2 fallback (`m10c`), and provider capabilities (`m10d`) modules done, only pipeline wiring left |
+| `m10_receipt_archiving.feature` | Receipt tagging + combined-PDF archiving, deterministic-first with learned Tier 2 fallback | Fully bound and passing on every run — no live account, no network |
 
 The scenarios are deliberately more demanding than the current automated
 suite. A scenario is complete only when its stated live evidence exists,

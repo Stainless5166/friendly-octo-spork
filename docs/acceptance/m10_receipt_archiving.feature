@@ -1,23 +1,18 @@
-# Offline acceptance specification for M10 (planned — see docs/ROADMAP.md).
+# Offline acceptance specification for M10 (docs/ROADMAP.md).
 #
 # Unlike m2/m3/m4's @manual specs, nothing here needs a live Fastmail or
-# Anthropic account: every scenario runs against FileProvider and a
-# recorded receipt-extraction fixture, the same "no live network in the
-# test run itself" shape as m1_jmap_fault_injection.feature. That's the
-# point of the design (docs/DESIGN.md §9.5) — deterministic-first,
-# LLM escalation narrow and recorded, so the whole pipeline is honestly
-# testable without a live account.
-#
-# Currently @wip: the underlying spork.core.receipts.* modules don't
-# exist yet (docs/ROADMAP.md M10), so every step below raises
-# NotImplementedError. @wip scenarios are skipped by the safe default
-# `uv run behave` (docs/acceptance/environment.py), same mechanism as
-# @manual but for "not built yet" instead of "needs a live account".
-# Run `SPORK_ACCEPTANCE_WIP=1 uv run behave --tags=m10` to see the
-# current gap directly. Drop @wip only once real step bindings replace
-# these stubs and the scenarios pass for real.
+# Anthropic account: every scenario runs against a real FileProvider
+# (attachments + keywords) and a real RecordedReceiptExtractionClient
+# fixture, driving the real process_message() pipeline end to end, the
+# same "no live network in the test run itself" shape as
+# m1_jmap_fault_injection.feature. That's the point of the design
+# (docs/DESIGN.md §9.5) — deterministic-first, LLM escalation narrow
+# and recorded, so the whole pipeline is honestly testable without a
+# live account. Fully bound and passing (docs/acceptance/steps/
+# m10_receipt_archiving.py) -- composes the modules m10a/m10b/m10c/m10d
+# already prove independently, this feature is the integration proof.
 
-@m10 @receipt-archiving @wip
+@m10 @receipt-archiving
 Feature: Automatic-payment receipt tagging and archiving
   Spork recognizes automatic-payment receipt emails, tags them with
   receipt/company/date, and archives a single combined PDF (the message

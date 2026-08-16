@@ -1219,8 +1219,13 @@ learned cache, rather than inventing a second static-seed-file format
       acceptance tests (`tests/core/receipts/test_llm.py`), plus
       `docs/acceptance/m10c_receipt_extraction_llm.feature` (3
       scenarios, fully bound and passing, no live model call).
-- [ ] `rules.schema.Action` gains a fourth terminal type,
-      `"archive_receipt"` (S)
+- [x] `rules.schema.Action` gains a fourth terminal type,
+      `"archive_receipt"` (S) — `ActionExecutor` rejects it outright
+      (a routing bug, same as `escalate`); found and fixed a real
+      cross-cutting gap the full pytest run caught: it also had to be
+      excluded from `Verdict.suggested_action`'s legal values and
+      `verdict_tool_schema()`'s tool enum, same reasoning `escalate`
+      already was.
 - [x] `spork.core.receipts.pdf.build_receipt_pdf()`: message +
       attachments -> one PDF (cover page + merged/rendered
       attachments, or cover page alone with no attachments); new
@@ -1236,25 +1241,38 @@ learned cache, rather than inventing a second static-seed-file format
       wrapped `ReceiptArchiveError` on write failure (S) — 6 acceptance
       tests (`tests/core/receipts/test_archive.py`), same
       `m10a_receipt_pdf.feature` covers the archived-filename scenario.
-- [ ] `SporkConfig.receipt_archive: ReceiptArchiveConfig | None` (S)
-- [ ] Pipeline wiring: a new Filter/Augment pair on the `"terminal"`
-      branch for `action.type == "archive_receipt"` (M)
-- [ ] `docs/acceptance/m10_receipt_archiving.feature` bound for real —
-      `@wip` dropped, scenarios passing offline under the safe default
-      `uv run behave` (M)
+- [x] `SporkConfig.receipt_archive: ReceiptArchiveConfig | None` (S) —
+      `output_dir` only; no separate seed-file field, since curated
+      seeding is `[context]`'s job now (M9). Not yet wired into
+      `spork.core.runtime`'s backend composition (constructing
+      `ReceiptArchiveComponents` from config at daemon startup) — a
+      stated follow-up, not exercised by the acceptance suite, which
+      wires components directly at the pipeline level.
+- [x] Pipeline wiring: `spork.core.receipts.pipeline.ArchiveReceiptAugment`
+      on a new `"archive_receipt"` branch alongside `"terminal"`/
+      `"escalate"`, wired into `build_default_pipeline()`/
+      `process_message()` via one new optional `receipt_archive`
+      parameter — every existing caller unaffected (M) — 8 acceptance
+      tests (`tests/core/receipts/test_pipeline.py` +
+      `tests/core/pipeline/test_default.py`).
+- [x] `docs/acceptance/m10_receipt_archiving.feature` bound for real —
+      `@wip` dropped, all 7 scenarios passing offline under the safe
+      default `uv run behave` (M)
 
-**Current status:** in progress. `docs/DESIGN.md` §9.5 records the
-architecture; `docs/acceptance/m10_receipt_archiving.feature` specifies
-the full pipeline's target behavior in Gherkin, with every step bound
-(not left undefined) but raising `NotImplementedError` — real
-scaffolding, not a placeholder, tagged `@wip` so it's skipped by the
-safe-default `uv run behave` the same way `@manual` scenarios are (see
-docs/acceptance/README.md's `SPORK_ACCEPTANCE_WIP` note). The PDF/
-archive module and the known-sender registry's storage are built and
-independently Gherkin-specified (`m10a_receipt_pdf.feature`); the rest
-of the checklist above is built module by module, each following
-CLAUDE.md's design-then-tests-then-implementation order, same as every
-prior milestone.
+**Current status:** done, in the same sense every prior milestone's
+buildable-without-a-live-account items are. `docs/DESIGN.md` §9.5
+records the architecture; every checklist item above is real and
+tested — no `NotImplementedError` stubs remain in
+`spork.core.receipts.*` (the only remaining `NotImplementedError`s are
+`JmapClient.fetch_attachments()`/`apply_keywords()`, the honest
+live-account-blocked leaves every other JMAP write/unbuilt-read path
+already has). `docs/acceptance/m10_receipt_archiving.feature` and its
+four sub-module companions (`m10a`/`m10b`/`m10c`/`m10d`, 22 scenarios
+total) are fully bound and pass on every `uv run behave`. Not wired:
+`spork.core.runtime`'s backend composition doesn't yet build
+`ReceiptArchiveComponents` from `[receipt_archive]`/`[context]` config
+at daemon startup — real follow-up work, tracked here rather than
+silently assumed done.
 
 **Exit criteria:** a known-sender receipt is tagged and archived with
 zero Tier 2 calls; an unrecognized sender is extracted via exactly one
@@ -1262,7 +1280,11 @@ Tier 2 call and learned; a second message from that now-learned sender
 is handled deterministically; a message with attachments and a message
 with none both produce exactly one PDF at the configured location; an
 unwritable archive location fails safely and leaves the message
-retryable. **Not yet met** — still in progress.
+retryable. **Met at the pipeline level** — every clause above is
+proven by `m10_receipt_archiving.feature`'s 7 scenarios, all passing
+against the real pipeline with no live account or network. The one
+remaining gap (`spork.core.runtime` daemon-startup wiring) is
+config/composition plumbing, not a behavior this exit criterion claims.
 
 ## Stretch / post-v1 (not scoped, not blocking)
 
