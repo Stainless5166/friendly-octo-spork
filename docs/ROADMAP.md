@@ -918,13 +918,22 @@ real account on every test run.
       windowed by `position`/`limit` paging, filterable (`unread_only`
       → `notKeyword: $seen`, unconditional for a full sweep) — a new,
       explicitly-named read path, not a flag on `fetch_new_messages()`
-      (M). `JmapQueryResult` carries `position`/`total`/`has_more`,
-      distinct in shape from `JmapFetchResult`'s cursor semantics — a
-      query page isn't an acknowledgeable Email state. 5 acceptance
-      tests (`tests/core/providers/jmap/test_query.py`), same injected
-      jmapc-shaped fake convention as the rest of the package.
-      Live-verified against the real (read-only) account: 4181 total
-      Inbox messages, 2849 unread, real pagination, no writes.
+      (M). `JmapQueryResult` carries `position`/`next_position`/`total`/
+      `has_more`, distinct in shape from `JmapFetchResult`'s cursor
+      semantics — a query page isn't an acknowledgeable Email state.
+      6 acceptance tests (`tests/core/providers/jmap/test_query.py`),
+      same injected jmapc-shaped fake convention as the rest of the
+      package. Live-verified against the real (read-only) account:
+      4181 total Inbox messages, 2849 unread, real pagination, no
+      writes. **PR #20 review finding, fixed:** pagination originally
+      derived `has_more`/the next page's position from
+      `len(messages)` (the post-normalize count) instead of the
+      actual `Email/query` match count — a message deleted/moved
+      between `Email/query` and `Email/get` mid-sweep would have
+      drifted position and could stall a run before reaching `total`.
+      `next_position` now derives from `len(ids)`, and `spork
+      backfill` resumes from `page.next_position`, not
+      `position + len(page.messages)`.
 - [x] A bounded, resumable backfill CLI command (`spork backfill`),
       separate from the daemon's steady-state push/poll
       `TriggeredSource` (M) — standalone like `reclassify`/`logs`

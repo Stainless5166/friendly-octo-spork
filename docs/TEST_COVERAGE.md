@@ -801,7 +801,7 @@ test) — closed with targeted tests, not implementation changes; no
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
-| `JmapClient.query_messages()` | ✅ | ✅ — tests 740–744 (5 tests), live-verified against the real account |
+| `JmapClient.query_messages()` | ✅ | ✅ — tests 740–744, 762 (6 tests), live-verified against the real account |
 | `BackfillPage`/`BackfillProvider` capability (`JmapProvider`, `FileProvider`) | ✅ | ✅ — tests 745–751 (7 tests) |
 | Bounded, resumable `spork backfill` CLI | ✅ | ✅ — tests 752–760 (9 tests: 6 acceptance + 3 edge cases) |
 | `StateDB`/`processed_messages` dedup reuse | ✅ (reuses `process_message()`'s existing idempotency gate, no new mechanism) | ✅ — test 758 |
@@ -810,7 +810,7 @@ test) — closed with targeted tests, not implementation changes; no
 
 ---
 
-## Full test inventory (815 tests, all passing — 0 xfail)
+## Full test inventory (816 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -4081,3 +4081,16 @@ now strips it from what the model is offered.
      from the real recorded flow — the real captured account id and
      baseline cursor come back. Skips (not fails) when the gitignored
      flow file isn't present on this clone.
+
+### tests/core/providers/jmap — pagination drift fix (PR #20 review finding)
+
+Inserted here out of file order (sits physically alongside 740–744 in
+`test_query.py`) but numbered at the end per this doc's stable-
+numbering convention.
+
+762. **`test_query.py::test_query_messages_next_position_accounts_for_ids_not_returned_by_get`**
+     `Email/query` matches 3 ids but `Email/get` only returns 2 (a
+     message deleted/moved in between) — `next_position` still
+     advances by 3 (the actual match count) and `has_more` stays
+     correct, instead of drifting from the post-normalize message
+     count.
