@@ -3786,3 +3786,23 @@ always answers locally, from a canned response or a synthetic fault.
      No canned response configured means every request fails closed
      locally; `requests_forwarded_upstream()` stays 0 — the harness's
      core safety property ahead of ever pointing it at a live account.
+
+### tests/core/llm — exclude escalate from the Tier 2 tool schema (M3, live-corpus finding)
+
+Fix for the finding recorded under M3's confidence-band item: a live
+Claude call chose `suggested_action.type = "escalate"` for ambiguous
+mail, which `Verdict`'s own validator rejects. `verdict_tool_schema()`
+now strips it from what the model is offered.
+
+713. **`test_prompt.py::test_build_prompt_forces_one_deliver_verdict_tool_with_the_verdict_schema`**
+     (updated) The tool's `parameters` equal `verdict_tool_schema()`,
+     not the raw, unmodified `Verdict.model_json_schema()`.
+
+714. **`test_prompt.py::test_verdict_tool_schema_excludes_escalate_from_suggested_action_type`**
+     `suggested_action.type`'s enum is exactly `{"move", "tag",
+     "ignore"}` — `"escalate"` is never offered to the model.
+
+715. **`test_prompt.py::test_verdict_tool_schema_leaves_every_other_field_unchanged`**
+     Every other part of the schema is byte-for-byte identical to
+     `Verdict.model_json_schema()` — the fix is a single-field edit,
+     not a schema rewrite.

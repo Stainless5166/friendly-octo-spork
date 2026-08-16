@@ -215,12 +215,13 @@ milestone; this milestone does not depend on M8.
       `Email/changes`/`Email/get` (5 landed in Inbox; the deliberately
       spammy one was correctly filtered to Junk by Fastmail itself and
       `fetch_new_messages`'s Inbox-only filter, so never entered the
-      pipeline — expected, not a bug). Of those 5, 3 produced valid
-      verdicts and are in the corpus (newsletter, receipt, security
-      notification); 2 hit the `"escalate"`-rejection gap above and
-      aren't recorded. Corpus has 3 entries — genuinely diverse
-      coverage (more categories, more volume) is still open, and is
-      exactly what M8's backfill run is for.
+      pipeline — expected, not a bug). Of those 5, all 5 now produce
+      valid verdicts and are in the corpus — the initial 3 (newsletter,
+      receipt, security notification), plus the 2 that hit the
+      `"escalate"`-rejection gap above, re-run after that fix landed
+      (same content, no new emails sent). Corpus has 5 entries —
+      genuinely diverse coverage (more categories, more volume) is
+      still open, and is exactly what M8's backfill run is for.
 
 **Exit criteria:** `pytest` can force an EventSource disconnect and a
 JMAP request-level fault through the mitmproxy harness and assert
@@ -325,14 +326,16 @@ drives an action.
       (`spork.core.llm.prompt`) never says so, and the tool's JSON
       schema still legally allows `"escalate"` in the enum (shared
       with Tier 1's `Action.type`), so the model reaches for the
-      semantically obvious-but-illegal choice. Not fixed here — two
-      candidate fixes, either or both: (1) tell the model explicitly
-      in the system prompt to signal uncertainty via low `confidence`
-      instead of `escalate`; (2) expose a narrower Tier-2-only action
-      schema to the tool call that excludes `"escalate"` from the
-      enum entirely, which is stronger than a prompt instruction. 3 of
-      5 seeded emails produced valid verdicts; the other 2 hit this
-      failure and are not in the corpus.
+      semantically obvious-but-illegal choice. **Fixed:** both
+      candidate fixes applied —
+      `spork.core.llm.prompt.verdict_tool_schema()` strips
+      `"escalate"` from the tool's `suggested_action.type` enum before
+      it reaches the model, and the system prompt now explicitly says
+      uncertainty belongs in `confidence`, not the action type.
+      Live-verified against the same two messages that failed before
+      (no new emails sent): both now return valid terminal actions
+      with appropriately moderate confidence. Corpus grew from 3 to 5
+      entries as a result.
 - [x] `daily_call_budget` enforcement + `llm_usage` tracking (S) —
       `StateDB` gains an `llm_usage` table + `record_llm_call()`/
       `get_llm_usage()` (§7.4, §10.4); `spork.core.llm.budget.has_budget_remaining()`
