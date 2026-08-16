@@ -51,26 +51,38 @@ those remain the real evidence for M1's exit criterion (an actual
 forced network drop against a real account); this feature makes the
 same Source-composition behavior regression-tested on every run.
 
-`m9_receipt_archiving.feature` is the same "not `@manual`" shape for a
+`m9_entity_context.feature` is also not `@manual`, for a different
+reason than the fault-injection feature above: `EntityContextProvider`
+(docs/DESIGN.md §10.8) has no live dependency at all — it's a
+self-contained, JSON-fixture-backed knowledge base lookup, the same
+"buildable and testable fully offline" category `FileProvider`
+already established. No step bindings exist yet; the described
+behavior is covered directly by
+`tests/core/context/clients/entities/`'s pytest suite instead.
+
+`m10_receipt_archiving.feature` is the same "not `@manual`" shape for a
 different reason: the whole pipeline it specifies (docs/DESIGN.md §9.5,
-docs/ROADMAP.md M9) is designed to be offline-testable end to end —
+docs/ROADMAP.md M10) is designed to be offline-testable end to end —
 `FileProvider`, a recorded receipt-extraction fixture, and local PDF
 output, no live account ever required. It's currently also tagged
-`@wip`: `spork.core.receipts` doesn't exist yet, so its step bindings
-(`docs/acceptance/steps/m9_receipt_archiving.py`) are real (behave
-binds every step — nothing is "undefined") but each one raises
+`@wip`: most of `spork.core.receipts` doesn't exist yet, so its step
+bindings (`docs/acceptance/steps/m10_receipt_archiving.py`) are real
+(behave binds every step — nothing is "undefined") but each one raises
 `NotImplementedError` until the module it exercises is built. `@wip`
 scenarios are skipped by the same safe default `@manual` scenarios are,
 via `SPORK_ACCEPTANCE_WIP` instead of `SPORK_ACCEPTANCE_LIVE`:
 
 ```bash
-SPORK_ACCEPTANCE_WIP=1 uv run behave --tags=m9   # see the current gap
+SPORK_ACCEPTANCE_WIP=1 uv run behave --tags=m10   # see the current gap
 ```
 
 Drop `@wip` from a scenario (and replace its stub bindings with real
 ones) only once the module it exercises actually exists and the
 scenario passes for real — same discipline as graduating an `xfail`
-test, just for behave instead of pytest.
+test, just for behave instead of pytest. Originally numbered M9;
+renumbered to M10 when the real M9 (`m9_entity_context.feature`, above)
+landed independently on `main` first — see `docs/ROADMAP.md` M10's own
+note on the collision.
 
 ## Status
 
@@ -84,8 +96,9 @@ test, just for behave instead of pytest.
 | `m5_control_surface.feature` | Daemon and CLI control surface | FileProvider/systemd-free integration tested; live JMAP path open |
 | `m6_systemd.feature` | Service install and operational startup | Unit/install behavior tested; real user-session acceptance open |
 | `m7_hardening.feature` | Unattended operation and v1 release | Requires real mailbox, model, rate-limit, and one-week run |
-| `m9a_receipt_pdf.feature` | Receipt PDF building + archiving (`spork.core.receipts.pdf`/`archive`) | Fully bound and passing on every run — no live account, no network |
-| `m9_receipt_archiving.feature` | Receipt tagging + combined-PDF archiving, deterministic-first with learned Tier 2 fallback | Scenarios drafted, step bindings scaffolded (`@wip`, all raise `NotImplementedError`); PDF/archive module done (`m9a`), the rest of `spork.core.receipts` not yet implemented |
+| `m9_entity_context.feature` | Structured domain/company/service/person knowledge base | Fully covered by pytest (`tests/core/context/clients/entities/`); no behave bindings, no live dependency to wait on |
+| `m10a_receipt_pdf.feature` | Receipt PDF building + archiving (`spork.core.receipts.pdf`/`archive`) | Fully bound and passing on every run — no live account, no network |
+| `m10_receipt_archiving.feature` | Receipt tagging + combined-PDF archiving, deterministic-first with learned Tier 2 fallback | Scenarios drafted, step bindings scaffolded (`@wip`, all raise `NotImplementedError`); PDF/archive module done (`m10a`), the rest of `spork.core.receipts` not yet implemented |
 
 The scenarios are deliberately more demanding than the current automated
 suite. A scenario is complete only when its stated live evidence exists,

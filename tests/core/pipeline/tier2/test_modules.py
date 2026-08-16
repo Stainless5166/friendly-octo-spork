@@ -10,10 +10,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from spork.core.actions.executor import ActionExecutor
+from spork.core.context.base import ContextResult, ContextSnippet
 from spork.core.llm.base import LLMCallUsage, LLMResult, Verdict, VerdictRequest
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline.core import Payload
+from spork.core.pipeline.meta import MissingMetaError
 from spork.core.pipeline.observer import PipelineObserver
 from spork.core.pipeline.tier2.meta import Tier2Meta
 from spork.core.pipeline.tier2.modules import (
@@ -24,6 +28,7 @@ from spork.core.pipeline.tier2.modules import (
     ConfidenceBandSelector,
     CorrelationIdFilter,
     CreateDraftIfWantedFilter,
+    FetchContextAugment,
     MarkProcessedFilter,
     RecordAlertOnlyFilter,
     RecordBudgetExhaustedFilter,
@@ -97,6 +102,7 @@ def _payload(make_message, **meta_overrides: object) -> Payload[Tier2Meta]:
         "thread_prior_subject": None,
         "thread_user_has_replied": False,
         "available_mailboxes": ("Inbox", "Needs-Reply"),
+        "context": ContextResult(snippets=()),
     }
     defaults.update(meta_overrides)
     return Payload(text=defaults.pop("text", "Body text."), meta=Tier2Meta(**defaults))  # type: ignore[arg-type]
@@ -143,6 +149,35 @@ def test_budget_gate_selector_routes_budget_exhausted_at_the_limit(
     assert branch == "budget_exhausted"
 
 
+class _StubContextProvider:
+    """Returns a fixed ContextResult regardless of the message — proves
+    FetchContextAugment genuinely delegates to whatever ContextProvider
+    it's given, without needing a real backend."""
+
+    def __init__(self, result: ContextResult) -> None:
+        self._result = result
+        self.messages: list[NormalizedMessage] = []
+
+    def get_context(self, message: NormalizedMessage) -> ContextResult:
+        self.messages.append(message)
+        return self._result
+
+
+def test_fetch_context_augment_delegates_to_the_provider_and_sets_context(make_message) -> None:
+    """The Augment calls context_provider.get_context(meta.message) and
+    stores the result in meta.context — same one-I/O-stage shape as
+    CallLLMAugment."""
+    message = make_message(message_id="msg-1")
+    result = ContextResult(snippets=(ContextSnippet(source="notes/a.md", text="A note."),))
+    provider = _StubContextProvider(result)
+    payload = _payload(make_message, message=message)
+
+    updated = FetchContextAugment(provider).augment(payload)
+
+    assert updated.meta.context == result
+    assert provider.messages == [message]
+
+
 def test_build_verdict_request_filter_cleans_the_body_and_builds_the_request(
     make_message,
 ) -> None:
@@ -153,9 +188,10 @@ def test_build_verdict_request_filter_cleans_the_body_and_builds_the_request(
         text="<p>Hello there.</p>",
         thread_prior_subject="Original subject",
         thread_user_has_replied=True,
+        context=ContextResult(snippets=(ContextSnippet(source="notes/a.md", text="A note."),)),
     )
 
-    result = BuildVerdictRequestFilter().apply(payload)
+    result = BuildVerdictRequestFilter(available_categories=["needs_reply", "fyi"]).apply(payload)
 
     assert result.text == "Hello there."
     assert result.meta.request is not None
@@ -164,6 +200,18 @@ def test_build_verdict_request_filter_cleans_the_body_and_builds_the_request(
     assert result.meta.request.thread_prior_subject == "Original subject"
     assert result.meta.request.thread_user_has_replied is True
     assert result.meta.request.available_mailboxes == ("Inbox", "Needs-Reply")
+    assert result.meta.request.available_categories == ("needs_reply", "fyi")
+    assert result.meta.request.context_snippets == ("notes/a.md: A note.",)
+
+
+def test_build_verdict_request_filter_requires_context_to_be_set_first(make_message) -> None:
+    """Same MissingMetaError contract every ordering-dependent filter
+    in this pipeline has (docs/DESIGN.md §9.4) — run FetchContextAugment
+    first."""
+    payload = _payload(make_message, context=None)
+
+    with pytest.raises(MissingMetaError):
+        BuildVerdictRequestFilter(available_categories=["needs_reply"]).apply(payload)
 
 
 def test_call_llm_augment_delegates_to_the_client_and_sets_the_verdict(make_message) -> None:
@@ -171,7 +219,9 @@ def test_call_llm_augment_delegates_to_the_client_and_sets_the_verdict(make_mess
     stores the result in meta.verdict — the one I/O stage."""
     verdict = _verdict()
     client = _StubLLMClient(verdict)
-    payload = BuildVerdictRequestFilter().apply(_payload(make_message))
+    payload = BuildVerdictRequestFilter(available_categories=["needs_reply"]).apply(
+        _payload(make_message)
+    )
 
     result = CallLLMAugment(client).augment(payload)
 

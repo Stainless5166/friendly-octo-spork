@@ -1,9 +1,9 @@
-"""Step scaffolding for M9's receipt-archiving acceptance scenarios.
+"""Step scaffolding for M10's receipt-archiving acceptance scenarios.
 
 Deliberately @wip (docs/acceptance/environment.py skips @wip scenarios
 by default, same mechanism as @manual but for "not built yet" rather
-than "needs a live account" — see m9_receipt_archiving.feature's own
-header comment and docs/ROADMAP.md M9).
+than "needs a live account" — see m10_receipt_archiving.feature's own
+header comment and docs/ROADMAP.md M10).
 
 Every binding below raises NotImplementedError instead of importing
 anything from a not-yet-existing `spork.core.receipts` package: behave
@@ -24,7 +24,7 @@ from typing import Any
 from behave import given, then, when
 
 _NOT_BUILT = (
-    "spork.core.receipts is not implemented yet — see docs/ROADMAP.md M9 "
+    "spork.core.receipts is not implemented yet — see docs/ROADMAP.md M10 "
     "and docs/DESIGN.md §9.5 for the planned design this scenario exercises."
 )
 

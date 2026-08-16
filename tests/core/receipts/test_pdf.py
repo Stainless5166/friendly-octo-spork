@@ -64,10 +64,10 @@ def test_no_attachments_produces_a_single_cover_page_with_the_tags() -> None:
 
 def test_a_pdf_attachment_is_merged_page_for_page() -> None:
     attachment_pdf = _one_page_pdf_bytes()
-    attachment = Attachment(filename="invoice.pdf", content_type="application/pdf", data=attachment_pdf)
-    pdf_bytes = build_receipt_pdf(
-        _message(), [attachment], company="Acme Cloud", date="2026-08-01"
+    attachment = Attachment(
+        filename="invoice.pdf", content_type="application/pdf", data=attachment_pdf
     )
+    pdf_bytes = build_receipt_pdf(_message(), [attachment], company="Acme Cloud", date="2026-08-01")
     reader = PdfReader(BytesIO(pdf_bytes))
     # One cover page + the one page from the merged attachment.
     assert len(reader.pages) == 2
@@ -75,10 +75,10 @@ def test_a_pdf_attachment_is_merged_page_for_page() -> None:
 
 
 def test_an_image_attachment_becomes_its_own_page() -> None:
-    attachment = Attachment(filename="receipt.png", content_type="image/png", data=_one_pixel_png_bytes())
-    pdf_bytes = build_receipt_pdf(
-        _message(), [attachment], company="Acme Cloud", date="2026-08-01"
+    attachment = Attachment(
+        filename="receipt.png", content_type="image/png", data=_one_pixel_png_bytes()
     )
+    pdf_bytes = build_receipt_pdf(_message(), [attachment], company="Acme Cloud", date="2026-08-01")
     reader = PdfReader(BytesIO(pdf_bytes))
     assert len(reader.pages) == 2
 
@@ -87,19 +87,17 @@ def test_an_unrenderable_attachment_gets_a_placeholder_page_naming_it() -> None:
     attachment = Attachment(
         filename="statement.csv", content_type="text/csv", data=b"date,amount\n2026-08-01,12.00\n"
     )
-    pdf_bytes = build_receipt_pdf(
-        _message(), [attachment], company="Acme Cloud", date="2026-08-01"
-    )
+    pdf_bytes = build_receipt_pdf(_message(), [attachment], company="Acme Cloud", date="2026-08-01")
     reader = PdfReader(BytesIO(pdf_bytes))
     assert len(reader.pages) == 2
     assert "statement.csv" in reader.pages[1].extract_text()
 
 
 def test_multiple_attachments_are_combined_in_input_order() -> None:
-    first = Attachment(filename="a.pdf", content_type="application/pdf", data=_one_page_pdf_bytes("first"))
-    second = Attachment(
-        filename="b.png", content_type="image/png", data=_one_pixel_png_bytes()
+    first = Attachment(
+        filename="a.pdf", content_type="application/pdf", data=_one_page_pdf_bytes("first")
     )
+    second = Attachment(filename="b.png", content_type="image/png", data=_one_pixel_png_bytes())
     pdf_bytes = build_receipt_pdf(
         _message(), [first, second], company="Acme Cloud", date="2026-08-01"
     )

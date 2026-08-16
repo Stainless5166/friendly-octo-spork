@@ -65,5 +65,7 @@ def test_load_llm_client_resolves_recorded_llm_client_by_its_documented_spec(
         thread_prior_subject=None,
         thread_user_has_replied=False,
         available_mailboxes=(),
+        available_categories=(),
+        context_snippets=(),
     )
     assert client.get_verdict(request).verdict.category == "fyi"

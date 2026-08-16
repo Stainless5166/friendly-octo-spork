@@ -1,10 +1,10 @@
 # Offline acceptance specification for spork.core.receipts.pdf/archive
-# (docs/ROADMAP.md M9, docs/DESIGN.md §9.5). Reusable independent of the
+# (docs/ROADMAP.md M10, docs/DESIGN.md §9.5). Reusable independent of the
 # rest of the receipt-archiving pipeline: this module only knows about a
 # message, its attachments, and where to put the result -- nothing about
 # rules, providers, or Tier 2. No live account, no network.
 
-@m9 @receipt-pdf
+@m10 @receipt-pdf
 Feature: Receipt PDF building and archiving
   A receipt message and its attachments combine into exactly one PDF,
   saved to a configured directory under a predictable filename.

@@ -7,6 +7,9 @@ from spork.core.alerts.base import Alerter
 from spork.core.alerts.loader import load_alerter
 from spork.core.config.paths import resolve_secretspec_path
 from spork.core.config.schema import BackendSpec, SporkConfig
+from spork.core.context.base import ContextProvider
+from spork.core.context.clients.null import NullContextProvider
+from spork.core.context.loader import load_context_provider
 from spork.core.llm.base import LLMClient
 from spork.core.llm.loader import load_llm_client
 from spork.core.llm.recording import RecordingLLMClient
@@ -24,7 +27,9 @@ def resolve_runtime_secrets(
     resolver: SecretResolver = resolve_secrets,
 ) -> Secrets:
     """Resolve SecretSpec once when any configured backend maps a secret."""
-    specs = (config.provider, config.llm, config.alerts)
+    specs: tuple[BackendSpec, ...] = (config.provider, config.llm, config.alerts)
+    if config.context is not None:
+        specs = (*specs, config.context)
     if not any(spec.secret_kwargs for spec in specs):
         return Secrets({})
     return resolver(resolve_secretspec_path(), reason=reason)
@@ -63,4 +68,15 @@ def build_alerter(config: SporkConfig, secrets: Secrets) -> Alerter:
     return load_alerter(
         config.alerts.spec,
         **materialize_backend_kwargs(config.alerts, secrets),
+    )
+
+
+def build_context_provider(config: SporkConfig, secrets: Secrets) -> ContextProvider:
+    """Load the configured knowledgebase context provider, or the real
+    "nothing configured" default when `[context]` is omitted."""
+    if config.context is None:
+        return NullContextProvider()
+    return load_context_provider(
+        config.context.spec,
+        **materialize_backend_kwargs(config.context, secrets),
     )

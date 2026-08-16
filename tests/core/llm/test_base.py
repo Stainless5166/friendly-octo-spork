@@ -24,6 +24,8 @@ def _request(**overrides: object) -> VerdictRequest:
         "thread_prior_subject": None,
         "thread_user_has_replied": False,
         "available_mailboxes": ("Inbox", "Needs-Reply"),
+        "available_categories": ("needs_reply", "fyi"),
+        "context_snippets": (),
     }
     defaults.update(overrides)
     return VerdictRequest(**defaults)  # type: ignore[arg-type]
@@ -50,6 +52,17 @@ def test_verdict_request_holds_the_assembled_prompt_inputs() -> None:
     assert request.subject == "Re: Thursday call"
     assert request.thread_user_has_replied is True
     assert request.available_mailboxes == ("Inbox", "Needs-Reply")
+    assert request.available_categories == ("needs_reply", "fyi")
+
+
+def test_verdict_request_carries_context_snippets_from_the_knowledgebase() -> None:
+    """docs/DESIGN.md §10.8: read-only context/knowledgebase retrieval
+    lands here, flattened to plain strings — never a per-message
+    Provider read like available_mailboxes, a deployment-config-driven
+    ContextProvider call instead."""
+    request = _request(context_snippets=("notes/acme.md: ACME renews annually in March.",))
+
+    assert request.context_snippets == ("notes/acme.md: ACME renews annually in March.",)
 
 
 def test_verdict_parses_a_valid_llm_response() -> None:
@@ -77,6 +90,26 @@ def test_verdict_accepts_an_explicit_draft_reply() -> None:
     verdict = Verdict.model_validate(_verdict_json(draft_reply="Friday 2pm works for me."))
 
     assert verdict.draft_reply == "Friday 2pm works for me."
+
+
+def test_verdict_metadata_defaults_to_an_empty_dict_when_omitted() -> None:
+    """metadata is optional freeform extraction (docs/DESIGN.md §10.1) —
+    omitting it entirely from the response is valid, same convention
+    as draft_reply."""
+    verdict = Verdict.model_validate(_verdict_json())
+
+    assert verdict.metadata == {}
+
+
+def test_verdict_accepts_freeform_metadata_key_value_pairs() -> None:
+    """A model may surface arbitrary extracted data (dates, order
+    numbers, reference ids) via metadata — not a closed set, unlike
+    category/suggested_action.mailbox."""
+    verdict = Verdict.model_validate(
+        _verdict_json(metadata={"order_number": "A-1234", "due_date": "2026-08-20"})
+    )
+
+    assert verdict.metadata == {"order_number": "A-1234", "due_date": "2026-08-20"}
 
 
 def test_verdict_rejects_unknown_fields() -> None:

@@ -13,6 +13,7 @@ import pytest
 
 from spork.core.actions.executor import ActionExecutor
 from spork.core.alerts.base import AlertUrgency
+from spork.core.context.clients.null import NullContextProvider
 from spork.core.llm.clients.recorded import RecordedLLMClient
 from spork.core.llm.validate import VerdictValidationError
 from spork.core.models import NormalizedMessage
@@ -72,6 +73,7 @@ def _default_kwargs(**overrides: object) -> dict[str, object]:
         "daily_call_budget": 200,
         "alert_threshold": 0.55,
         "autoact_threshold": 0.85,
+        "context_provider": NullContextProvider(),
         "ops": PipelineObserver(_FakeAlerter()),
         "now": lambda: "2026-08-12T10:00:00Z",
     }

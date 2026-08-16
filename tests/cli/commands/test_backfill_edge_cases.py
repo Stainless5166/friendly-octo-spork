@@ -201,3 +201,76 @@ def test_backfill_builds_tier2_provider_capabilities_once_per_run_not_per_messag
         "build_mailbox_lister": 1,
         "build_draft_creator": 1,
     }
+
+
+def test_backfill_quarantines_instead_of_crashing_on_an_out_of_set_category(
+    tmp_path: Path,
+) -> None:
+    """Same fix as reclassify's: an out-of-set category is quarantined
+    (counted, reported, StateDB-marked) instead of crashing the run."""
+    messages_path = tmp_path / "messages.json"
+    messages_path.write_text(
+        json.dumps(
+            [
+                {
+                    "message_id": "msg-1",
+                    "thread_id": "thread-1",
+                    "from_address": "boss@example.com",
+                    "from_domain": "example.com",
+                    "subject": "Urgent",
+                    "body_text": "Need this today.",
+                }
+            ]
+        )
+    )
+    rules_path = tmp_path / "rules.toml"
+    rules_path.write_text(
+        '[[rule]]\nid = "catch-all"\nwhen = { always = true }\naction = { type = "escalate" }\n'
+    )
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text(
+        json.dumps(
+            {
+                "Urgent": {
+                    "category": "needs_reply",
+                    "urgency": "high",
+                    "confidence": 0.95,
+                    "suggested_action": {"type": "ignore"},
+                    "summary": "s",
+                    "reasoning": "r",
+                }
+            }
+        )
+    )
+    config_dir = tmp_path / "xdg-config-home" / "spork"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.toml").write_text(
+        f"""
+        rules_path = "{rules_path}"
+        db_path = "{tmp_path / "state.sqlite3"}"
+        socket_path = "{tmp_path / "sporkd.sock"}"
+
+        [provider]
+        spec = "spork.core.providers.file.provider:FileProvider"
+        [provider.kwargs]
+        messages_path = "{messages_path}"
+        actions_log_path = "{tmp_path / "actions.jsonl"}"
+
+        [llm]
+        spec = "spork.core.llm.clients.recorded:RecordedLLMClient"
+        [llm.kwargs]
+        responses_path = "{responses_path}"
+
+        [alerts]
+        spec = "spork.core.alerts.log:LoggingAlerter"
+
+        [tiering]
+        """
+    )
+    env = _env(tmp_path)
+
+    result = _run(env=env)
+
+    assert result.returncode == 0
+    assert "1 quarantined" in result.stdout
+    assert "Traceback" not in result.stderr

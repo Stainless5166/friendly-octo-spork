@@ -261,9 +261,48 @@ the harness, not a push.py behavior change. This section's per-test
 counts elsewhere in the file were not otherwise reconciled to the
 suite's current total in this pass. Combined with M7a and M8's own
 work below, and merged with M7a's own fuzz/mutation-testing work,
-**the full suite is now 815 tests, all green** — the
-running per-paragraph totals above this point were not individually
-reconciled to that figure; treat this line as the current authority.
+the full suite reached 815 tests, all green. Updated once more for
+M7's poison-message resiliency item:
+`spork.core.pipeline.tier2.escalate.escalate_message_or_quarantine()`
+wraps `escalate_message()`, catching a narrow, explicit tuple
+(`QUARANTINABLE_ERRORS`) of known bad-model-output/action-execution
+failures rather than a bare `except Exception`, quarantining the
+message (marked processed, audited, a `critical` alert fired) instead
+of letting a single malformed Tier 2 verdict crash
+`_run_message_loop()`/`spork reclassify`/`spork backfill` and leave
+the message stuck retrying forever. Wired into all three real callers.
+**M7 is now 6/10.** Updated once more for an M3 follow-up: the model
+was never actually sent this deployment's configured category set
+(`TieringConfig.allowed_categories` only ever reached
+`ValidateVerdictFilter`'s post-hoc check, never the prompt) — fixed via
+`VerdictRequest.available_categories`/`BuildVerdictRequestFilter`;
+`Verdict` also gained a freeform `metadata: dict[str, str]` field for
+extracted data outside any closed/validated set. Updated once more for
+item 3, a new M9: `spork.core.context` — `ContextProvider` Protocol,
+dynamic loader, `NullContextProvider` (the real default) and
+`MarkdownVaultContextProvider` (a settled-shape stub, blocked on an
+undecided retrieval-algorithm choice rather than a live call), wired
+into the Tier 2 pipeline via a new `FetchContextAugment` and
+`VerdictRequest.context_snippets`, `SporkConfig.context` +
+`runtime.build_context_provider()`, threaded through all three real
+Tier 2 callers. Updated once more for item 4:
+`spork.core.classify.keyword.KeywordClassifier`, the dependency-free
+default local classifier §9.1 always documented but never shipped —
+self-registers as `"keyword_heuristic"` at import time, fixing
+`tiering.local_classifier`'s previously complete non-functionality in
+every real deployment. **The full suite is now 870 tests, all green**
+— the running per-paragraph totals above this point were not
+individually reconciled to that figure; treat this line as the
+current authority. Updated once more for M9's `EntityContextProvider`
+(prototype): a second real `context/clients` backend, structured
+rather than free-text — domains, companies, services, and people
+parsed from a JSON fixture, `Service.provided_by` aggregated across
+every company that lists a given service, `get_context()` turning a
+recognized `from_domain`/`from_address` into `ContextSnippet`s. Unlike
+`MarkdownVaultContextProvider`, this has no undecided-retrieval-
+algorithm blocker, so it ships complete, backed by Gherkin
+(`docs/acceptance/m9_entity_context.feature`) and 100%-covered pytest.
+**M9 is now 3/4; the full suite is 892 tests, all green.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -364,12 +403,11 @@ live push/reconnect evidence remains a manual acceptance item.
 | `Dispatcher` | ✅ | ✅ — tests 12, 13, 14, 15 |
 | `Combiner` (`Primary`, `HighestConfidence`) | ✅ | ✅ — tests 5, 6, 8, 9, 10, 11 |
 | `DispatchingClassifier` | ✅ | ✅ — test 7 |
+| `KeywordClassifier` (default backend, item 4) | ✅ | ✅ — tests 812–819 (100% line coverage) |
 | Exit criteria (replay → rule engine; ensemble → rule engine) | ✅ | ✅ — tests 36 and 7 directly demonstrate each half |
 
-**6 of 6 items done, all tested, exit criteria directly demonstrated by
-name.** This is the one milestone where "implemented" and "tested"
-are both complete — 21 of the 45 suite tests exist for this milestone
-alone.
+**7 of 7 items done, all tested, exit criteria directly demonstrated by
+name.**
 
 ### M1b — Provider abstraction
 
@@ -484,6 +522,7 @@ Protocol-level seam M3's prompt-building chain is expected to use.
 | `daily_call_budget` + `llm_usage` tracking | ✅ | ✅ — tests 226–239 (14 tests), 100% line coverage |
 | Recorded-response fixtures for CI | ✅ | ✅ — tests 240–252 (13 tests), 100% line coverage |
 | Draft creation path | ✅ | ✅ — tests 253–261 (9 tests), 100% line coverage |
+| Category taxonomy sent to the model + `Verdict.metadata` (follow-up) | ✅ | ✅ — tests 780–786, 100% line coverage on every touched module |
 
 `spork.core.llm.clean.clean_body()` is pure string transformation with
 no dependency on `NormalizedMessage`, JMAP, or the Claude API — HTML
@@ -528,13 +567,15 @@ duplicate that idempotency check; the scheduling decision needs a live
 JMAP session to know what's actually pending (M5, same blocker M1's
 daemon loop has), and isn't invented here.
 
-### M4 — Alerting — 2.5/3
+### M4 — Alerting — 4.5/5
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `Alerter` protocol + `LoggingAlerter` | ✅ | ✅ — tests 303–317 (15 tests), 100% line coverage |
+| SMTP alert backend (burn-in/unattended acceptance) | ✅ | ✅ — tests 699–701 (3 tests) |
+| Real desktop-notification backend (`DesktopAlerter`) | ✅ | ✅ — tests 766–770 (5 tests), 100% line coverage |
 | Alert triggers wired to confidence bands + VIP rules + daemon health | ✅ pipeline-visible portion — VIP escalation, alert_only, autoact_alert + urgency=="high", budget exhausted; ✅ daemon health, daily-budget-exhausted half (one-shot-per-day critical alert, `_check_daily_budget_alert()`); ❌ daemon health, JMAP-push-disconnected half (still genuinely blocked on a live EventSource connection to time out on — see `spork.core.providers.jmap.push.JmapPushTrigger`'s docstring) | ✅ pipeline-visible portion — tests 318–346 (29 tests: `from_in` prerequisite 318–322, `PipelineObserver`/`CorrelationIdFilter`/wiring 323–346), 100% line coverage on the touched modules; ✅ daily-budget-exhausted alert — tests 503–508 (6 tests), 100% line coverage on `spork.daemon` |
-| Graceful degrade when no DBus session bus is available | — | moot for now — see below |
+| Graceful degrade when no DBus session bus is available | ✅ `DesktopAlerter`'s own job — `notify-send` missing/failing falls back to `LoggingAlerter` | ✅ — 2 of tests 766–770 cover this directly |
 
 `spork.core.alerts.base`/`log`/`loader` mirror
 `spork.core.providers.base`/`loader` and `spork.core.llm.base`/`loader`
@@ -548,11 +589,21 @@ so a future real desktop backend needs no translation layer.
 `LoggingAlerter` is a genuine, working delivery channel (not a stub):
 each alert is logged via `logging.getLogger(__name__)`, urgency mapped
 to a log level, never configuring handlers itself (Python logging best
-practice — that's the application's job, M7). The "graceful degrade
-when no DBus session bus is available" checklist item doesn't apply to
-`LoggingAlerter` (no DBus dependency to degrade from) — it's really
-about the future desktop-notification backend, and gets its own
-checkbox once that backend exists.
+practice — that's the application's job, M7).
+
+`spork.core.alerts.desktop.DesktopAlerter` is the real backend the
+above always pointed toward: wraps `notify-send(1)` (→
+`org.freedesktop.Notifications` over the session D-Bus, no new DBus
+library dependency), `runner` injected the same DI-for-subprocess
+pattern `install_service()` uses. The "graceful degrade when no DBus
+session bus is available" checklist item is this backend's own job,
+not a separate mechanism — `notify-send` missing (not installed) or
+failing (no session bus, a headless/SSH-only login) both fall back to
+a fresh `LoggingAlerter` rather than raising, so `sporkd` keeps
+running and the alert lands in the log instead of popping up. `spork
+doctor`-style live proof (a real popup actually appearing) needs a
+real desktop session this sandbox doesn't have — same shape of gap as
+every other live-account item, just for a desktop session instead.
 
 `spork.core.pipeline.observer.PipelineObserver` (`docs/DESIGN.md`
 §12.2) bundles per-message correlation-ID tracing with `Alerter`
@@ -727,7 +778,7 @@ fully-configured one passing every check this milestone can actually
 make pass, leaving only JMAP connectivity (M1, genuinely blocked) and
 the never-installed systemd unit non-zero (test 552).
 
-### M7 — Hardening & v1 release — 5/9
+### M7 — Hardening & v1 release — 6/10
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
@@ -739,6 +790,7 @@ the never-installed systemd unit non-zero (test 552).
 | Audit trail completeness (control-plane changes) | ✅ | ✅ — tests 596–609 (`StateDB.write_control_plane_audit_entry()`, `DaemonState.pending_control_plane_events`, CLI wiring across rules/config/pause/resume/reclassify — 100% coverage on every touched module) |
 | Security review pass against §15 | ✅ | ✅ — test 610 (the one gap that needed a code fix: `Secrets.__repr__`); the README privacy-disclosure gap needed no test (prose) |
 | Full test suite green; rule engine + action executor coverage | ✅ | ✅ — `spork.core.rules`/`spork.core.actions.executor` were already 100% line+branch before this pass; one small opportunistic gap closed (tests 608–609) |
+| Poison-message resiliency (Tier 2 quarantine, not a crash) | ✅ | ✅ — tests 771–777 (`escalate_message_or_quarantine()`, `QUARANTINABLE_ERRORS`), 778–779 (`spork reclassify`/`spork backfill` wiring) |
 | Tag v1.0.0 | — | Gated on the exit criteria below, which are gated on a live account |
 
 `spork.core.pipeline.tracing` (`TracingStage`/`TracingSelector`) is a
@@ -808,9 +860,18 @@ test) — closed with targeted tests, not implementation changes; no
 | Backfill-specific throttle/budget policy | ✅ (`--limit`, default 50) | ✅ — tests 756, 760 |
 | Full backfill run growing the corpus at volume | — | not started — a 13-entry hand-picked seed exists (M1c) via direct SMTP+LLM calls, not a `spork backfill` run; that needs an all-`ignore` rules file or the write-side JMAP stubs resolved first (`apply_action()`/`create_draft()` are still `NotImplementedError`) |
 
+### M9 — Read-only knowledgebase context retrieval — 3/4
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `ContextProvider` Protocol + dynamic loader + pipeline wiring | ✅ | ✅ — tests 787–796, 801–805, 811 (100% line coverage on `spork.core.context`) |
+| `NullContextProvider` (the real default) | ✅ | ✅ — tests 797–798 |
+| A real backend that actually reads content (free-text vault) | — | genuinely undecided design work, not a live-account blocker — `MarkdownVaultContextProvider` (tests 799–800) settles the shape as a stub; the retrieval algorithm choice needs real vault content to validate against |
+| `EntityContextProvider` (structured domain/company/service/person knowledge base, prototype) | ✅ | ✅ — tests 820–841 (100% line coverage on `spork.core.context.clients.entities`); specified in Gherkin (`docs/acceptance/m9_entity_context.feature`) |
+
 ---
 
-## Full test inventory (819 tests, all passing — 0 xfail)
+## Full test inventory (892 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -4112,3 +4173,373 @@ numbering convention.
 765. **`test_backfill_edge_cases.py::test_backfill_rejects_a_non_positive_page_size`**
      `--page-size 0` exits non-zero with a clean usage error, no
      traceback — same previous silent-no-op gap.
+
+### tests/core/alerts — DesktopAlerter (M4)
+
+766. **`test_desktop.py::test_desktop_alerter_calls_notify_send_with_title_body_and_urgency`**
+     `notify-send -u critical "Needs review" "Please inspect"` — the
+     exact argv, urgency passed straight through as `-u`.
+
+767. **`test_desktop.py::test_desktop_alerter_appends_the_url_to_the_body`**
+     A given `url` is appended to the message body, same convention
+     `SmtpAlerter` already uses.
+
+768. **`test_desktop.py::test_desktop_alerter_falls_back_to_logging_when_notify_send_is_missing`**
+     `notify-send` not installed (`FileNotFoundError`) — falls back to
+     the injected `Alerter`, never raises.
+
+769. **`test_desktop.py::test_desktop_alerter_falls_back_to_logging_when_notify_send_fails`**
+     A non-zero exit (`CalledProcessError` — e.g. no session D-Bus bus,
+     a headless/SSH-only login) — same fallback, never raises.
+
+770. **`test_desktop.py::test_desktop_alerter_defaults_to_a_real_logging_alerter_fallback`**
+     No explicit `fallback=` given: still degrades gracefully using a
+     real `LoggingAlerter`, not losing the alert entirely.
+
+### tests/core/pipeline/tier2 — poison-message resiliency (`escalate_message_or_quarantine`)
+
+771. **`test_escalate.py::test_escalate_message_or_quarantine_passes_through_a_normal_verdict`**
+     The common path is unaffected: a valid, in-set verdict comes back
+     exactly as `escalate_message()` itself would return it.
+
+772. **`test_escalate.py::test_escalate_message_or_quarantine_still_returns_none_on_budget_exhausted`**
+     `None` (budget exhausted) and `QuarantinedMessage` are distinct
+     signals — a caller must be able to tell them apart.
+
+773. **`test_escalate.py::test_escalate_message_or_quarantine_quarantines_an_out_of_set_category`**
+     `VerdictValidationError` (a category outside `allowed_categories`)
+     is quarantined, not raised: the message is marked processed
+     (never retried forever, never re-burning budget) and a
+     `tier2_quarantined` audit entry is written.
+
+774. **`test_escalate.py::test_escalate_message_or_quarantine_quarantines_a_malformed_action`**
+     `ActionExecutionError` (a `move` with no mailbox — a shape check
+     `Verdict`'s own pydantic model doesn't catch, since `Action.mailbox`
+     is optional) is quarantined the same way.
+
+775. **`test_escalate.py::test_escalate_message_or_quarantine_quarantines_a_failed_llm_call`**
+     `LiteLLMClientError` (the live call itself failed) is quarantined
+     the same way as a malformed-but-successful response.
+
+776. **`test_escalate.py::test_escalate_message_or_quarantine_fires_a_critical_alert`**
+     A quarantined verdict fires exactly one `critical`-urgency alert
+     through the injected `Alerter`.
+
+777. **`test_escalate.py::test_escalate_message_or_quarantine_does_not_catch_a_real_pipeline_bug`**
+     A `MissingMetaError` (a genuine wiring bug, not a bad model
+     response) is deliberately not in `QUARANTINABLE_ERRORS` — it still
+     propagates rather than being silently absorbed as if it were a
+     quarantinable model-output failure.
+
+### tests/cli/commands — poison-message resiliency wired into `reclassify`/`backfill`
+
+778. **`test_reclassify_edge_cases.py::test_reclassify_quarantines_instead_of_crashing_on_an_out_of_set_category`**
+     `spork reclassify` on a message whose Tier 2 verdict names an
+     out-of-set category exits 0, reports `"...quarantined..."` on
+     stdout, no traceback — instead of the prior uncaught
+     `VerdictValidationError` crashing the command.
+
+779. **`test_backfill_edge_cases.py::test_backfill_quarantines_instead_of_crashing_on_an_out_of_set_category`**
+     Same fix, `spork backfill`: an out-of-set category is quarantined
+     (counted separately from Tier 2 verdicts, reported as
+     `"1 quarantined"`, `StateDB`-marked) instead of crashing the run.
+
+### tests/core/llm, tests/core/pipeline/tier2 — category taxonomy sent to the model + Verdict.metadata (M3 follow-up)
+
+780. **`test_base.py::test_verdict_request_holds_the_assembled_prompt_inputs`** (updated)
+     `VerdictRequest.available_categories` round-trips like every
+     other field.
+
+781. **`test_base.py::test_verdict_metadata_defaults_to_an_empty_dict_when_omitted`**
+     `metadata` is optional freeform extraction — omitting it from the
+     response is valid, same convention as `draft_reply`.
+
+782. **`test_base.py::test_verdict_accepts_freeform_metadata_key_value_pairs`**
+     A model may surface arbitrary extracted data (dates, order
+     numbers, reference ids) via `metadata` — not a closed set, unlike
+     `category`/`suggested_action.mailbox`.
+
+783. **`test_base_edge_cases.py::test_verdict_rejects_a_non_string_metadata_value`**
+     `metadata` is `dict[str, str]`, not `dict[str, Any]` — an int
+     value is a validation failure. Passes against the existing
+     implementation with no code change: pydantic's default strict
+     string coercion already enforces it.
+
+784. **`test_prompt.py::test_build_prompt_contains_the_complete_message_context`** (updated)
+     `available_categories` now appears in the exact user-message JSON
+     sent upstream, alongside `available_mailboxes`; the system
+     prompt's "Choose category and mailbox only from the values
+     supplied" claim is now literally true. System message also gained
+     a sentence describing the optional `metadata` field.
+
+785. **`test_modules.py::test_build_verdict_request_filter_cleans_the_body_and_builds_the_request`** (updated)
+     `BuildVerdictRequestFilter(available_categories, max_body_chars)`
+     threads `available_categories` into the `VerdictRequest` it
+     builds — a constructor argument (deployment config), not a
+     `Tier2Meta` field (per-message Provider read), same relationship
+     `max_body_chars` already has to this filter.
+
+786. **`test_default.py::test_process_tier2_message_sends_allowed_categories_to_the_model`**
+     `build_tier2_pipeline()` wires `TieringConfig.allowed_categories`
+     into the actual prompt via `BuildVerdictRequestFilter`, not just
+     `ValidateVerdictFilter`'s post-hoc check — a recording `LLMClient`
+     spy asserts the exact `VerdictRequest.available_categories` it
+     received.
+
+### tests/core/context — ContextProvider, the read-only knowledgebase interface (item 3, docs/DESIGN.md §10.8)
+
+787. **`test_base.py::test_context_snippet_holds_a_source_and_text`**
+     `ContextSnippet(source, text)` round-trips both fields.
+
+788. **`test_base.py::test_context_result_holds_zero_or_more_snippets`**
+     `ContextResult.snippets` is an ordered tuple of however many
+     `ContextSnippet`s a backend returned.
+
+789. **`test_base.py::test_context_result_empty_is_a_valid_no_context_answer`**
+     `ContextResult(snippets=())` — "no relevant context found" is a
+     real, first-class answer, not an error or a missing field.
+
+790. **`test_base.py::test_a_plain_class_with_get_context_structurally_satisfies_contextprovider`**
+     Protocol-based DI, same as every other backend seam in this
+     codebase — nothing needs to import or inherit from
+     `ContextProvider` to satisfy it.
+
+791. **`test_loader.py::test_load_context_provider_imports_and_instantiates_by_spec`**
+     A well-formed `"module:ClassName"` spec resolves to an instance —
+     mirrors `test_load_llm_client_imports_and_instantiates_by_spec`.
+
+792. **`test_loader.py::test_load_context_provider_passes_through_constructor_kwargs`**
+     Extra kwargs reach the provider's constructor unmodified.
+
+793. **`test_loader.py::test_load_context_provider_raises_for_malformed_spec`**
+     A spec with no `':'` separator is rejected before any import is
+     attempted.
+
+794. **`test_loader.py::test_load_context_provider_raises_for_an_unimportable_module`**
+     An unimportable module name fails loudly via
+     `ContextProviderLoadError`, not a raw `ImportError`.
+
+795. **`test_loader.py::test_load_context_provider_raises_for_a_missing_class`**
+     A real module but a nonexistent class name fails loudly via
+     `ContextProviderLoadError`, not a raw `AttributeError`.
+
+796. **`test_loader_edge_cases.py::test_load_context_provider_raises_when_construction_fails`**
+     A provider whose constructor rejects the given kwargs fails
+     loudly rather than a raw `TypeError` leaking through unwrapped.
+
+797. **`clients/test_null.py::test_null_context_provider_always_returns_an_empty_result`**
+     `NullContextProvider` — the real "no knowledgebase configured"
+     default — always answers `ContextResult(snippets=())` regardless
+     of the message.
+
+798. **`clients/test_null.py::test_null_context_provider_takes_no_constructor_arguments`**
+     No config, no kwargs to get wrong — the safe default a minimal
+     config.toml (no `[context]` table) resolves to.
+
+799. **`clients/test_vault.py::test_get_context_raises_not_implemented_yet`**
+     `MarkdownVaultContextProvider.get_context()` raises
+     `NotImplementedError` naming `docs/ROADMAP.md` — a settled-shape
+     stub, same pattern `JmapClient` uses, but blocked on an undecided
+     retrieval-algorithm design question rather than a live call.
+
+800. **`clients/test_vault.py::test_constructor_settles_the_real_shape_without_reading_the_vault`**
+     Constructing one doesn't require the vault directory to exist yet
+     or do any I/O — same "settle the shape, defer the behavior"
+     split `JmapClient`'s constructor makes.
+
+### tests/core/context/clients/entities — EntityContextProvider, a structured knowledge base backend (M9 prototype)
+
+Inserted here out of file order (sits physically alongside 797–800 as
+a third `context/clients` backend) but numbered at the end per this
+doc's stable-numbering convention.
+
+820. **`test_data.py::test_load_entity_data_parses_companies_services_and_people`**
+     A well-formed companies/services/people fixture parses into
+     `Company`/`Service`/`Person` records, each field preserved as
+     authored.
+
+821. **`test_data.py::test_load_entity_data_defaults_missing_sections_to_empty`**
+     A fixture with only `"companies"` is valid — `"services"`/`"people"`
+     are optional sections, not required ones.
+
+822. **`test_provider.py::test_lookup_domain_returns_the_operating_company`**
+     `EntityContextProvider.lookup_domain()` resolves a tracked domain
+     to the company known to operate it.
+
+823. **`test_provider.py::test_lookup_company_returns_its_domains_and_services`**
+     `lookup_company()` returns the domains it operates and the
+     services it provides, exactly as authored in the fixture.
+
+824. **`test_provider.py::test_lookup_service_aggregates_providers_across_companies`**
+     A service several companies list independently (e.g. both Gandi
+     and Cloudflare offering "DNS hosting") comes back as one
+     `Service` record naming every provider — computed by the
+     backend, not stored redundantly in the fixture.
+
+825. **`test_provider.py::test_lookup_person_returns_their_affiliated_company`**
+     `lookup_person()` resolves a tracked person (by email) to their
+     affiliated company.
+
+826. **`test_provider.py::test_get_context_returns_a_snippet_for_a_known_sender_and_empty_for_unknown`**
+     The whole point of this backend: `get_context()` gives a
+     recognized sender's domain a real `ContextSnippet` naming its
+     company, and an unrecognized sender an empty `ContextResult` —
+     not an error either way.
+
+827. **`test_data_edge_cases.py::test_load_entity_data_raises_for_a_missing_file`**
+     A nonexistent fixture path is a clear `EntityDataLoadError`, not a
+     raw `FileNotFoundError`.
+
+828. **`test_data_edge_cases.py::test_load_entity_data_raises_for_malformed_json`**
+     Broken JSON syntax is a clear `EntityDataLoadError`, not a raw
+     `json.JSONDecodeError` leaking through unwrapped.
+
+829. **`test_data_edge_cases.py::test_load_entity_data_raises_for_non_object_top_level`**
+     A file whose top level isn't a JSON object (e.g. a bare array) is
+     a clear `EntityDataLoadError`, not an `AttributeError` from
+     calling `.get()` on the wrong type further down.
+
+830. **`test_data_edge_cases.py::test_load_entity_data_raises_when_a_company_entry_is_not_an_object`**
+     A `"companies"` entry that isn't a JSON object (e.g. a bare
+     string) is rejected before any field is read.
+
+831. **`test_data_edge_cases.py::test_load_entity_data_raises_when_a_company_is_missing_its_name`**
+     A company entry missing the required `"name"` field is a clear
+     `EntityDataLoadError` naming which entry.
+
+832. **`test_data_edge_cases.py::test_load_entity_data_raises_when_a_service_is_missing_its_name`**
+     Same missing-required-field guarantee for a standalone `"services"`
+     entry.
+
+833. **`test_data_edge_cases.py::test_load_entity_data_raises_when_a_person_is_missing_its_name`**
+     Same missing-required-field guarantee for a `"people"` entry.
+
+834. **`test_provider_edge_cases.py::test_lookup_domain_returns_none_for_an_unknown_domain`**
+     An untracked domain is `None`, not an error — the overwhelmingly
+     common case for a hand-curated fixture.
+
+835. **`test_provider_edge_cases.py::test_lookup_company_returns_none_for_an_unknown_company`**
+     Same not-found contract for `lookup_company()`.
+
+836. **`test_provider_edge_cases.py::test_lookup_service_returns_none_for_an_unknown_service`**
+     Same not-found contract for `lookup_service()`.
+
+837. **`test_provider_edge_cases.py::test_lookup_person_returns_none_for_an_unknown_person`**
+     Same not-found contract for `lookup_person()`.
+
+838. **`test_provider_edge_cases.py::test_lookups_are_case_insensitive_on_the_key`**
+     `"GANDI.COM"`/`"gandi"`/`"dns hosting"` all resolve to the same
+     records; the record returned keeps its original fixture casing —
+     only the lookup key is folded.
+
+839. **`test_provider_edge_cases.py::test_lookup_person_falls_back_to_name_when_no_email_matches`**
+     A person with no `"email"` in the fixture is still resolvable by
+     name.
+
+840. **`test_provider_edge_cases.py::test_lookup_service_includes_category_only_entries_with_no_provider_yet`**
+     A standalone `"services"` entry's `category` and its
+     `provided_by` list are independent facts — a service can be
+     categorized before any company is recorded as providing it.
+
+841. **`test_provider_edge_cases.py::test_get_context_includes_a_person_snippet_when_the_sender_is_known`**
+     A message whose exact `from_address` matches a tracked person
+     gets a second `ContextSnippet` naming their affiliation, alongside
+     the domain/company snippet.
+
+### tests/core/pipeline/tier2 — context wired into the Tier 2 pipeline
+
+801. **`test_modules.py::test_fetch_context_augment_delegates_to_the_provider_and_sets_context`**
+     `FetchContextAugment` calls `context_provider.get_context(meta.message)`
+     and stores the result in `meta.context` — same one-I/O-stage
+     shape as `CallLLMAugment`.
+
+802. **`test_modules.py::test_build_verdict_request_filter_requires_context_to_be_set_first`**
+     `MissingMetaError` if `meta.context` isn't set — same
+     ordering contract every other stage in this pipeline enforces;
+     run `FetchContextAugment` first.
+
+803. **`test_default.py::test_process_tier2_message_sends_context_snippets_to_the_model`**
+     A configured `ContextProvider`'s result reaches the actual
+     prompt end to end, flattened into
+     `VerdictRequest.context_snippets` — the read-only knowledgebase
+     seam wired through the whole pipeline, not just constructible in
+     isolation.
+
+804. **`test_default.py::test_process_tier2_message_sends_no_context_snippets_when_none_configured`**
+     The default `NullContextProvider` produces an empty
+     `context_snippets` tuple, not a missing field or a crash.
+
+805. **`test_escalate.py::test_escalate_message_wires_context_provider_into_tier2`**
+     `escalate_message()` threads its `context_provider` argument all
+     the way to the actual prompt — same depth of wiring
+     `thread_history_reader`/`mailbox_lister` already get.
+
+### tests/core/config, tests/core — SporkConfig.context + runtime wiring
+
+806. **`test_schema.py::test_sporkconfig_context_defaults_to_none`**
+     Unset means "no knowledgebase configured" — a real, valid state,
+     not a missing-field error, same convention as
+     `tiering.local_classifier`.
+
+807. **`test_schema.py::test_sporkconfig_accepts_optional_context_provider_configuration`**
+     A `[context]` table round-trips into `SporkConfig.context` like
+     any other `BackendSpec`.
+
+808. **`test_runtime.py::test_build_context_provider_defaults_to_null_when_unconfigured`**
+     No `[context]` table: `build_context_provider()` returns the real
+     "no knowledgebase configured" backend, not `None`/a crash.
+
+809. **`test_runtime.py::test_build_context_provider_loads_the_configured_backend`**
+     A configured `[context]` spec + kwargs resolves to a real
+     instance via `load_context_provider()`.
+
+810. **`test_runtime.py::test_resolve_runtime_secrets_includes_a_configured_context_providers_secret_kwargs`**
+     A `[context]` table's `secret_kwargs` count toward "does anything
+     configured need SecretSpec resolved" the same way
+     provider/llm/alerts already do — `context` isn't a silent fourth
+     exception.
+
+811. **`test_base.py::test_verdict_request_carries_context_snippets_from_the_knowledgebase`**
+     `VerdictRequest.context_snippets` round-trips like every other
+     field — the flattened `"source: text"` strings the prompt
+     actually sends.
+
+### tests/core/classify — KeywordClassifier, the default local classifier (item 4, docs/DESIGN.md §9.1)
+
+812. **`test_keyword.py::test_keyword_classifier_picks_the_category_whose_keywords_matched`**
+     A message whose subject/body contain a category's keywords is
+     classified into that category.
+
+813. **`test_keyword.py::test_keyword_classifier_matching_is_case_insensitive`**
+     `"Urgent"`/`"ASAP"` match the same as their lowercase forms.
+
+814. **`test_keyword.py::test_keyword_classifier_falls_back_to_the_default_category_when_nothing_matches`**
+     A message matching no configured category's keywords gets the
+     named `"uncategorized"` default, every score 0.0 — not an
+     arbitrarily-chosen first category.
+
+815. **`test_keyword.py::test_keyword_classifier_exposes_every_configured_categorys_score`**
+     `scores` is an open bag exposing every configured category's
+     fraction, not just the winning one — a rule or a future tuning
+     pass can key off finer-grained signals.
+
+816. **`test_keyword.py::test_keyword_classifier_accepts_a_custom_category_keyword_mapping`**
+     Not hardcoded to the shipped default set — a deployment can
+     supply its own vocabulary entirely via the constructor.
+
+817. **`test_keyword.py::test_keyword_classifier_structurally_satisfies_textclassifier`**
+     Protocol-based DI, same as every other backend seam in this
+     codebase.
+
+818. **`test_registration.py::test_importing_the_classify_package_registers_the_default_keyword_backend`**
+     Importing `spork.core.classify` (as every real caller already
+     does) is enough on its own to make `"keyword_heuristic"`
+     resolvable via `registry.get()` — no extra wiring needed at any
+     call site. Before this fix, nothing anywhere in the codebase ever
+     called `registry.register()`, so `tiering.local_classifier` was
+     completely non-functional in every real deployment.
+
+819. **`test_keyword_edge_cases.py::test_keyword_classifier_scores_a_category_with_an_empty_keyword_list_as_zero`**
+     A misconfigured category (an empty keyword tuple) never crashes
+     with a divide-by-zero — it just can never win, scored 0.0 like
+     any other unmatched category.

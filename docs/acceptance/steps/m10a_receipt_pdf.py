@@ -1,6 +1,6 @@
 """Real step bindings for the receipt PDF building/archiving module.
 
-Unlike m9_receipt_archiving.feature (still @wip -- the full pipeline
+Unlike m10_receipt_archiving.feature (still @wip -- the full pipeline
 isn't wired up yet), this feature exercises a real, already-implemented
 module (spork.core.receipts.pdf/archive) directly, no fixtures beyond
 what these steps construct in-memory.

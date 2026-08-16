@@ -22,12 +22,13 @@ from spork.core.classify import registry as classify_registry
 from spork.core.classify.base import TextClassifier
 from spork.core.config.paths import resolve_socket_path
 from spork.core.config.schema import SporkConfig, TieringConfig
+from spork.core.context.base import ContextProvider
 from spork.core.ipc.server import IpcServer
 from spork.core.llm.base import LLMClient
 from spork.core.llm.budget import has_budget_remaining
 from spork.core.pipeline import process_message
 from spork.core.pipeline.observer import PipelineObserver
-from spork.core.pipeline.tier2.escalate import escalate_message
+from spork.core.pipeline.tier2.escalate import escalate_message_or_quarantine
 from spork.core.providers.base import (
     ActionApplier,
     CheckpointedProvider,
@@ -39,6 +40,7 @@ from spork.core.rules.loader import load_rules
 from spork.core.rules.schema import Action
 from spork.core.runtime import (
     build_alerter,
+    build_context_provider,
     build_llm_client,
     build_provider,
     resolve_runtime_secrets,
@@ -114,6 +116,7 @@ async def run_daemon(
     rules_state = RulesState(rules=load_rules(config.rules_path))
 
     llm_client = build_llm_client(config, runtime_secrets)
+    context_provider = build_context_provider(config, runtime_secrets)
 
     alerter = build_alerter(config, runtime_secrets)
     ops = PipelineObserver(alerter)
@@ -163,6 +166,7 @@ async def run_daemon(
                     draft_creator=draft_creator,
                     thread_history_reader=thread_history_reader,
                     mailbox_lister=mailbox_lister,
+                    context_provider=context_provider,
                     tiering=config.tiering,
                     daemon_state=daemon_state,
                     stop_event=stop_event,
@@ -277,6 +281,7 @@ async def _run_message_loop(
     draft_creator: DraftCreator,
     thread_history_reader: ThreadHistoryReader,
     mailbox_lister: MailboxLister,
+    context_provider: ContextProvider,
     tiering: TieringConfig,
     daemon_state: DaemonState,
     stop_event: asyncio.Event,
@@ -371,14 +376,18 @@ async def _run_message_loop(
             # condition (§6.2.1) only needs "never concurrent", not
             # "one to_thread wrapper per message" (docs/DESIGN.md). The
             # whole thing (thread-history/mailbox-list reads included)
-            # runs inside one worker-thread call via escalate_message()
+            # runs inside one worker-thread call via
+            # escalate_message_or_quarantine()
             # (spork.core.pipeline.tier2.escalate, M5) — those reads
             # may themselves be real I/O against a live backend, so
             # they belong off the event-loop thread too, not called
-            # directly from this coroutine.
+            # directly from this coroutine. Its own result isn't
+            # branched on here (a QuarantinedMessage is already marked
+            # processed, audited, and alerted internally) — this loop
+            # only needs to know Tier 2 ran, not what it decided.
             if not observe and verdict is not None and verdict.action.type == "escalate":
                 await asyncio.to_thread(
-                    escalate_message,
+                    escalate_message_or_quarantine,
                     message,
                     thread_history_reader=thread_history_reader,
                     mailbox_lister=mailbox_lister,
@@ -388,6 +397,7 @@ async def _run_message_loop(
                     state_db=state_db,
                     ops=ops,
                     tiering=tiering,
+                    context_provider=context_provider,
                 )
                 _check_daily_budget_alert(
                     daemon_state=daemon_state,

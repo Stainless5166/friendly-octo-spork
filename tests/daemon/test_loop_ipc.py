@@ -16,6 +16,7 @@ from pathlib import Path
 from spork.core.actions.executor import ActionExecutor
 from spork.core.alerts.log import LoggingAlerter
 from spork.core.config.schema import BackendSpec, SporkConfig, TieringConfig
+from spork.core.context.clients.null import NullContextProvider
 from spork.core.ipc.client import send_request
 from spork.core.llm.base import Verdict, VerdictRequest
 from spork.core.models import NormalizedMessage
@@ -271,6 +272,7 @@ def test_run_message_loop_never_polls_while_paused(tmp_path: Path) -> None:
                     draft_creator=_UnusedDraftCreator(),
                     thread_history_reader=_UnusedThreadHistoryReader(),
                     mailbox_lister=_UnusedMailboxLister(),
+                    context_provider=NullContextProvider(),
                     tiering=TieringConfig(),
                     daemon_state=daemon_state,
                     stop_event=stop_event,
@@ -419,6 +421,7 @@ def test_run_message_loop_picks_up_a_reloaded_rules_list_on_the_next_poll_iterat
                     draft_creator=_UnusedDraftCreator(),
                     thread_history_reader=_UnusedThreadHistoryReader(),
                     mailbox_lister=_UnusedMailboxLister(),
+                    context_provider=NullContextProvider(),
                     tiering=TieringConfig(),
                     daemon_state=DaemonState(),
                     stop_event=stop_event,
