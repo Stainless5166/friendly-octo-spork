@@ -228,6 +228,15 @@ flowchart TD
             end
         end
 
+        subgraph receipts["receipts/ (§9.5, M10)"]
+            receipts_registry["registry.py<br/>normalize_sender_domain()"]
+            receipts_extract["extract.py<br/>extract_receipt() +<br/>ReceiptExtraction"]
+            receipts_llm["llm.py<br/>ReceiptExtractionClient +<br/>RecordedReceiptExtractionClient"]
+            receipts_pdf["pdf.py<br/>build_receipt_pdf()"]
+            receipts_archive["archive.py<br/>save_pdf()"]
+            receipts_pipeline["pipeline.py<br/>ArchiveReceiptAugment"]
+        end
+
         subgraph actions["actions/"]
             actions_executor["executor.py<br/>ActionExecutor"]
         end
@@ -632,6 +641,10 @@ classDiagram
         <<pydantic BaseModel, extra=forbid>>
         +corpus_path: Path
     }
+    class ReceiptArchiveConfig {
+        <<pydantic BaseModel, extra=forbid>>
+        +output_dir: Path
+    }
     class TieringConfig {
         <<pydantic BaseModel, extra=forbid>>
         +default_unmatched_action: str
@@ -649,6 +662,7 @@ classDiagram
         +alerts: BackendSpec
         +context: Optional~BackendSpec~
         +llm_recording: Optional~LLMRecordingConfig~
+        +receipt_archive: Optional~ReceiptArchiveConfig~
         +rules_path: Path
         +db_path: Path
         +socket_path: Path
@@ -659,6 +673,7 @@ classDiagram
 
     SporkConfig *-- BackendSpec : provider, llm, alerts
     SporkConfig *-- LLMRecordingConfig
+    SporkConfig *-- ReceiptArchiveConfig
     SporkConfig *-- TieringConfig
 
     class resolve_user_config_path { <<function>> }
@@ -781,11 +796,19 @@ classDiagram
         +headers: dict
         +mailbox_ids: tuple
     }
+    class Attachment {
+        <<dataclass, frozen>>
+        +filename: str
+        +content_type: str
+        +data: bytes
+    }
 ```
 
 The one type nearly every other module below depends on — consumers
 aren't re-drawn on every diagram that just takes a `NormalizedMessage`
 parameter, only where it's genuinely part of the module's own shape.
+`Attachment` (§9.5, M10) is the same kind of transport-agnostic value
+type, produced only by `Provider.build_attachment_fetcher()`.
 
 #### `spork.core.providers.base`
 
@@ -817,6 +840,14 @@ classDiagram
         <<Protocol>>
         +get_message(message_id: str) NormalizedMessage
     }
+    class AttachmentFetcher {
+        <<Protocol>>
+        +fetch_attachments(message: NormalizedMessage) Sequence~Attachment~
+    }
+    class KeywordApplier {
+        <<Protocol>>
+        +apply_keywords(message: NormalizedMessage, keywords: Sequence~str~) None
+    }
     class Provider {
         <<Protocol>>
         +build_source() Source
@@ -825,6 +856,8 @@ classDiagram
         +build_thread_history_reader() ThreadHistoryReader
         +build_mailbox_lister() MailboxLister
         +build_message_lookup() MessageLookup
+        +build_attachment_fetcher() AttachmentFetcher
+        +build_keyword_applier() KeywordApplier
     }
     class Source { <<Protocol>> }
 
@@ -834,6 +867,8 @@ classDiagram
     Provider ..> ThreadHistoryReader : builds
     Provider ..> MailboxLister : builds
     Provider ..> MessageLookup : builds
+    Provider ..> AttachmentFetcher : builds
+    Provider ..> KeywordApplier : builds
     ThreadHistoryReader ..> ThreadContext : returns
     MessageLookup ..> MessageNotFoundError : raises, unknown message_id
 ```
@@ -1572,6 +1607,90 @@ testable fully offline from fixtures alone, the same reasoning that
 already let `FileProvider` ship complete rather than as a stub. See
 §10.8 for the full design and docs/ROADMAP.md M9 for status.
 
+#### `spork.core.receipts`
+
+One diagram for the whole package (§9.5, M10) rather than one per
+file, the same condensed treatment `spork.core.providers.jmap` gets
+below — these six modules only make sense together, composing into
+`ArchiveReceiptAugment` as one pipeline stage.
+
+```mermaid
+classDiagram
+    class ReceiptExtraction {
+        +company: str
+        +date: str
+    }
+    class SenderDomainLookup { <<Protocol>> }
+    class extract_receipt { <<function>> }
+    class resolve_company { <<function>> }
+    class extract_date { <<function>> }
+    class normalize_sender_domain { <<function>> }
+
+    class ReceiptExtractionRequest {
+        +subject: str
+        +from_address: str
+        +from_domain: str
+        +body_text: str
+    }
+    class ReceiptExtractionUsage {
+        +tokens_in: int
+        +tokens_out: int
+    }
+    class ReceiptExtractionResult {
+        +extraction: ReceiptExtraction
+        +usage: ReceiptExtractionUsage
+    }
+    class ReceiptExtractionClient { <<Protocol>> }
+    class RecordedReceiptExtractionClient {
+        -extractions: dict~str, ReceiptExtraction~
+        +extract_receipt(request: ReceiptExtractionRequest) ReceiptExtractionResult
+    }
+    class RecordedReceiptExtractionsLoadError { <<Exception>> }
+    class UnrecordedReceiptExtractionError { <<Exception>> }
+
+    class ReceiptPdfError { <<Exception>> }
+    class build_receipt_pdf { <<function>> }
+    class ReceiptArchiveError { <<Exception>> }
+    class save_pdf { <<function>> }
+
+    class ReceiptArchiveComponents {
+        +attachment_fetcher: AttachmentFetcher
+        +keyword_applier: KeywordApplier
+        +extraction_client: ReceiptExtractionClient
+        +output_dir: Path
+        +domain_lookup: SenderDomainLookup?
+    }
+    class ArchiveReceiptAugment {
+        -state_db: StateDB
+        -components: ReceiptArchiveComponents
+        +augment(payload: Payload~MessageMeta~) Payload~MessageMeta~
+    }
+
+    extract_receipt ..> resolve_company : calls
+    extract_receipt ..> extract_date : calls
+    extract_receipt ..> ReceiptExtraction : returns, or None
+    resolve_company ..> SenderDomainLookup : consults first
+    resolve_company ..> KnownSender : then StateDB's learned cache
+    ReceiptExtractionClient <|.. RecordedReceiptExtractionClient : structurally satisfies
+    RecordedReceiptExtractionClient ..> ReceiptExtractionResult : returns
+    RecordedReceiptExtractionClient ..> UnrecordedReceiptExtractionError : raises
+    RecordedReceiptExtractionClient ..> RecordedReceiptExtractionsLoadError : raises at construction
+    build_receipt_pdf ..> ReceiptPdfError : raises on a missing optional dependency
+    save_pdf ..> ReceiptArchiveError : raises on a write failure
+    ArchiveReceiptAugment --> ReceiptArchiveComponents : holds
+    ArchiveReceiptAugment --> StateDB : lookup/learn known senders
+    ArchiveReceiptAugment ..> extract_receipt : calls first
+    ArchiveReceiptAugment ..> ReceiptExtractionClient : calls on a decline
+    ArchiveReceiptAugment ..> build_receipt_pdf : calls
+    ArchiveReceiptAugment ..> save_pdf : calls
+```
+
+`StateDB`/`KnownSender`, `AttachmentFetcher`/`KeywordApplier`,
+`Payload`/`MessageMeta`, and `Attachment` are drawn in their owning
+modules' diagrams (`spork.core.state`, `spork.core.providers.base`,
+`spork.core.pipeline`, `spork.core.models` respectively) — empty boxes
+here would just duplicate them.
+
 #### `spork.core.actions`
 
 ```mermaid
@@ -1674,6 +1793,13 @@ classDiagram
         +tokens_in: int
         +tokens_out: int
     }
+    class KnownSender {
+        <<dataclass, frozen>>
+        +from_domain: str
+        +company: str
+        +learned_from: str
+        +learned_at: str
+    }
     class StateDB {
         -conn: Connection
         +get_cursor(account_id: str) Optional~str~
@@ -1685,11 +1811,14 @@ classDiagram
         +get_audit_entries(jmap_id: Optional~str~) list
         +record_llm_call(date: str, tokens_in: int, tokens_out: int) None
         +get_llm_usage(date: str) LLMUsage
+        +get_known_sender(from_domain: str) Optional~KnownSender~
+        +learn_known_sender(from_domain: str, company, learned_from, learned_at) None
         +close() None
     }
 
     StateDB ..> AuditEntry : returns from get_audit_entries()
     StateDB ..> LLMUsage : returns from get_llm_usage()
+    StateDB ..> KnownSender : returns from get_known_sender()
 ```
 
 The underlying `sqlite3.connect()` call sets `check_same_thread=False`
@@ -1959,11 +2088,11 @@ classDiagram
 
     class build_default_pipeline {
         <<function>>
-        +build_default_pipeline(executor, state_db, ops, now, new_correlation_id, force) Pipeline
+        +build_default_pipeline(executor, state_db, ops, now, new_correlation_id, force, receipt_archive) Pipeline
     }
     class process_message {
         <<function>>
-        +process_message(message, rules, default_unmatched_action, executor, state_db, ops, classifier, now, new_correlation_id, force) Optional~RuleVerdict~
+        +process_message(message, rules, default_unmatched_action, executor, state_db, ops, classifier, now, new_correlation_id, force, receipt_archive) Optional~RuleVerdict~
     }
     build_default_pipeline ..> IdempotencyGateSelector : composes
     build_default_pipeline ..> TimestampFilter : composes
@@ -1973,8 +2102,16 @@ classDiagram
     build_default_pipeline ..> RecordEscalationFilter : composes
     build_default_pipeline ..> WriteAuditEntryFilter : composes
     build_default_pipeline ..> MarkProcessedFilter : composes
+    build_default_pipeline ..> ArchiveReceiptAugment : composes on the "archive_receipt" route, when receipt_archive is given (§9.5, M10)
     process_message ..> build_default_pipeline : builds, then runs
 ```
+
+`ArchiveReceiptAugment`/`ReceiptArchiveComponents` are fully defined in
+`spork.core.receipts`' own diagram above — an empty box here would
+just duplicate it. `receipt_archive: Optional~ReceiptArchiveComponents~`
+defaults to `None` on both functions; omitting it means an
+`archive_receipt` rule has nowhere to route to, so `Pipeline.run()`
+raises `UnknownBranchError` rather than silently doing nothing.
 
 The orchestrator §9 describes in prose — ties idempotency, evaluation,
 action execution, and audit logging into the one call a real message
