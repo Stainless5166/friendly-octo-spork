@@ -261,7 +261,17 @@ the harness, not a push.py behavior change. This section's per-test
 counts elsewhere in the file were not otherwise reconciled to the
 suite's current total in this pass. Combined with M7a and M8's own
 work below, and merged with M7a's own fuzz/mutation-testing work,
-**the full suite is now 815 tests, all green** — the
+the full suite reached 815 tests, all green. Updated once more for
+M7's poison-message resiliency item:
+`spork.core.pipeline.tier2.escalate.escalate_message_or_quarantine()`
+wraps `escalate_message()`, catching a narrow, explicit tuple
+(`QUARANTINABLE_ERRORS`) of known bad-model-output/action-execution
+failures rather than a bare `except Exception`, quarantining the
+message (marked processed, audited, a `critical` alert fired) instead
+of letting a single malformed Tier 2 verdict crash
+`_run_message_loop()`/`spork reclassify`/`spork backfill` and leave
+the message stuck retrying forever. Wired into all three real callers.
+**M7 is now 6/10.** **The full suite is now 833 tests, all green** — the
 running per-paragraph totals above this point were not individually
 reconciled to that figure; treat this line as the current authority.
 **Purpose:** (1) a plain-English description of every test currently in
@@ -739,7 +749,7 @@ fully-configured one passing every check this milestone can actually
 make pass, leaving only JMAP connectivity (M1, genuinely blocked) and
 the never-installed systemd unit non-zero (test 552).
 
-### M7 — Hardening & v1 release — 5/9
+### M7 — Hardening & v1 release — 6/10
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
@@ -751,6 +761,7 @@ the never-installed systemd unit non-zero (test 552).
 | Audit trail completeness (control-plane changes) | ✅ | ✅ — tests 596–609 (`StateDB.write_control_plane_audit_entry()`, `DaemonState.pending_control_plane_events`, CLI wiring across rules/config/pause/resume/reclassify — 100% coverage on every touched module) |
 | Security review pass against §15 | ✅ | ✅ — test 610 (the one gap that needed a code fix: `Secrets.__repr__`); the README privacy-disclosure gap needed no test (prose) |
 | Full test suite green; rule engine + action executor coverage | ✅ | ✅ — `spork.core.rules`/`spork.core.actions.executor` were already 100% line+branch before this pass; one small opportunistic gap closed (tests 608–609) |
+| Poison-message resiliency (Tier 2 quarantine, not a crash) | ✅ | ✅ — tests 771–777 (`escalate_message_or_quarantine()`, `QUARANTINABLE_ERRORS`), 778–779 (`spork reclassify`/`spork backfill` wiring) |
 | Tag v1.0.0 | — | Gated on the exit criteria below, which are gated on a live account |
 
 `spork.core.pipeline.tracing` (`TracingStage`/`TracingSelector`) is a
@@ -4146,3 +4157,51 @@ numbering convention.
 770. **`test_desktop.py::test_desktop_alerter_defaults_to_a_real_logging_alerter_fallback`**
      No explicit `fallback=` given: still degrades gracefully using a
      real `LoggingAlerter`, not losing the alert entirely.
+
+### tests/core/pipeline/tier2 — poison-message resiliency (`escalate_message_or_quarantine`)
+
+771. **`test_escalate.py::test_escalate_message_or_quarantine_passes_through_a_normal_verdict`**
+     The common path is unaffected: a valid, in-set verdict comes back
+     exactly as `escalate_message()` itself would return it.
+
+772. **`test_escalate.py::test_escalate_message_or_quarantine_still_returns_none_on_budget_exhausted`**
+     `None` (budget exhausted) and `QuarantinedMessage` are distinct
+     signals — a caller must be able to tell them apart.
+
+773. **`test_escalate.py::test_escalate_message_or_quarantine_quarantines_an_out_of_set_category`**
+     `VerdictValidationError` (a category outside `allowed_categories`)
+     is quarantined, not raised: the message is marked processed
+     (never retried forever, never re-burning budget) and a
+     `tier2_quarantined` audit entry is written.
+
+774. **`test_escalate.py::test_escalate_message_or_quarantine_quarantines_a_malformed_action`**
+     `ActionExecutionError` (a `move` with no mailbox — a shape check
+     `Verdict`'s own pydantic model doesn't catch, since `Action.mailbox`
+     is optional) is quarantined the same way.
+
+775. **`test_escalate.py::test_escalate_message_or_quarantine_quarantines_a_failed_llm_call`**
+     `LiteLLMClientError` (the live call itself failed) is quarantined
+     the same way as a malformed-but-successful response.
+
+776. **`test_escalate.py::test_escalate_message_or_quarantine_fires_a_critical_alert`**
+     A quarantined verdict fires exactly one `critical`-urgency alert
+     through the injected `Alerter`.
+
+777. **`test_escalate.py::test_escalate_message_or_quarantine_does_not_catch_a_real_pipeline_bug`**
+     A `MissingMetaError` (a genuine wiring bug, not a bad model
+     response) is deliberately not in `QUARANTINABLE_ERRORS` — it still
+     propagates rather than being silently absorbed as if it were a
+     quarantinable model-output failure.
+
+### tests/cli/commands — poison-message resiliency wired into `reclassify`/`backfill`
+
+778. **`test_reclassify_edge_cases.py::test_reclassify_quarantines_instead_of_crashing_on_an_out_of_set_category`**
+     `spork reclassify` on a message whose Tier 2 verdict names an
+     out-of-set category exits 0, reports `"...quarantined..."` on
+     stdout, no traceback — instead of the prior uncaught
+     `VerdictValidationError` crashing the command.
+
+779. **`test_backfill_edge_cases.py::test_backfill_quarantines_instead_of_crashing_on_an_out_of_set_category`**
+     Same fix, `spork backfill`: an out-of-set category is quarantined
+     (counted separately from Tier 2 verdicts, reported as
+     `"1 quarantined"`, `StateDB`-marked) instead of crashing the run.

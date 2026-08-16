@@ -2010,12 +2010,19 @@ classDiagram
         <<function>>
         +escalate_message(message, thread_history_reader, mailbox_lister, llm_client, executor, draft_creator, state_db, ops, tiering) Optional~Verdict~
     }
+    class QuarantinedMessage { <<dataclass, frozen>> }
+    class escalate_message_or_quarantine {
+        <<function>>
+        +escalate_message_or_quarantine(message, ..., now) Verdict|QuarantinedMessage|None
+    }
     escalate_message ..> parse_to_addresses : to_addresses
     escalate_message ..> ThreadHistoryReader : get_thread_context()
     escalate_message ..> MailboxLister : list_mailboxes()
     escalate_message ..> TieringConfig : unpacks into process_tier2_message()'s kwargs
     escalate_message ..> process_tier2_message : assembles the call, returns its result
     parse_to_addresses ..> NormalizedMessage : reads .headers["To"]
+    escalate_message_or_quarantine ..> escalate_message : wraps, catching QUARANTINABLE_ERRORS
+    escalate_message_or_quarantine ..> QuarantinedMessage : returns, instead of raising
 ```
 
 `"autoact"`/`"autoact_alert"` route to the same `act` `Pipeline`
@@ -2033,6 +2040,26 @@ step outside the daemon loop entirely. `daemon/loop.py`'s
 `_run_message_loop()` now calls these instead of defining its own
 copies — one real implementation, two callers, not a daemon-only
 helper duplicated for the CLI.
+
+`escalate_message_or_quarantine()` wraps `escalate_message()`, catching
+`QUARANTINABLE_ERRORS` — `LiteLLMClientError` (the live call itself
+failed), `VerdictValidationError` (a syntactically valid `Verdict`
+whose `category`/`mailbox` falls outside this deployment's configured
+set), `ActionExecutionError` (a `suggested_action` that passed
+`Verdict`'s own shape check but can't actually be executed, e.g.
+`move`/`tag` with no `mailbox` — `Action.mailbox` is `Optional` at the
+pydantic level) — and quarantining the message (`StateDB.mark_processed()`
+with `action_taken="quarantined"`, a `tier2_quarantined` audit entry,
+a critical alert via the existing `PipelineObserver`) instead of
+letting the exception propagate. All three callers
+(`daemon/loop.py`'s `_run_message_loop()`, `spork reclassify`, `spork
+backfill`) use this wrapper, not `escalate_message()` directly — a bad
+live verdict crashing `_run_message_loop()` before the message was
+ever marked processed meant the exact same message would be retried,
+identically, on every restart, re-burning budget each time. Not a bare
+`except Exception`: a `StateDB`/provider I/O failure or a
+`MissingMetaError` (a real pipeline-wiring bug) still propagates,
+matching spork's fail-loud convention everywhere else.
 
 #### `spork.core.secrets`
 
@@ -2241,7 +2268,7 @@ classDiagram
     class build_llm_client { <<function>> }
     class build_alerter { <<function>> }
     class process_message { <<function>> }
-    class escalate_message { <<function>> }
+    class escalate_message_or_quarantine { <<function>> }
     class MessageNotFoundError { <<Exception>> }
     class resolve_secrets { <<function>> }
     class SecretsError { <<Exception>> }
@@ -2312,7 +2339,7 @@ classDiagram
     reclassify ..> build_alerter : builds Alerter
     reclassify ..> MessageNotFoundError : catches, clean CLI error
     reclassify ..> process_message : force=True, bypasses the idempotency gate
-    reclassify ..> escalate_message : when Tier 1 escalates
+    reclassify ..> escalate_message_or_quarantine : when Tier 1 escalates
     reclassify --> StateDB : writes "reclassify_triggered" control-plane audit entry (M7, §7.4), distinct from process_message's own per-message row
     install_service_command ..> install_service : writes unit file, daemon-reload, enable --now
     install_service_command ..> InstallServiceError : catches, clean CLI error
@@ -2356,7 +2383,7 @@ classDiagram
     class StateDB
     class PipelineObserver
     class process_message { <<function>> }
-    class escalate_message { <<function>> }
+    class escalate_message_or_quarantine { <<function>> }
     class IpcServer
 
     class PendingAuditEvent {
@@ -2413,10 +2440,10 @@ classDiagram
     _run_message_loop --> DaemonState : skips poll()+processing while paused; drains pending_control_plane_events each iteration (M7, §6.2.2)
     _run_message_loop --> RulesState : reads .rules fresh every poll iteration (§6.2.2)
     _run_message_loop ..> process_message : Tier 1, via asyncio.to_thread
-    _run_message_loop ..> escalate_message : Tier 2, when Tier 1 escalates, a second sequential asyncio.to_thread (§6.2.1) — spork.core.pipeline.tier2.escalate (M5), also used by spork reclassify
-    escalate_message ..> ThreadHistoryReader : get_thread_context()
-    escalate_message ..> MailboxLister : list_mailboxes()
-    escalate_message --> DraftCreator : passed through to process_tier2_message
+    _run_message_loop ..> escalate_message_or_quarantine : Tier 2, when Tier 1 escalates, a second sequential asyncio.to_thread (§6.2.1) — spork.core.pipeline.tier2.escalate (M5), also used by spork reclassify/spork backfill; result not branched on here, a quarantine already marks processed/audits/alerts internally
+    escalate_message_or_quarantine ..> ThreadHistoryReader : get_thread_context()
+    escalate_message_or_quarantine ..> MailboxLister : list_mailboxes()
+    escalate_message_or_quarantine --> DraftCreator : passed through to process_tier2_message
     IpcServer ..> load_rules : reload handler re-reads rules_path
     load_rules ..> RulesLoadError : reload handler catches, returns ok=False, RulesState untouched
 ```
@@ -4136,9 +4163,10 @@ concurrently.
 ID is scoped to one pipeline *run*, not one message's full lifetime.
 `process_message()`'s Tier 1 run and a later `process_tier2_message()`
 run for the same (now-escalated) message each get their own —
-`escalate_message()` (§6.2.1, M5 — the real caller `process_tier2_message()`
-now has, in `_run_message_loop()` and `spork reclassify` alike) doesn't
-thread Tier 1's correlation ID into `Tier2Meta` the way it threads
+`escalate_message()` (§6.2.1, M5 — wrapped by `escalate_message_or_quarantine()`
+as of the poison-message fix below, the real caller `process_tier2_message()`
+now has, in `_run_message_loop()`, `spork reclassify`, and `spork backfill`
+alike) doesn't thread Tier 1's correlation ID into `Tier2Meta` the way it threads
 `to_addresses`/`thread_prior_subject` in. Stitching the two into one
 cross-tier trace is real, wanted work — genuinely unbuilt, not blocked
 on anything missing anymore now that a real caller exists — and is
@@ -4224,8 +4252,8 @@ name; firing it once tells the operator something new.
   — production callers never override it, tests inject a fixed clock
   to control which day's budget row is checked without needing to
   cross an actual midnight.
-- Right after each `escalate_message()` call (the only place Tier 2
-  calls — and therefore budget spend — happen in the loop), a small
+- Right after each `escalate_message_or_quarantine()` call (the only
+  place Tier 2 calls — and therefore budget spend — happen in the loop), a small
   helper checks `state_db.get_llm_usage(today)` against
   `tiering.daily_call_budget` via the existing
   `spork.core.llm.budget.has_budget_remaining()`. If the budget is

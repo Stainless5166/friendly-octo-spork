@@ -850,6 +850,24 @@ audit correctness once it's running unattended.
       coverage: `spork pause`/`resume` had no test for a missing
       `config.toml` (`spork status` already did). 653 tests, ruff+mypy
       clean.
+- [x] Poison-message resiliency: a single malformed Tier 2 verdict
+      (out-of-set category/mailbox, a malformed suggested action, a
+      failed LLM call) must never crash `_run_message_loop()`/`spork
+      reclassify`/`spork backfill` outright and leave the offending
+      message stuck retrying forever on every subsequent run — it
+      needs to be quarantined once, loudly, and left alone (M) —
+      `spork.core.pipeline.tier2.escalate.escalate_message_or_quarantine()`
+      wraps `escalate_message()`, catching a narrow, explicit tuple
+      (`QUARANTINABLE_ERRORS`: `LiteLLMClientError`,
+      `VerdictValidationError`, `ActionExecutionError` — deliberately
+      not a bare `except Exception`, so a genuine pipeline bug still
+      surfaces instead of being silently swallowed), writing a
+      `tier2_quarantined` audit entry, marking the message processed
+      (`action_taken="quarantined"`) so it isn't retried forever, and
+      firing a `critical`-urgency alert. Returns a new `QuarantinedMessage`
+      dataclass (distinct from `Verdict`/`None`) that all three callers
+      now branch on and report explicitly rather than letting the
+      original `escalate_message()` exception propagate uncaught.
 - [ ] Tag v1.0.0 — not done here: gated on this milestone's own exit
       criteria (below), which are gated on a live account this
       environment doesn't have. A real-world-readiness call for the
@@ -861,9 +879,9 @@ a full week with no manual intervention beyond normal `spork` CLI use, and
 no verdict-schema or action-executor bug reaches an unattended irreversible
 action. A week's worth of triage decisions and every control-plane change
 can be fully reconstructed from logs + the audit trail alone, without
-needing to re-derive anything from memory. **5 of 9 checklist items above
+needing to re-derive anything from memory. **6 of 10 checklist items above
 are done in the same sense every prior milestone's buildable-without-a-
-live-account items are** — real and tested, 653 tests all green. **The
+live-account items are** — real and tested. **The
 exit criterion itself is not met, and can't be from this sandbox**: it
 needs a live JMAP account (still M1's blocker) and a live Anthropic
 account running unattended for a full week, neither available here. The
