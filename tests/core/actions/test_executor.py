@@ -66,9 +66,17 @@ def test_executor_rejects_escalate_action(make_message) -> None:
     applier = _RecordingApplier()
     executor = ActionExecutor(applier)
 
-    with pytest.raises(ActionExecutionError):
-        executor.execute(make_message(), Action(type="escalate"))
+    action = Action(type="escalate")
+    with pytest.raises(ActionExecutionError) as exc_info:
+        executor.execute(make_message(), action)
 
+    # Exact equality, not a substring match — a mutation test target:
+    # a substring check alone can't distinguish the real message from
+    # one wrapped in extra characters that still contain the substring.
+    assert str(exc_info.value) == (
+        f"ActionExecutor cannot execute an escalate action: {action!r} — "
+        "escalation is Tier 2's job, not the terminal action step"
+    )
     assert applier.calls == []
 
 
@@ -79,7 +87,7 @@ def test_executor_rejects_move_action_without_a_mailbox(make_message) -> None:
     applier = _RecordingApplier()
     executor = ActionExecutor(applier)
 
-    with pytest.raises(ActionExecutionError):
+    with pytest.raises(ActionExecutionError, match="requires a mailbox"):
         executor.execute(make_message(), Action(type="move"))
 
     assert applier.calls == []

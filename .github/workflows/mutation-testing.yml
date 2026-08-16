@@ -1,0 +1,53 @@
+# Mutation testing for the four decision-critical modules scoped in
+# mutation/README.md (docs/DESIGN.md §16.2). Deliberately not part of
+# pr-checks.yml/push-format-test.yml — a mutation run re-executes the
+# relevant tests once per mutant, minutes not seconds, same reasoning
+# benchmarks/ already gets for staying out of the fast loop. Runs
+# weekly and on demand; never fails the workflow on a surviving
+# mutant — that's a prompt for a human to look (real gap vs. a new
+# equivalent mutant for mutation/README.md), not something that should
+# block anything on a schedule nobody's watching in real time.
+name: Mutation testing
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays, 06:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  mutmut:
+    name: Mutation test the in-scope modules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run mutmut
+        run: uv run mutmut run || true
+
+      - name: Record results
+        run: uv run mutmut results | tee mutmut-results.txt
+
+      - name: Summarize results
+        run: |
+          echo "## Mutation testing results" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat mutmut-results.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "See mutation/README.md for the recorded baseline and" >> "$GITHUB_STEP_SUMMARY"
+          echo "which survivors are already confirmed equivalent." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutmut-results
+          path: mutmut-results.txt
+          if-no-files-found: warn

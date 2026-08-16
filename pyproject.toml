@@ -33,6 +33,8 @@ dev = [
     "pytest-cov>=5.0,<6",
     "pytest-benchmark>=4.0,<5",
     "behave>=1.2.6,<2",
+    "hypothesis>=6.100,<7",
+    "mutmut>=3.0,<4",
     "ruff>=0.6,<1",
     "mypy>=1.11,<2",
     "pdoc>=14.5,<15",
@@ -86,3 +88,30 @@ mypy_path = "src"
 [[tool.mypy.overrides]]
 module = "secretspec"
 ignore_missing_imports = true
+
+# Mutation testing (docs/DESIGN.md §16.2, mutation/README.md): scoped to
+# the decision-critical modules that are also already at 100% line
+# coverage — the two preconditions that make a surviving mutant worth a
+# human's time. Deliberately not every module at 100% coverage (e.g.
+# schema/config loaders are structural, not decision logic). Run with
+# `uv run mutmut run`, never as part of `uv run pytest` or either CI
+# gate — see mutation/README.md for why.
+[tool.mutmut]
+# source_paths is the whole package (not just the four in-scope files)
+# — mutmut copies whatever it names into mutants/ verbatim, and the
+# four files still need the rest of spork.core importable alongside
+# them (spork.core.models, etc.). only_mutate is what actually narrows
+# which lines get mutated to the four decision-critical files.
+source_paths = ["src/spork"]
+only_mutate = [
+    "src/spork/core/rules/engine.py",
+    "src/spork/core/actions/executor.py",
+    "src/spork/core/dispatch/combine.py",
+    "src/spork/core/pipeline/default.py",
+]
+pytest_add_cli_args_test_selection = [
+    "tests/core/rules",
+    "tests/core/actions",
+    "tests/core/dispatch",
+    "tests/core/pipeline",
+]
