@@ -528,13 +528,15 @@ duplicate that idempotency check; the scheduling decision needs a live
 JMAP session to know what's actually pending (M5, same blocker M1's
 daemon loop has), and isn't invented here.
 
-### M4 — Alerting — 2.5/3
+### M4 — Alerting — 4.5/5
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `Alerter` protocol + `LoggingAlerter` | ✅ | ✅ — tests 303–317 (15 tests), 100% line coverage |
+| SMTP alert backend (burn-in/unattended acceptance) | ✅ | ✅ — tests 699–701 (3 tests) |
+| Real desktop-notification backend (`DesktopAlerter`) | ✅ | ✅ — tests 766–770 (5 tests), 100% line coverage |
 | Alert triggers wired to confidence bands + VIP rules + daemon health | ✅ pipeline-visible portion — VIP escalation, alert_only, autoact_alert + urgency=="high", budget exhausted; ✅ daemon health, daily-budget-exhausted half (one-shot-per-day critical alert, `_check_daily_budget_alert()`); ❌ daemon health, JMAP-push-disconnected half (still genuinely blocked on a live EventSource connection to time out on — see `spork.core.providers.jmap.push.JmapPushTrigger`'s docstring) | ✅ pipeline-visible portion — tests 318–346 (29 tests: `from_in` prerequisite 318–322, `PipelineObserver`/`CorrelationIdFilter`/wiring 323–346), 100% line coverage on the touched modules; ✅ daily-budget-exhausted alert — tests 503–508 (6 tests), 100% line coverage on `spork.daemon` |
-| Graceful degrade when no DBus session bus is available | — | moot for now — see below |
+| Graceful degrade when no DBus session bus is available | ✅ `DesktopAlerter`'s own job — `notify-send` missing/failing falls back to `LoggingAlerter` | ✅ — 2 of tests 766–770 cover this directly |
 
 `spork.core.alerts.base`/`log`/`loader` mirror
 `spork.core.providers.base`/`loader` and `spork.core.llm.base`/`loader`
@@ -548,11 +550,21 @@ so a future real desktop backend needs no translation layer.
 `LoggingAlerter` is a genuine, working delivery channel (not a stub):
 each alert is logged via `logging.getLogger(__name__)`, urgency mapped
 to a log level, never configuring handlers itself (Python logging best
-practice — that's the application's job, M7). The "graceful degrade
-when no DBus session bus is available" checklist item doesn't apply to
-`LoggingAlerter` (no DBus dependency to degrade from) — it's really
-about the future desktop-notification backend, and gets its own
-checkbox once that backend exists.
+practice — that's the application's job, M7).
+
+`spork.core.alerts.desktop.DesktopAlerter` is the real backend the
+above always pointed toward: wraps `notify-send(1)` (→
+`org.freedesktop.Notifications` over the session D-Bus, no new DBus
+library dependency), `runner` injected the same DI-for-subprocess
+pattern `install_service()` uses. The "graceful degrade when no DBus
+session bus is available" checklist item is this backend's own job,
+not a separate mechanism — `notify-send` missing (not installed) or
+failing (no session bus, a headless/SSH-only login) both fall back to
+a fresh `LoggingAlerter` rather than raising, so `sporkd` keeps
+running and the alert lands in the log instead of popping up. `spork
+doctor`-style live proof (a real popup actually appearing) needs a
+real desktop session this sandbox doesn't have — same shape of gap as
+every other live-account item, just for a desktop session instead.
 
 `spork.core.pipeline.observer.PipelineObserver` (`docs/DESIGN.md`
 §12.2) bundles per-message correlation-ID tracing with `Alerter`
@@ -810,7 +822,7 @@ test) — closed with targeted tests, not implementation changes; no
 
 ---
 
-## Full test inventory (819 tests, all passing — 0 xfail)
+## Full test inventory (824 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -4112,3 +4124,25 @@ numbering convention.
 765. **`test_backfill_edge_cases.py::test_backfill_rejects_a_non_positive_page_size`**
      `--page-size 0` exits non-zero with a clean usage error, no
      traceback — same previous silent-no-op gap.
+
+### tests/core/alerts — DesktopAlerter (M4)
+
+766. **`test_desktop.py::test_desktop_alerter_calls_notify_send_with_title_body_and_urgency`**
+     `notify-send -u critical "Needs review" "Please inspect"` — the
+     exact argv, urgency passed straight through as `-u`.
+
+767. **`test_desktop.py::test_desktop_alerter_appends_the_url_to_the_body`**
+     A given `url` is appended to the message body, same convention
+     `SmtpAlerter` already uses.
+
+768. **`test_desktop.py::test_desktop_alerter_falls_back_to_logging_when_notify_send_is_missing`**
+     `notify-send` not installed (`FileNotFoundError`) — falls back to
+     the injected `Alerter`, never raises.
+
+769. **`test_desktop.py::test_desktop_alerter_falls_back_to_logging_when_notify_send_fails`**
+     A non-zero exit (`CalledProcessError` — e.g. no session D-Bus bus,
+     a headless/SSH-only login) — same fallback, never raises.
+
+770. **`test_desktop.py::test_desktop_alerter_defaults_to_a_real_logging_alerter_fallback`**
+     No explicit `fallback=` given: still degrades gracefully using a
+     real `LoggingAlerter`, not losing the alert entirely.

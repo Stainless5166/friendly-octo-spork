@@ -423,10 +423,12 @@ polling the CLI. **v1 scope: Linux desktop notifications only** — a
 webhook/ntfy/Pushover backend is real and useful but explicitly deferred
 (see Stretch / post-v1 below), not because it's hard, just because
 desktop-only covers the daily-driver use case this project targets.
-**v1 backend is a logging `Alerter`, not a real desktop popup** — a
-genuine, working delivery channel (structured, greppable log output),
-not a stub; a `notify-send`/D-Bus backend is a deliberate near-term
-follow-up behind the same `Alerter` protocol, not built this round.
+**`LoggingAlerter` shipped first as a genuine, working delivery
+channel** (structured, greppable log output, not a stub), with a real
+`notify-send`/D-Bus backend, `DesktopAlerter`, following behind the
+same `Alerter` protocol once this round's other work was done — now
+built, and `LoggingAlerter` stays on as its fallback destination
+rather than being retired.
 
 - [x] `Alerter` protocol (mirrors the `Provider`/`LLMClient` adapter
       pattern, §9.3/§10.1/§12.1 — one Protocol, backends loaded the
@@ -441,6 +443,16 @@ follow-up behind the same `Alerter` protocol, not built this round.
       `spork.core.alerts.smtp.SmtpAlerter` supports authenticated STARTTLS
       delivery and an explicit plaintext mode for the local acceptance sink;
       credentials remain constructor inputs mapped through SecretSpec.
+- [x] Real desktop-notification backend (M) —
+      `spork.core.alerts.desktop.DesktopAlerter` wraps `notify-send(1)`
+      (→ `org.freedesktop.Notifications` over the session D-Bus, no new
+      DBus library dependency, per the design settled in §12.1).
+      `runner` injected the same DI-for-subprocess pattern
+      `install_service()` uses, so no test invokes a real
+      `notify-send`. 5 acceptance tests
+      (`tests/core/alerts/test_desktop.py`), 100% coverage on the new
+      module. This item also closes the graceful-degrade item below —
+      see there rather than duplicating.
 - [ ] Alert triggers wired to confidence bands + VIP rules + daemon health (M)
       — the pipeline-visible half is done: `spork.core.pipeline.observer.PipelineObserver`
       (§12.2, bundles correlation-ID tracing with `Alerter` delegation —
@@ -474,22 +486,31 @@ follow-up behind the same `Alerter` protocol, not built this round.
         the first place (docs/ROADMAP.md M1). The design-gap comment
         lives directly on the stub it blocks:
         `spork.core.providers.jmap.push.JmapPushTrigger`.
-- [ ] Graceful degrade when no DBus session bus is available (e.g. no
+- [x] Graceful degrade when no DBus session bus is available (e.g. no
       active desktop session — sporkd keeps running, alerts just don't
-      display, logged instead) (S) — moot for now: `LoggingAlerter`
-      has no DBus dependency to degrade from; this item is really
-      "graceful degrade for the future desktop backend," revisit when
-      that backend actually exists.
+      display, logged instead) (S) — `DesktopAlerter`'s own job, not a
+      separate mechanism: `notify-send` missing (not installed) or
+      failing (no session D-Bus bus, a headless/SSH-only login) both
+      fall back to a `LoggingAlerter` instead of raising. Two of the
+      five acceptance tests above cover this directly (`FileNotFoundError`,
+      `CalledProcessError`); a third confirms the default fallback
+      (no explicit `fallback=` given) still works without losing the
+      alert.
 
 **Exit criteria:** a VIP-sender test email and a low-confidence test
 email both produce a visible desktop notification; killing network
 connectivity for 10+ minutes produces a "push disconnected" alert.
-The first half is proven at the pipeline level today (`process_message()`/
-`process_tier2_message()` called directly, `LoggingAlerter` standing in
-for the still-future desktop popup); nothing produces a *visible
-desktop* notification yet (that's the deferred `notify-send` backend),
-and neither half runs against a live, running `sporkd` yet — that
-needs M5's daemon loop.
+**Not yet met, but for a narrower reason than before:** the pipeline
+wiring, `DesktopAlerter` itself, and `sporkd`'s daemon loop (M5) are
+all real and tested now — nothing left to build offline. What's
+missing is live proof: this sandbox has no desktop session to pop a
+notification on, and "killing network connectivity for 10+ minutes"
+is the same forced-outage control M1's `@network-recovery` scenario
+is already blocked on, plus the still-open "JMAP push disconnected >
+N minutes" daemon-health signal above. Configuring `[alerts] spec =
+"spork.core.alerts.desktop:DesktopAlerter"` on the maintainer's own
+machine and confirming a real popup appears is the actual remaining
+step, not further code.
 
 ## M5 — CLI + daemon control surface
 
