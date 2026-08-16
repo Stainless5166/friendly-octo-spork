@@ -803,14 +803,14 @@ test) — closed with targeted tests, not implementation changes; no
 |---|---|---|
 | `JmapClient.query_messages()` | ✅ | ✅ — tests 740–744, 762 (6 tests), live-verified against the real account |
 | `BackfillPage`/`BackfillProvider` capability (`JmapProvider`, `FileProvider`) | ✅ | ✅ — tests 745–751 (7 tests) |
-| Bounded, resumable `spork backfill` CLI | ✅ | ✅ — tests 752–760, 763 (10 tests: 6 acceptance + 4 edge cases) |
+| Bounded, resumable `spork backfill` CLI | ✅ | ✅ — tests 752–760, 763–765 (12 tests: 6 acceptance + 6 edge cases) |
 | `StateDB`/`processed_messages` dedup reuse | ✅ (reuses `process_message()`'s existing idempotency gate, no new mechanism) | ✅ — test 758 |
 | Backfill-specific throttle/budget policy | ✅ (`--limit`, default 50) | ✅ — tests 756, 760 |
 | Full backfill run growing the corpus at volume | — | not started — a 13-entry hand-picked seed exists (M1c) via direct SMTP+LLM calls, not a `spork backfill` run; that needs an all-`ignore` rules file or the write-side JMAP stubs resolved first (`apply_action()`/`create_draft()` are still `NotImplementedError`) |
 
 ---
 
-## Full test inventory (817 tests, all passing — 0 xfail)
+## Full test inventory (819 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -4102,3 +4102,13 @@ numbering convention.
      (`tests/support/counting_provider.py`): `build_thread_history_reader()`/
      `build_mailbox_lister()`/`build_draft_creator()` are each called
      exactly once for the whole run, not once per escalation.
+
+### tests/cli/commands — --limit/--page-size positivity (PR #20 review finding)
+
+764. **`test_backfill_edge_cases.py::test_backfill_rejects_a_non_positive_limit`**
+     `--limit 0` exits non-zero with a clean usage error, no traceback
+     — previously ran successfully and reported "0 messages processed".
+
+765. **`test_backfill_edge_cases.py::test_backfill_rejects_a_non_positive_page_size`**
+     `--page-size 0` exits non-zero with a clean usage error, no
+     traceback — same previous silent-no-op gap.

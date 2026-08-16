@@ -974,6 +974,12 @@ real account on every test run.
       layers on top: if Tier 2's budget is exhausted mid-run, the loop
       stops early and reports it (`stderr`), rather than silently
       continuing to escalate messages that will keep failing budget.
+      **PR #20 review finding, fixed:** `--limit`/`--page-size` had no
+      positivity validation — `--limit 0` ran successfully and
+      reported "0 messages processed" instead of being rejected as a
+      mistake. Both now use Typer's `min=1`, rejecting a non-positive
+      value with a clean usage error (exit 2, no traceback) before any
+      provider/network call.
 - [ ] `spork backfill` run against the recorded/replayed corpus from
       M1c is used to grow `tests/fixtures/corpus/live.jsonl` with real
       category diversity (newsletters, receipts, personal, spam, …)
