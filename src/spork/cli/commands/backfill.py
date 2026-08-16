@@ -35,6 +35,7 @@ from spork.core.rules.loader import RulesLoadError, load_rules
 from spork.core.rules.schema import Action
 from spork.core.runtime import (
     build_alerter,
+    build_context_provider,
     build_llm_client,
     build_provider,
     resolve_runtime_secrets,
@@ -113,6 +114,7 @@ def _backfill(config: SporkConfig, *, unread_only: bool, limit: int, page_size: 
     )
     default_unmatched_action = Action(type=config.tiering.default_unmatched_action)
     llm_client = build_llm_client(config, secrets)
+    context_provider = build_context_provider(config, secrets)
     # Built once for the whole run, not once per escalated message
     # (PR #20 review finding #2) — FileProvider's versions re-read the
     # whole messages file from disk on every call, so building these
@@ -182,6 +184,7 @@ def _backfill(config: SporkConfig, *, unread_only: bool, limit: int, page_size: 
                         state_db=state_db,
                         ops=ops,
                         tiering=config.tiering,
+                        context_provider=context_provider,
                     )
                     if tier2_verdict is None:
                         budget_exhausted = True

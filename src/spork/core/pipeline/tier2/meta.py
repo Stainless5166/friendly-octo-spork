@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from spork.core.context.base import ContextResult
 from spork.core.llm.base import LLMCallUsage, Verdict, VerdictRequest
 from spork.core.llm.confidence import ConfidenceBand
 from spork.core.models import NormalizedMessage
@@ -35,6 +36,7 @@ class Tier2Meta:
     available_mailboxes: Sequence[str]
     ts: str | None = None
     correlation_id: str | None = None
+    context: ContextResult | None = None
     request: VerdictRequest | None = None
     verdict: Verdict | None = None
     llm_usage: LLMCallUsage | None = None

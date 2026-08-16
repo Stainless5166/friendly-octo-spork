@@ -35,6 +35,12 @@ class VerdictRequest:
     # rejects a genuinely out-of-set answer, not one the model was
     # never told the set of in the first place.
     available_categories: tuple[str, ...]
+    # Flattened "source: text" snippets from a configured ContextProvider
+    # (spork.core.context, docs/DESIGN.md §10.8) — empty when no
+    # knowledgebase is configured (NullContextProvider). Plain strings,
+    # not ContextSnippet objects: the prompt only needs rendered text,
+    # never structured access.
+    context_snippets: tuple[str, ...]
 
 
 class Verdict(BaseModel):

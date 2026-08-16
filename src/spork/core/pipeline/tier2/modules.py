@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 
 from spork.core.actions.executor import ActionExecutor
 from spork.core.alerts.base import AlertUrgency
+from spork.core.context.base import ContextProvider
 from spork.core.llm.base import LLMClient, VerdictRequest
 from spork.core.llm.budget import has_budget_remaining
 from spork.core.llm.clean import clean_body
@@ -85,6 +86,24 @@ class BudgetGateSelector:
         return "budget_exhausted", payload
 
 
+class FetchContextAugment:
+    """The read-only knowledgebase seam (§10.8): calls
+    `context_provider.get_context(meta.message)` and stores the result
+    in `meta.context` — the other I/O stage besides CallLLMAugment,
+    run first so BuildVerdictRequestFilter can fold its result into
+    the VerdictRequest it builds. `NullContextProvider` (the default
+    when `[context]` is unconfigured) makes this a no-op read, not a
+    conditional branch — every deployment runs the same pipeline shape.
+    """
+
+    def __init__(self, context_provider: ContextProvider) -> None:
+        self._context_provider = context_provider
+
+    def augment(self, payload: Payload[Tier2Meta]) -> Payload[Tier2Meta]:
+        context = self._context_provider.get_context(payload.meta.message)
+        return dataclasses.replace(payload, meta=dataclasses.replace(payload.meta, context=context))
+
+
 class BuildVerdictRequestFilter:
     """Cleans payload.text via clean_body() and assembles a
     VerdictRequest from it plus meta's caller-supplied fields.
@@ -101,6 +120,10 @@ class BuildVerdictRequestFilter:
 
     def apply(self, payload: Payload[Tier2Meta]) -> Payload[Tier2Meta]:
         meta = payload.meta
+        if meta.context is None:
+            raise MissingMetaError(
+                "BuildVerdictRequestFilter requires meta.context — run FetchContextAugment first"
+            )
         cleaned = clean_body(payload.text, max_chars=self._max_body_chars)
         request = VerdictRequest(
             subject=meta.message.subject,
@@ -111,6 +134,9 @@ class BuildVerdictRequestFilter:
             thread_user_has_replied=meta.thread_user_has_replied,
             available_mailboxes=tuple(meta.available_mailboxes),
             available_categories=tuple(self._available_categories),
+            context_snippets=tuple(
+                f"{snippet.source}: {snippet.text}" for snippet in meta.context.snippets
+            ),
         )
         return dataclasses.replace(
             payload, text=cleaned, meta=dataclasses.replace(meta, request=request)

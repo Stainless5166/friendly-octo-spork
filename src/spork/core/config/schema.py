@@ -90,6 +90,10 @@ class SporkConfig(BaseModel):
     provider: BackendSpec
     llm: BackendSpec
     alerts: BackendSpec
+    # None means "no knowledgebase configured" — a real, valid state
+    # (spork.core.context.clients.null.NullContextProvider), not a
+    # missing-field error, same convention as tiering.local_classifier.
+    context: BackendSpec | None = None
     llm_recording: LLMRecordingConfig | None = None
     rules_path: Path
     db_path: Path

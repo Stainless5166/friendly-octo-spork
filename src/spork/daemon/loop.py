@@ -22,6 +22,7 @@ from spork.core.classify import registry as classify_registry
 from spork.core.classify.base import TextClassifier
 from spork.core.config.paths import resolve_socket_path
 from spork.core.config.schema import SporkConfig, TieringConfig
+from spork.core.context.base import ContextProvider
 from spork.core.ipc.server import IpcServer
 from spork.core.llm.base import LLMClient
 from spork.core.llm.budget import has_budget_remaining
@@ -39,6 +40,7 @@ from spork.core.rules.loader import load_rules
 from spork.core.rules.schema import Action
 from spork.core.runtime import (
     build_alerter,
+    build_context_provider,
     build_llm_client,
     build_provider,
     resolve_runtime_secrets,
@@ -114,6 +116,7 @@ async def run_daemon(
     rules_state = RulesState(rules=load_rules(config.rules_path))
 
     llm_client = build_llm_client(config, runtime_secrets)
+    context_provider = build_context_provider(config, runtime_secrets)
 
     alerter = build_alerter(config, runtime_secrets)
     ops = PipelineObserver(alerter)
@@ -163,6 +166,7 @@ async def run_daemon(
                     draft_creator=draft_creator,
                     thread_history_reader=thread_history_reader,
                     mailbox_lister=mailbox_lister,
+                    context_provider=context_provider,
                     tiering=config.tiering,
                     daemon_state=daemon_state,
                     stop_event=stop_event,
@@ -277,6 +281,7 @@ async def _run_message_loop(
     draft_creator: DraftCreator,
     thread_history_reader: ThreadHistoryReader,
     mailbox_lister: MailboxLister,
+    context_provider: ContextProvider,
     tiering: TieringConfig,
     daemon_state: DaemonState,
     stop_event: asyncio.Event,
@@ -392,6 +397,7 @@ async def _run_message_loop(
                     state_db=state_db,
                     ops=ops,
                     tiering=tiering,
+                    context_provider=context_provider,
                 )
                 _check_daily_budget_alert(
                     daemon_state=daemon_state,

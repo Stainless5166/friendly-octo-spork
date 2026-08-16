@@ -11,6 +11,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
 from spork.core.actions.executor import ActionExecutor
+from spork.core.context.base import ContextProvider
 from spork.core.llm.base import LLMClient, Verdict
 from spork.core.models import NormalizedMessage
 from spork.core.pipeline.core import Payload, Pipeline
@@ -24,6 +25,7 @@ from spork.core.pipeline.tier2.modules import (
     ConfidenceBandSelector,
     CorrelationIdFilter,
     CreateDraftIfWantedFilter,
+    FetchContextAugment,
     MarkProcessedFilter,
     RecordAlertOnlyFilter,
     RecordBudgetExhaustedFilter,
@@ -58,6 +60,7 @@ def build_tier2_pipeline(
     daily_call_budget: int,
     alert_threshold: float,
     autoact_threshold: float,
+    context_provider: ContextProvider,
     max_body_chars: int = 4000,
     now: Callable[[], str] = _utc_now_iso,
     new_correlation_id: Callable[[], str] = _new_correlation_id,
@@ -94,6 +97,7 @@ def build_tier2_pipeline(
     budget_ok: Pipeline[Tier2Meta] = Pipeline(
         wrap_stages(
             [
+                FetchContextAugment(context_provider),
                 BuildVerdictRequestFilter(allowed_categories, max_body_chars),
                 CallLLMAugment(llm_client),
                 RecordLLMUsageFilter(state_db),
@@ -137,6 +141,7 @@ def process_tier2_message(
     daily_call_budget: int,
     alert_threshold: float,
     autoact_threshold: float,
+    context_provider: ContextProvider,
     max_body_chars: int = 4000,
     now: Callable[[], str] = _utc_now_iso,
     new_correlation_id: Callable[[], str] = _new_correlation_id,
@@ -162,6 +167,7 @@ def process_tier2_message(
         daily_call_budget=daily_call_budget,
         alert_threshold=alert_threshold,
         autoact_threshold=autoact_threshold,
+        context_provider=context_provider,
         max_body_chars=max_body_chars,
         now=now,
         new_correlation_id=new_correlation_id,

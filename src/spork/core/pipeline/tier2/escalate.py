@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 
 from spork.core.actions.executor import ActionExecutionError, ActionExecutor
 from spork.core.config.schema import TieringConfig
+from spork.core.context.base import ContextProvider
 from spork.core.llm.base import LLMClient, Verdict
 from spork.core.llm.clients.litellm import LiteLLMClientError
 from spork.core.llm.validate import VerdictValidationError
@@ -88,6 +89,7 @@ def escalate_message(
     state_db: StateDB,
     ops: PipelineObserver,
     tiering: TieringConfig,
+    context_provider: ContextProvider,
 ) -> Verdict | None:
     """Resolves the two Provider-supplied reads Tier 2 needs and runs
     `process_tier2_message()` for one message Tier 1 already routed to
@@ -117,6 +119,7 @@ def escalate_message(
         daily_call_budget=tiering.daily_call_budget,
         alert_threshold=tiering.alert_threshold,
         autoact_threshold=tiering.autoact_threshold,
+        context_provider=context_provider,
         max_body_chars=tiering.max_body_chars,
     )
 
@@ -132,6 +135,7 @@ def escalate_message_or_quarantine(
     state_db: StateDB,
     ops: PipelineObserver,
     tiering: TieringConfig,
+    context_provider: ContextProvider,
     now: Callable[[], str] = _utc_now_iso,
 ) -> Verdict | QuarantinedMessage | None:
     """`escalate_message()`, with `QUARANTINABLE_ERRORS` caught and
@@ -156,6 +160,7 @@ def escalate_message_or_quarantine(
             state_db=state_db,
             ops=ops,
             tiering=tiering,
+            context_provider=context_provider,
         )
     except QUARANTINABLE_ERRORS as exc:
         ts = now()

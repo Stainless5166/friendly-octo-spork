@@ -31,6 +31,7 @@ from spork.core.rules.loader import RulesLoadError, load_rules
 from spork.core.rules.schema import Action
 from spork.core.runtime import (
     build_alerter,
+    build_context_provider,
     build_llm_client,
     build_provider,
     resolve_runtime_secrets,
@@ -134,6 +135,7 @@ def _reclassify(message_id: str, config: SporkConfig) -> None:
             state_db=state_db,
             ops=ops,
             tiering=config.tiering,
+            context_provider=build_context_provider(config, secrets),
         )
 
     if tier2_verdict is None:
