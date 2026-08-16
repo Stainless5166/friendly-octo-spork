@@ -30,6 +30,23 @@ class JmapFetchResult:
     cursor: str
 
 
+@dataclass(frozen=True, slots=True)
+class JmapQueryResult:
+    """One windowed page from an explicit backfill query (§9.3, M8).
+
+    Not a live-ingestion checkpoint — `position`/`total` describe a
+    page in `Email/query`'s result window, not an Email state to
+    acknowledge. `has_more` is derived (`position + len(messages) <
+    total`) so a caller can page without re-deriving that arithmetic
+    itself.
+    """
+
+    messages: tuple[NormalizedMessage, ...]
+    position: int
+    total: int | None
+    has_more: bool
+
+
 class _JmapcClient(Protocol):
     """The small jmapc surface injected by recorded contract tests."""
 
@@ -75,6 +92,23 @@ def _method_types() -> tuple[type[Any], type[Any], type[Any], type[Any]]:
             "JMAP support requires the optional dependency: install spork[jmap]"
         ) from exc
     return methods.EmailChanges, methods.EmailGet, methods.MailboxGet, methods.ThreadGet
+
+
+def _query_types() -> tuple[type[Any], type[Any]]:
+    """Load the query-only request classes lazily, same optional-dependency boundary.
+
+    Separate from `_method_types()` so that function's 4-tuple return
+    doesn't grow a 5th element every existing unpacking call site has
+    to account for — `query_messages()` is the only caller of these.
+    """
+    try:
+        methods = import_module("jmapc.methods")
+        models = import_module("jmapc.models")
+    except ImportError as exc:
+        raise JmapError(
+            "JMAP support requires the optional dependency: install spork[jmap]"
+        ) from exc
+    return methods.EmailQuery, models.EmailQueryFilterCondition
 
 
 class JmapClient:
@@ -204,6 +238,57 @@ class JmapClient:
             cursor = new_state
             if not has_more:
                 return JmapFetchResult(messages=tuple(messages), cursor=cursor)
+
+    def query_messages(
+        self, *, unread_only: bool = False, position: int = 0, limit: int = 50
+    ) -> JmapQueryResult:
+        """Windowed Email/query + Email/get over the Inbox — the explicit backfill read path.
+
+        Deliberately not `fetch_new_messages()`: that method baselines
+        on first run and never replays existing mail by design (§9.3,
+        M1) — retroactively categorizing mail that arrived before spork
+        was ever running needs its own, explicitly-named capability
+        (docs/ROADMAP.md M8), not a flag on the live-ingestion method.
+        Never called by the daemon's steady-state loop.
+        """
+        self.connect()
+        _, email_get, _, _ = _method_types()
+        email_query, filter_condition_cls = _query_types()
+
+        query_filter = filter_condition_cls(
+            in_mailbox=self._inbox_id,
+            not_keyword="$seen" if unread_only else None,
+        )
+        query_response = self._request(
+            email_query(filter=query_filter, position=position, limit=limit, calculate_total=True)
+        )
+        ids = getattr(query_response, "ids", None)
+        response_position = getattr(query_response, "position", None)
+        total = getattr(query_response, "total", None)
+        if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+            raise JmapError("Email/query returned invalid ids")
+        if not isinstance(response_position, int):
+            raise JmapError("Email/query returned invalid position")
+
+        messages: tuple[NormalizedMessage, ...] = ()
+        if ids:
+            get_response = self._request(
+                email_get(
+                    ids=ids,
+                    properties=self._email_properties(),
+                    fetch_text_body_values=True,
+                    fetch_html_body_values=False,
+                )
+            )
+            emails = getattr(get_response, "data", None)
+            if not isinstance(emails, list):
+                raise JmapError("Email/get returned no message list")
+            messages = tuple(self._normalize(email) for email in emails)
+
+        has_more = total is not None and response_position + len(messages) < total
+        return JmapQueryResult(
+            messages=messages, position=response_position, total=total, has_more=has_more
+        )
 
     def event_stream(self) -> Iterable[object]:
         """Return the connected jmapc EventSource stream for push handling."""
