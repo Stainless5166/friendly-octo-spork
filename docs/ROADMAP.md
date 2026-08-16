@@ -1005,6 +1005,73 @@ moves) is gated on write-scoped JMAP credentials, same limitation as
 M2/M3/M5's own live-action items — this milestone's exit criterion is
 about correct read-side categorization, not the write.
 
+## M9 — Receipt archiving
+
+**Goal:** recognize automatic-payment receipt emails, tag them
+(`receipt`, `company:<name>`, `date:<iso-date>`), and archive a single
+combined PDF — the message plus every attachment — to a configured
+location. Deterministic wherever possible: a known sender is tagged
+and archived with zero LLM calls; an unrecognized sender costs exactly
+one narrow Tier 2 extraction call, after which it's learned and never
+asked about again. Full design: docs/DESIGN.md §9.5. Unlike M1/M3, this
+milestone has **no live-account blocker** — the whole pipeline is
+designed to be offline-testable (`FileProvider` + a recorded
+extraction fixture), so its exit criterion should be fully met once
+the modules below are actually built, not partially met the way
+JMAP-dependent milestones are.
+
+- [ ] `Provider.build_attachment_fetcher()` (§9.3/§9.5): a new
+      read-side capability — `FileProvider` real, `JmapProvider` a
+      settled-shape `NotImplementedError` (M)
+- [ ] `Provider.build_keyword_applier()` (§9.5): JMAP-keyword-based
+      free-form per-message tagging, distinct from the existing
+      mailbox-based `tag` action — `FileProvider` real, `JmapProvider`
+      a settled-shape `NotImplementedError` (S)
+- [ ] `spork.core.receipts.registry.KnownSenderStore`: new `StateDB`
+      table (`known_receipt_senders`), `lookup()`/`learn()` — the
+      "learning system" the milestone is named for (S)
+- [ ] `spork.core.receipts.extract`: deterministic company/date
+      extraction (registry + a closed set of date patterns), declining
+      rather than guessing when either half doesn't match (M)
+- [ ] `spork.core.receipts.llm.ReceiptExtractionClient` Protocol +
+      `RecordedReceiptExtractionClient` fixture-replay implementation,
+      mirroring `LLMClient`/`RecordedLLMClient` (§10.1/§10.5) (M)
+- [ ] `rules.schema.Action` gains a fourth terminal type,
+      `"archive_receipt"` (S)
+- [ ] `spork.core.receipts.pdf.build_receipt_pdf()`: message +
+      attachments -> one PDF (cover page + merged/rendered
+      attachments, or cover page alone with no attachments); new
+      optional `spork[receipts]` extra (`pypdf`, `reportlab`,
+      `Pillow`) (M)
+- [ ] `spork.core.receipts.archive.save_pdf()`: writes to
+      `SporkConfig.receipt_archive.output_dir`, deterministic filename,
+      one wrapped error type on write failure (S)
+- [ ] `SporkConfig.receipt_archive: ReceiptArchiveConfig | None` (S)
+- [ ] Pipeline wiring: a new Filter/Augment pair on the `"terminal"`
+      branch for `action.type == "archive_receipt"` (M)
+- [ ] `docs/acceptance/m9_receipt_archiving.feature` bound for real —
+      `@wip` dropped, scenarios passing offline under the safe default
+      `uv run behave` (M)
+
+**Current status:** design-only. `docs/DESIGN.md` §9.5 records the
+architecture; `docs/acceptance/m9_receipt_archiving.feature` specifies
+the target behavior in Gherkin, with every step bound (not left
+undefined) but raising `NotImplementedError` — real scaffolding, not a
+placeholder, tagged `@wip` so it's skipped by the safe-default
+`uv run behave` the same way `@manual` scenarios are (see
+docs/acceptance/README.md's `SPORK_ACCEPTANCE_WIP` note). No
+`src/spork` code exists yet; the checklist above is built module by
+module, each following CLAUDE.md's design-then-tests-then-implementation
+order, same as every prior milestone.
+
+**Exit criteria:** a known-sender receipt is tagged and archived with
+zero Tier 2 calls; an unrecognized sender is extracted via exactly one
+Tier 2 call and learned; a second message from that now-learned sender
+is handled deterministically; a message with attachments and a message
+with none both produce exactly one PDF at the configured location; an
+unwritable archive location fails safely and leaves the message
+retryable. **Not yet met** — nothing is built yet.
+
 ## Stretch / post-v1 (not scoped, not blocking)
 
 - Webhook `Alerter` backend (ntfy/Pushover-style, URL from secretspec) —

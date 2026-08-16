@@ -3430,6 +3430,152 @@ change to *what pipeline that route points at*, never a rewrite of
   `Filter`/`Augment` chain over the same `Payload`/`Pipeline` machinery,
   not a new abstraction).
 
+### 9.5 Receipt archiving (M9, planned)
+
+**Not built yet** — `docs/ROADMAP.md` M9 tracks this as its own
+milestone; `docs/acceptance/m9_receipt_archiving.feature` specifies the
+target behavior with scaffolded (`NotImplementedError`) step bindings.
+This section is the design those scenarios were written against, per
+CLAUDE.md's "design first, then tests, then implementation" order —
+recorded here before any of it exists so the acceptance spec isn't
+inventing behavior with nowhere else it's written down.
+
+**Goal:** recognize an automatic-payment receipt email, tag it
+(`receipt`, `company:<name>`, `date:<iso-date>`), and archive a single
+combined PDF — the message plus every attachment — to a configured
+location. Company/date extraction should be **deterministic wherever
+possible** and escalate to Tier 2 only as a last resort, once per
+unfamiliar sender, never repeatedly for the same one:
+
+```mermaid
+flowchart TD
+    A[Tier 1 rule matches: this looks like a receipt] --> B{Sender domain in\nKnownSenderStore?}
+    B -- yes --> C[Deterministic extraction:\nregistry company + Date-pattern parse]
+    C --> F[Tag receipt / company / date]
+    B -- no --> D[One narrow Tier 2 call:\nReceiptExtractionClient.extract_receipt]
+    D --> E[KnownSenderStore.learn\nfrom_domain -> company]
+    E --> F
+    F --> G[build_receipt_pdf: message + attachments -> one PDF]
+    G --> H[save to configured output_dir]
+```
+
+This is deliberately a *narrower* escalation than Tier 2 triage
+(§10): it answers one closed question — "what company, what date" —
+for a message a Tier 1 rule has already decided is a receipt, not "how
+should this message be handled." Reusing the general-purpose `Verdict`
+schema (§10.1) for that would pollute every other category with two
+fields only receipts need; this gets its own small Protocol instead,
+the same "one Protocol per real relationship" call `ThreadHistoryReader`/
+`MailboxLister`/`MessageLookup` already made (§9.3).
+
+**New pieces, none of which exist yet:**
+
+- **`Provider.build_attachment_fetcher()`** — a new capability
+  alongside the six `Provider` already has (§9.3): resolves a
+  message's raw attachments (filename, content type, bytes).
+  `FileProvider` gets a real implementation (attachments as
+  base64-or-path-referenced fields in the same fixture JSON
+  `load_messages()` already reads); `JmapProvider` is a settled-shape
+  `NotImplementedError` like every other JMAP leaf still blocked on a
+  live account (`JMAP-Mail`'s `Email/get` with `bodyValues`/`blobId`
+  fetching is real and buildable, just not exercisable honestly from
+  here yet).
+- **`Provider.build_keyword_applier()`** — also new. §7.5's "mailboxes
+  as tags" is the right model for a small, fixed set of categories a
+  human browses as folders (`Calendar`, `Reading`), but `company:<name>`
+  and `date:<iso-date>` are per-message dynamic values, not a mailbox
+  anyone would want to browse by folder-per-company. JMAP's `Email`
+  keywords map (arbitrary per-message string flags, distinct from
+  `mailboxIds`) is the honest fit — a second, narrower write
+  capability, not a repurposing of the existing mailbox-based `tag`
+  action. `FileProvider` logs applied keywords the same
+  JSON-lines way `_FileActionApplier` logs actions; `JmapProvider` is
+  again a settled-shape stub pending a live `Email/set` write.
+- **`spork.core.receipts.registry.KnownSenderStore`** — a new
+  `StateDB` table, `known_receipt_senders` (`from_domain`, `company`,
+  `learned_from` — `"seed"` or `"tier2"` — `learned_at`). `lookup()`
+  is the deterministic path's first question; `learn()` is called
+  exactly once, right after a Tier 2 extraction succeeds, so the
+  *next* message from that domain never reaches Tier 2 again. This is
+  the "learning system" the milestone is named for — not a model
+  being retrained, just a durable cache of one narrow judgment call
+  spork should only ever need to make once per sender.
+- **`spork.core.receipts.extract`** — the deterministic path: a
+  registry hit supplies `company` directly; `date` is parsed from a
+  small, closed set of patterns (the `Date` header first, then a
+  short list of literal body markers like "Invoice date:"/"Payment
+  date:" — deliberately not a general date-in-any-format parser,
+  same "closed, auditable pattern set" philosophy as `rules.schema.Condition`,
+  §7.5). No match on either half means this path declines rather than
+  guessing — that's what routes to Tier 2, not a low-confidence
+  deterministic answer.
+- **`spork.core.receipts.llm.ReceiptExtractionClient`** — the Tier 2
+  fallback: one Protocol, `extract_receipt(request) -> ReceiptExtraction`,
+  loaded the same `"module:ClassName"` way as `LLMClient`/`Provider`/
+  `Alerter` (§9.1/§9.3/§10.1/§12.1). A `RecordedReceiptExtractionClient`
+  (mirroring `RecordedLLMClient`, §10.5) replays fixtures for CI/
+  acceptance — no live API call anywhere in the test suite, including
+  `m9_receipt_archiving.feature`.
+- **`rules.schema.Action` gains a fourth terminal type,
+  `"archive_receipt"`** (alongside `move`/`tag`/`ignore` — `escalate`
+  stays Tier-2-triage-only, §9.4/§9.3). A Tier 1 rule decides *that* a
+  message is a receipt using the existing closed `Condition` set
+  (sender/domain, subject pattern, `local_classifier_category_in`);
+  matching that rule is what may trigger the one narrow Tier 2 call
+  above — deliberately not routed through the general `escalate`
+  action, since nothing here is asking "how should this be handled,"
+  only "what are its company/date."
+- **`spork.core.receipts.pdf.build_receipt_pdf()`** — pure function,
+  `(NormalizedMessage, attachments, extraction) -> bytes`: a cover
+  page (subject, sender, date, company, the three tags) followed by
+  every attachment in order — an existing PDF attachment merged
+  page-for-page, an image attachment placed on its own page, anything
+  else noted by filename/type rather than silently dropped. No
+  attachments at all still produces a one-page PDF from the cover
+  content alone (the "message itself" half of the feature request).
+  Planned dependencies (not yet added to `pyproject.toml`): `pypdf`
+  for merging, `reportlab` for rendering the cover/text pages, `Pillow`
+  for image-to-PDF-page conversion — behind a new optional
+  `spork[receipts]` extra, same lazy-optional-import pattern `litellm`
+  already uses (§10.1).
+- **`spork.core.receipts.archive.save_pdf()`** — writes the built PDF
+  to `SporkConfig.receipt_archive.output_dir` under a deterministic
+  filename (`{date}-{company-slug}-{message_id}.pdf`); a write failure
+  (unwritable directory, full disk) raises one wrapped error, same
+  one-error-type-per-boundary convention as `RulesLoadError`/
+  `ProviderLoadError`/etc. (Conventions, above) — caught by the
+  pipeline stage so the message is **not** marked processed, the same
+  fail-open-for-retry behavior `m2_rules.feature`'s `@audit` scenario
+  already specifies for a transient action-applier failure.
+- **`SporkConfig.receipt_archive: ReceiptArchiveConfig | None = None`**
+  — a new, optional config table (`output_dir: Path`, plus an optional
+  `known_senders_seed_path` for pre-populating `KnownSenderStore` from
+  a hand-authored file on first run). `None` (the default) means the
+  feature is off entirely — an `archive_receipt` rule with no
+  `[receipt_archive]` configured is a config error, reported the same
+  clean way a missing `provider`/`llm`/`alerts` table already is.
+- **Pipeline wiring** — a new `Augment`/`Filter` pair (§9.4) composed
+  into the `"terminal"` branch alongside `ApplyActionFilter`,
+  triggered specifically by `meta.verdict.action.type ==
+  "archive_receipt"`: look up or learn the sender, extract, tag via
+  `KeywordApplier`, build and save the PDF, record the audit entry.
+  Same "independently testable against a bare `Payload`, no full
+  `process_message()` needed" shape every other module in §9.4 already
+  has.
+
+**Exit criteria (once built):** a known-sender receipt is tagged and
+archived with zero Tier 2 calls; a message from an unrecognized sender
+makes exactly one Tier 2 extraction call and is learned; a second
+message from that now-learned sender is handled deterministically; a
+message with attachments and a message with none both produce exactly
+one PDF at the configured location; a write failure to that location
+leaves the message retryable, not silently dropped. Every one of these
+is offline-testable (`FileProvider` + `RecordedReceiptExtractionClient`)
+— unlike M1/M3's live-account-blocked items, nothing about this
+milestone's exit criterion depends on a live Fastmail or Anthropic
+session, so there's no reason for it to stay partially met once the
+modules above are actually written.
+
 ## 10. LLM integration (Claude API)
 
 - **Model:** configurable, default `claude-sonnet-5` — cheap enough for
