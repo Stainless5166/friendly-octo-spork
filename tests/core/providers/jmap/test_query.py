@@ -84,6 +84,7 @@ def test_query_messages_returns_a_page_of_normalized_messages_and_position() -> 
     assert isinstance(result, JmapQueryResult)
     assert [m.message_id for m in result.messages] == ["msg-1", "msg-2"]
     assert result.position == 0
+    assert result.next_position == 2
     assert result.total == 2
     assert result.has_more is False
 
@@ -137,6 +138,37 @@ def test_query_messages_with_no_matching_ids_skips_the_get_call() -> None:
     assert result.messages == ()
     assert result.has_more is False
     assert [type(r).__name__ for r in backend.requests] == ["MailboxGet", "EmailQuery"]
+
+
+def test_query_messages_next_position_accounts_for_ids_not_returned_by_get() -> None:
+    """A message deleted/moved between Email/query and Email/get (plausible
+
+    mid-sweep on a live several-thousand-message Inbox) must not stall or
+    drift pagination: next_position advances by how many ids Email/query
+    matched, not by how many messages Email/get actually returned.
+    """
+    backend = _FakeJmapcClient(
+        [
+            _mailbox_response(),
+            _Response(
+                query_state="q-1",
+                can_calculate_changes=False,
+                position=0,
+                ids=["msg-1", "msg-2", "msg-3"],
+                total=5,
+            ),
+            # Email/get only returns 2 of the 3 requested ids (msg-2 was
+            # deleted/moved in between) - not_found would list it in a real
+            # response, irrelevant to this assertion.
+            _Response(state="state-1", data=[_email("msg-1"), _email("msg-3")], not_found=None),
+        ]
+    )
+
+    result = _client(backend).query_messages(position=0, limit=3)
+
+    assert len(result.messages) == 2
+    assert result.next_position == 3
+    assert result.has_more is True
 
 
 def test_query_messages_passes_the_requested_position_and_limit() -> None:
