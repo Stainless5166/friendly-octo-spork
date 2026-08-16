@@ -502,12 +502,18 @@ email both produce a visible desktop notification; killing network
 connectivity for 10+ minutes produces a "push disconnected" alert.
 **Not yet met, but for a narrower reason than before:** the pipeline
 wiring, `DesktopAlerter` itself, and `sporkd`'s daemon loop (M5) are
-all real and tested now — nothing left to build offline. What's
-missing is live proof: this sandbox has no desktop session to pop a
-notification on, and "killing network connectivity for 10+ minutes"
-is the same forced-outage control M1's `@network-recovery` scenario
-is already blocked on, plus the still-open "JMAP push disconnected >
-N minutes" daemon-health signal above. Configuring `[alerts] spec =
+all real and tested now — nothing left to build offline.
+`DesktopAlerter().notify(...)` was run live against this environment's
+actual session D-Bus bus (`DISPLAY`/`DBUS_SESSION_BUS_ADDRESS` both
+present) and completed with no exception — real evidence the
+mechanism works end to end, not just against the injected-runner
+tests — but that only confirms `notify-send` accepted and delivered
+the call, not that a human actually saw the popup; visual confirmation
+is the maintainer's to give. The "killing network connectivity for
+10+ minutes" half is the same forced-outage control M1's
+`@network-recovery` scenario is already blocked on, plus the still-open
+"JMAP push disconnected > N minutes" daemon-health signal above.
+Configuring `[alerts] spec =
 "spork.core.alerts.desktop:DesktopAlerter"` on the maintainer's own
 machine and confirming a real popup appears is the actual remaining
 step, not further code.
