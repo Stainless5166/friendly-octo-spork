@@ -36,7 +36,7 @@ def test_executor_rejects_tag_action_without_a_mailbox(make_message) -> None:
     applier = _RecordingApplier()
     executor = ActionExecutor(applier)
 
-    with pytest.raises(ActionExecutionError):
+    with pytest.raises(ActionExecutionError, match="requires a mailbox"):
         executor.execute(make_message(), Action(type="tag"))
 
     assert applier.calls == []

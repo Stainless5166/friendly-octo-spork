@@ -4477,6 +4477,70 @@ WantedBy=default.target
   recorder today — the mitmproxy flow captures above serve as it,
   rather than building a second bespoke recording mechanism.
 
+### 16.1 Property-based (fuzz) testing of decision logic
+
+100% line coverage (true of every module below as of M7) proves every
+line *ran* under test, not that the assertions around it are strong
+enough to catch a wrong decision — a mutated comparison operator can
+still execute every line and pass every example-based test if the
+examples happen not to distinguish `<` from `<=`. Property-based tests
+close that gap for spork's actual decision logic — the modules that
+decide what happens to a message, as opposed to the plumbing around
+them: `spork.core.rules.engine` (condition matching, first-match-wins),
+`spork.core.actions.executor` (action-type guardrails),
+`spork.core.dispatch.combine` (multi-target reduction), and
+`spork.core.pipeline.default.process_message()` (idempotency + rule
+evaluation + action + audit, tied together). These four are picked
+because they're both *decision* logic (a bug here silently misfiles or
+misfires on real mail, the exact failure mode §11 exists to bound) and
+already fully covered by example-based tests — the two preconditions
+mutation testing (§16.2) needs to be worth running at all.
+
+Uses [Hypothesis](https://hypothesis.readthedocs.io/): each property
+test states an invariant that must hold for *any* input in a generated
+space, not one hand-picked example — e.g. "evaluate() never returns a
+verdict for a disabled rule, no matter what rules/message Hypothesis
+generates," or "ActionExecutor.execute() either raises
+ActionExecutionError or calls the applier exactly once, never both,
+never neither." These live alongside the existing acceptance/edge-case
+tests as `test_<module>_fuzz.py` siblings (same mirrored-path
+convention, §"Conventions"), run as an ordinary part of `uv run
+pytest` — unlike mutation testing (§16.2), a property test is still a
+correctness test, just a more general one, so it belongs in the normal
+gate.
+
+### 16.2 Mutation testing of decision logic
+
+Mutation testing (via [mutmut](https://mutmut.readthedocs.io/)) answers
+the question line/branch coverage can't: for each of a set of
+mechanical changes to the code under test (flip a comparator, change a
+boolean, drop a guard clause), does *some* test actually fail? A
+mutant that survives (every test still passes against the mutated
+code) means the suite has a line that runs but is never actually
+checked — a real gap example-based coverage can't see. Scoped to the
+same four modules as §16.1, for the same reason: only worth running
+where coverage is already complete and the logic is decision-critical
+enough that a surviving mutant is worth someone's time to look at.
+
+Deliberately **not** part of `uv run pytest` or either CI gate
+(`pr-checks.yml`/`push-format-test.yml`) — a mutation run re-executes
+the relevant test files once per mutant, so it's minutes, not seconds,
+the same "different kind of test, doesn't belong in the fast loop"
+reasoning `benchmarks/` already established for performance tests.
+`mutation/README.md` documents the manual invocation
+(`uv run mutmut run`, scoped via `[tool.mutmut]` in `pyproject.toml`)
+and `.github/workflows/mutation-testing.yml` runs it on a weekly
+schedule plus `workflow_dispatch`, uploading the result summary as a
+build artifact rather than failing the workflow — a surviving mutant
+is a prompt for a human to look and decide (real gap vs. genuinely
+equivalent mutant), not something that should silently block unrelated
+PRs from a schedule they don't control. A mutant killed by adding a
+test is committed as an ordinary test-improvement commit, following
+the same "close a real gap with one more targeted test" discipline as
+any other coverage gap; a mutant judged equivalent (the mutated code
+is behaviorally identical to the original, e.g. mutating dead code) is
+recorded as such in `mutation/README.md`, not silently ignored.
+
 ## 17. Open questions / risks
 
 - **Sieve JMAP client** (RFC 9661) has no existing Python library — needs

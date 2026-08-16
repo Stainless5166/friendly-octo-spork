@@ -234,6 +234,17 @@ boundary. The production path was manually verified against Fastmail
 without fetching historical message bodies; CI remains network-free.
 The changed JMAP client has 100% line coverage. That increment brought
 the suite to 704 tests. **The full suite is now 714 tests, all green.**
+Updated once more for M7a: Hypothesis property-based tests plus
+mutation testing (`mutmut`) for the four decision-critical, already
+100%-covered modules (`rules.engine`, `actions.executor`,
+`dispatch.combine`, `pipeline.default`) — docs/DESIGN.md §16.1/§16.2,
+`mutation/README.md`'s recorded baseline (174 mutants, 171 killed, 3
+confirmed equivalent). Several real gaps mutation testing surfaced
+were closed with targeted tests, not implementation changes (a
+classifier/dispatch call receiving the wrong argument, two silently-
+dropped injection points, an unverified UTC clock, an unexercised
+default parameter, and one docstring-documented contract with no
+deterministic test). **The full suite is now 785 tests, all green.**
 Updated once more for M1c's fault-injection harness
 (`tests/support/jmap_mitm.py`): a mitmproxy instance driving the real,
 unmodified production `client_factory` (real `jmapc.Client`) through a
@@ -248,7 +259,11 @@ engages once that internal reconnect itself fails, not on the first
 disconnect. No code change yet; recorded as-is since M1c's scope was
 the harness, not a push.py behavior change. This section's per-test
 counts elsewhere in the file were not otherwise reconciled to the
-suite's current total in this pass.
+suite's current total in this pass. Combined with M7a and M8's own
+work below, and merged with M7a's own fuzz/mutation-testing work,
+**the full suite is now 815 tests, all green** — the
+running per-paragraph totals above this point were not individually
+reconciled to that figure; treat this line as the current authority.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -387,8 +402,8 @@ until M1's real JMAP fetch exists.
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
-| `tests/support/jmap_mitm.py` fault-injection harness | ✅ | ✅ — tests 707–712 (6 tests) |
-| `tests/fixtures/jmap/flows/` recorded flows | ✅ captured, gitignored, token-redacted; wired into the harness as a replay source via mitmproxy's own ServerPlayback addon | ✅ — test 737 (skips, not fails, when the gitignored flow file is absent; verified both paths locally) |
+| `tests/support/jmap_mitm.py` fault-injection harness | ✅ | ✅ — tests 731–736 (6 tests) |
+| `tests/fixtures/jmap/flows/` recorded flows | ✅ captured, gitignored, token-redacted; wired into the harness as a replay source via mitmproxy's own ServerPlayback addon | ✅ — test 761 (skips, not fails, when the gitignored flow file is absent; verified both paths locally) |
 | Automatable push/fallback acceptance coverage | ✅ (new feature, not a bind of `m1.py`'s live steps) | ✅ — `docs/acceptance/m1_jmap_fault_injection.feature` + `steps/m1_fault_injection.py`, passing in the safe-default `uv run behave` |
 | Initial `tests/fixtures/corpus/live.jsonl` seed | ✅ 13 entries, 13 distinct categories | — (not a pytest-covered artifact) |
 
@@ -759,20 +774,43 @@ resolved secret's real value verbatim — confirmed empirically
 before fixing with `repr=False` + a custom `__repr__` showing only the
 declared names.
 
+### M7a — Mutation & fuzz testing hardening — 4/4
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| Design: property-based + mutation testing strategy | ✅ | — prose (docs/DESIGN.md §16.1/§16.2) |
+| Hypothesis property tests, four in-scope modules | ✅ | ✅ — tests 707–730 (`test_*_fuzz.py` siblings), part of the ordinary `uv run pytest` gate |
+| `mutmut` wired up (dev dep, config, `mutation/README.md`) | ✅ | ✅ — `uv run mutmut run` reproduces the recorded baseline |
+| First baseline mutation run + gap closure | ✅ | ✅ — tests 707–730 also cover the real gaps mutmut surfaced; 174 mutants, 171 killed, 3 recorded-equivalent survivors |
+
+Mutation testing itself deliberately isn't part of `uv run pytest` or
+either CI gate (mutation/README.md, same "different kind of test"
+reasoning `benchmarks/` established) — its own weekly/manual workflow
+(`.github/workflows/mutation-testing.yml`) is what "tested" means for
+that one checklist item, not a pytest run. The gaps mutmut surfaced in
+`rules.engine`, `dispatch.combine`, and `pipeline.default` were real
+(a classifier/dispatch call receiving the wrong argument unverified, a
+`new_correlation_id`/`classifier` injection point silently unforwarded,
+a default clock never checked for being UTC, `build_default_pipeline()`'s
+own `force` default never exercised, and one docstring-documented
+"empty scores = exactly 0.0 confidence" contract with no deterministic
+test) — closed with targeted tests, not implementation changes; no
+`src/spork` behavior changed in this pass.
+
 ### M8 — Backfill / retroactive categorization — 4/5
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
-| `JmapClient.query_messages()` | ✅ | ✅ — tests 716–720 (5 tests), live-verified against the real account |
-| `BackfillPage`/`BackfillProvider` capability (`JmapProvider`, `FileProvider`) | ✅ | ✅ — tests 721–727 (7 tests) |
-| Bounded, resumable `spork backfill` CLI | ✅ | ✅ — tests 728–736 (9 tests: 6 acceptance + 3 edge cases) |
-| `StateDB`/`processed_messages` dedup reuse | ✅ (reuses `process_message()`'s existing idempotency gate, no new mechanism) | ✅ — test 734 |
-| Backfill-specific throttle/budget policy | ✅ (`--limit`, default 50) | ✅ — tests 732, 736 |
+| `JmapClient.query_messages()` | ✅ | ✅ — tests 740–744 (5 tests), live-verified against the real account |
+| `BackfillPage`/`BackfillProvider` capability (`JmapProvider`, `FileProvider`) | ✅ | ✅ — tests 745–751 (7 tests) |
+| Bounded, resumable `spork backfill` CLI | ✅ | ✅ — tests 752–760 (9 tests: 6 acceptance + 3 edge cases) |
+| `StateDB`/`processed_messages` dedup reuse | ✅ (reuses `process_message()`'s existing idempotency gate, no new mechanism) | ✅ — test 758 |
+| Backfill-specific throttle/budget policy | ✅ (`--limit`, default 50) | ✅ — tests 756, 760 |
 | Full backfill run growing the corpus at volume | — | not started — a 13-entry hand-picked seed exists (M1c) via direct SMTP+LLM calls, not a `spork backfill` run; that needs an all-`ignore` rules file or the write-side JMAP stubs resolved first (`apply_action()`/`create_draft()` are still `NotImplementedError`) |
 
 ---
 
-## Full test inventory (726 tests, all passing — 0 xfail)
+## Full test inventory (815 tests, all passing — 0 xfail)
 
 ### tests/core/classify
 
@@ -3763,6 +3801,122 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
       Tier 1 leaves an escalation unprocessed so Tier 2 or a later retry can
       claim terminal ownership.
 
+### M7a mutation & fuzz testing hardening (tests 707–730)
+
+Property-based (Hypothesis) tests for the four modules docs/DESIGN.md
+§16.1 scopes, plus deterministic tests for the real gaps an initial
+`mutmut` baseline run surfaced in those same modules (§16.2,
+mutation/README.md) — see that file for the full mutant-by-mutant
+accounting. Several pre-existing tests were also strengthened in
+place rather than replaced (`pytest.raises(..., match=...)` widened to
+exact string equality in `test_engine_edge_cases.py`,
+`test_executor.py`, `test_executor_edge_cases.py`, and
+`test_combine_edge_cases.py`; `test_classifier_is_invoked_at_most_once_per_evaluation`
+now also asserts on which message the classifier received) — those
+don't get new numbered entries here since they're the same test
+functions, just harder to fool.
+
+707. **`core/rules/test_engine_fuzz.py::test_first_enabled_always_true_rule_wins_regardless_of_count`**
+      For any Hypothesis-generated enabled/disabled pattern over
+      unconditionally-matching rules, the winner is always the earliest
+      enabled one.
+
+708. **`core/rules/test_engine_fuzz.py::test_empty_conditions_never_match_any_generated_message`**
+      Any number of all-default `Condition()` rules never match, for any
+      generated message.
+
+709. **`core/rules/test_engine_fuzz.py::test_from_domain_in_matches_iff_domain_is_a_member`**
+      `from_domain_in` matches exactly when the message's domain is a
+      member of the generated list.
+
+710. **`core/rules/test_engine_fuzz.py::test_from_in_matches_iff_address_is_a_member`**
+      Same membership property as above for the exact-address condition
+      kind.
+
+711. **`core/rules/test_engine_fuzz.py::test_disabled_rules_are_always_skipped_regardless_of_condition`**
+      Every rule disabled — even ones that unconditionally match — always
+      falls through to the default policy.
+
+712. **`core/actions/test_executor_fuzz.py::test_escalate_always_rejected_and_never_reaches_the_applier`**
+      Any generated escalate Action is rejected outright and never reaches
+      the applier.
+
+713. **`core/actions/test_executor_fuzz.py::test_move_or_tag_without_mailbox_always_rejected`**
+      Any generated move/tag Action with `mailbox=None` is rejected.
+
+714. **`core/actions/test_executor_fuzz.py::test_move_or_tag_with_a_mailbox_always_reaches_the_applier_unchanged`**
+      Any generated move/tag Action carrying a mailbox reaches `apply()`
+      exactly once, unchanged.
+
+715. **`core/actions/test_executor_fuzz.py::test_ignore_is_always_a_pure_no_op`**
+      Any generated ignore Action never reaches the applier and never
+      raises.
+
+716. **`core/actions/test_executor_fuzz.py::test_execute_never_both_raises_and_calls_the_applier`**
+      Across every generated Action, raising and applying are mutually
+      exclusive outcomes.
+
+717. **`core/dispatch/test_combine_fuzz.py::test_primary_combiner_returns_exactly_the_named_targets_success_or_raises`**
+      `PrimaryCombiner`'s decision is entirely a function of the named
+      target's own outcome, for any generated dispatch map.
+
+718. **`core/dispatch/test_combine_fuzz.py::test_highest_confidence_combiner_picks_the_max_confidence_success_or_raises`**
+      `HighestConfidenceCombiner` either raises (no successes) or returns a
+      result tying the true maximum confidence among successes.
+
+719. **`core/dispatch/test_combine_fuzz.py::test_highest_confidence_tie_break_favors_earlier_insertion_order`**
+      A tie at any generated confidence value resolves to the
+      earlier-inserted target, generalizing the fixed-0.5 example test.
+
+720. **`core/dispatch/test_combine_fuzz.py::test_dispatching_classifier_matches_manual_dispatch_then_combine`**
+      `DispatchingClassifier.classify()` is exactly dispatch-then-combine
+      for any generated set of successful targets.
+
+721. **`core/pipeline/test_default_fuzz.py::test_process_message_never_applies_a_terminal_action_twice`**
+      For any generated message and terminal action type, a second
+      `process_message()` call never re-applies.
+
+722. **`core/pipeline/test_default_fuzz.py::test_escalate_verdict_never_marks_processed_or_applies`**
+      For any generated message, an escalate verdict is never marked
+      processed and never reaches the applier.
+
+723. **`core/pipeline/test_default_fuzz.py::test_non_escalate_verdict_always_marks_processed`**
+      The complement of the above: every terminal verdict marks the
+      message processed, for any generated message/action type.
+
+724. **`core/pipeline/test_default_fuzz.py::test_force_bypasses_idempotency_on_every_call`**
+      `force=True` re-evaluates and re-applies on every call, even a
+      second time on the same message.
+
+725. **`core/pipeline/test_default_fuzz.py::test_process_message_verdict_matches_the_rule_engines_own_evaluate`**
+      `process_message()`'s routing never diverges from calling
+      `rules.engine.evaluate()` directly with the same inputs, for any
+      generated message and rule list.
+
+726. **`core/dispatch/test_combine_edge_cases.py::test_dispatching_classifier_forwards_the_actual_message_to_dispatch`**
+      `classify(message)` hands that exact message to the dispatcher, not
+      some other value — closes a real mutmut survivor
+      (`dispatcher.dispatch(None)`).
+
+727. **`core/dispatch/test_combine_edge_cases.py::test_highest_confidence_combiner_treats_no_scores_as_exactly_zero_confidence`**
+      A target reporting no scores is exactly 0.0 confidence — beats a
+      real negative score, loses to a real positive one — pinned
+      deterministically after a property test's kill status flickered
+      between runs on this same mutant.
+
+728. **`core/pipeline/test_default_edge_cases.py::test_process_message_uses_the_injected_correlation_id_generator`**
+      The `new_correlation_id=` callable actually reaches
+      `CorrelationIdFilter` — closes a real mutmut survivor (the forward
+      silently dropped).
+
+729. **`core/pipeline/test_default_edge_cases.py::test_process_message_uses_the_injected_classifier`**
+      The `classifier=` argument actually reaches rule evaluation — closes
+      a real mutmut survivor (`classifier=None`/dropped entirely).
+
+730. **`core/pipeline/test_default_edge_cases.py::test_build_default_pipeline_defaults_to_not_forcing`**
+      Calling `build_default_pipeline()` without `force=` still includes
+      the idempotency gate — its own default was otherwise never
+      exercised, since `process_message()` always passes it explicitly.
 ### tests/core/providers/jmap — mitmproxy fault-injection harness (M1c)
 
 `tests/support/jmap_mitm.py` drives the real, unmodified production
@@ -3772,16 +3926,16 @@ tests exercise `JmapClient`/`JmapPushTrigger` against genuine transport
 faults. Nothing is ever forwarded to a real upstream host — the addon
 always answers locally, from a canned response or a synthetic fault.
 
-707. **`test_mitm_fault_injection.py::test_client_round_trips_through_real_jmapc_over_the_harness_with_no_live_network`**
+731. **`test_mitm_fault_injection.py::test_client_round_trips_through_real_jmapc_over_the_harness_with_no_live_network`**
      The production `client_factory`, driven over the harness, completes
      session discovery and a baseline fetch with zero requests forwarded
      upstream.
 
-708. **`test_mitm_fault_injection.py::test_truncated_response_body_surfaces_as_jmap_error`**
+732. **`test_mitm_fault_injection.py::test_truncated_response_body_surfaces_as_jmap_error`**
      A response body cut short over the real transport still raises
      `JmapError`, not an unhandled `JSONDecodeError`.
 
-709. **`test_mitm_fault_injection.py::test_eventsource_mid_stream_disconnect_raises_push_disconnected_error_after_backoff`**
+733. **`test_mitm_fault_injection.py::test_eventsource_mid_stream_disconnect_raises_push_disconnected_error_after_backoff`**
      A real EventSource stream ending with no events reaches
      `JmapPushDisconnectedError` after one backoff sleep. Building this
      test found that `jmapc`'s `sseclient` transport silently retries a
@@ -3790,15 +3944,15 @@ always answers locally, from a canned response or a synthetic fault.
      *reconnect* attempt also fails, since that's what actually reaches
      spork's own backoff (see docs/ROADMAP.md M1's EventSource item).
 
-710. **`test_mitm_fault_injection.py::test_synthetic_429_with_retry_after_surfaces_as_jmap_error`**
+734. **`test_mitm_fault_injection.py::test_synthetic_429_with_retry_after_surfaces_as_jmap_error`**
      A real HTTP 429 with `Retry-After` fails closed through `JmapError`
      rather than an unhandled `requests.HTTPError`.
 
-711. **`test_mitm_fault_injection.py::test_added_latency_does_not_change_the_returned_data`**
+735. **`test_mitm_fault_injection.py::test_added_latency_does_not_change_the_returned_data`**
      A deliberately slow-but-complete response still parses correctly —
      the harness's latency fault doesn't itself corrupt what it delays.
 
-712. **`test_mitm_fault_injection.py::test_harness_refuses_to_forward_a_request_upstream_without_explicit_opt_in`**
+736. **`test_mitm_fault_injection.py::test_harness_refuses_to_forward_a_request_upstream_without_explicit_opt_in`**
      No canned response configured means every request fails closed
      locally; `requests_forwarded_upstream()` stays 0 — the harness's
      core safety property ahead of ever pointing it at a live account.
@@ -3810,118 +3964,118 @@ Claude call chose `suggested_action.type = "escalate"` for ambiguous
 mail, which `Verdict`'s own validator rejects. `verdict_tool_schema()`
 now strips it from what the model is offered.
 
-713. **`test_prompt.py::test_build_prompt_forces_one_deliver_verdict_tool_with_the_verdict_schema`**
+737. **`test_prompt.py::test_build_prompt_forces_one_deliver_verdict_tool_with_the_verdict_schema`**
      (updated) The tool's `parameters` equal `verdict_tool_schema()`,
      not the raw, unmodified `Verdict.model_json_schema()`.
 
-714. **`test_prompt.py::test_verdict_tool_schema_excludes_escalate_from_suggested_action_type`**
+738. **`test_prompt.py::test_verdict_tool_schema_excludes_escalate_from_suggested_action_type`**
      `suggested_action.type`'s enum is exactly `{"move", "tag",
      "ignore"}` — `"escalate"` is never offered to the model.
 
-715. **`test_prompt.py::test_verdict_tool_schema_leaves_every_other_field_unchanged`**
+739. **`test_prompt.py::test_verdict_tool_schema_leaves_every_other_field_unchanged`**
      Every other part of the schema is byte-for-byte identical to
      `Verdict.model_json_schema()` — the fix is a single-field edit,
      not a schema rewrite.
 
 ### tests/core/providers/jmap — query_messages() backfill read path (M8)
 
-716. **`test_query.py::test_query_messages_returns_a_page_of_normalized_messages_and_position`**
+740. **`test_query.py::test_query_messages_returns_a_page_of_normalized_messages_and_position`**
      A two-message `Email/query`+`Email/get` page normalizes correctly
      and reports `position`/`total`/`has_more` from the response.
 
-717. **`test_query.py::test_query_messages_unread_only_sets_the_not_keyword_filter`**
+741. **`test_query.py::test_query_messages_unread_only_sets_the_not_keyword_filter`**
      `unread_only=True` sends `Email/query` with `filter.not_keyword ==
      "$seen"` and `filter.in_mailbox` set to the resolved Inbox id.
 
-718. **`test_query.py::test_query_messages_has_more_true_when_a_later_page_remains`**
+742. **`test_query.py::test_query_messages_has_more_true_when_a_later_page_remains`**
      `position=0, limit=1` against a `total=5` response reports
      `has_more=True` — the caller can page without re-deriving the
      arithmetic itself.
 
-719. **`test_query.py::test_query_messages_with_no_matching_ids_skips_the_get_call`**
+743. **`test_query.py::test_query_messages_with_no_matching_ids_skips_the_get_call`**
      An empty `Email/query` result never issues an `Email/get` call —
      only `MailboxGet` and `EmailQuery` appear in the request log.
 
-720. **`test_query.py::test_query_messages_passes_the_requested_position_and_limit`**
+744. **`test_query.py::test_query_messages_passes_the_requested_position_and_limit`**
      `position=20, limit=10` are forwarded to `Email/query` exactly,
      unmodified.
 
 ### tests/core/providers — BackfillPage/BackfillProvider capability (M8)
 
-721. **`jmap/test_backfill.py::test_provider_satisfies_the_backfill_provider_protocol`**
+745. **`jmap/test_backfill.py::test_provider_satisfies_the_backfill_provider_protocol`**
      `JmapProvider` structurally satisfies `BackfillProvider`
      (`isinstance` check, `@runtime_checkable`).
 
-722. **`jmap/test_backfill.py::test_query_messages_delegates_to_the_client_and_wraps_the_result`**
+746. **`jmap/test_backfill.py::test_query_messages_delegates_to_the_client_and_wraps_the_result`**
      `JmapProvider.query_messages()` forwards every argument to the
      underlying `JmapClient` and wraps its `JmapQueryResult` as the
      backend-agnostic `BackfillPage`.
 
-723. **`jmap/test_backfill.py::test_query_messages_uses_documented_defaults`**
+747. **`jmap/test_backfill.py::test_query_messages_uses_documented_defaults`**
      Called with no arguments, the client sees
      `unread_only=False, position=0, limit=50`.
 
-724. **`file/test_backfill.py::test_provider_satisfies_the_backfill_provider_protocol`**
+748. **`file/test_backfill.py::test_provider_satisfies_the_backfill_provider_protocol`**
      `FileProvider` structurally satisfies `BackfillProvider` too — a
      second, real implementation, same "the abstraction generalizes"
      proof `Provider` itself already has (M1b).
 
-725. **`file/test_backfill.py::test_query_messages_returns_a_windowed_page`**
+749. **`file/test_backfill.py::test_query_messages_returns_a_windowed_page`**
      A 5-message fixture file, `position=0, limit=2`, returns the
      first two messages with `total=5, has_more=True`.
 
-726. **`file/test_backfill.py::test_query_messages_has_more_false_on_the_last_page`**
+750. **`file/test_backfill.py::test_query_messages_has_more_false_on_the_last_page`**
      `position=4, limit=2` against 5 messages returns the last one with
      `has_more=False`.
 
-727. **`file/test_backfill.py::test_query_messages_unread_only_is_accepted_but_has_no_filter_to_apply`**
+751. **`file/test_backfill.py::test_query_messages_unread_only_is_accepted_but_has_no_filter_to_apply`**
      `unread_only=True` still returns every message — a fixture file
      has no "seen" state to filter on, documented rather than silently
      misleading.
 
 ### tests/cli/commands — spork backfill (M8)
 
-728. **`test_backfill.py::test_backfill_help_works`**
+752. **`test_backfill.py::test_backfill_help_works`**
      `spork backfill --help` exits 0 with usage text.
 
-729. **`test_backfill.py::test_backfill_with_no_config_produces_a_clean_error`**
+753. **`test_backfill.py::test_backfill_with_no_config_produces_a_clean_error`**
      No `config.toml` present: exit 1, `Error:` on stderr, no
      traceback.
 
-730. **`test_backfill.py::test_backfill_processes_every_message_through_tier1`**
+754. **`test_backfill.py::test_backfill_processes_every_message_through_tier1`**
      A 3-message `FileProvider` fixture: every message ends up in
      `processed_messages` after one run.
 
-731. **`test_backfill.py::test_backfill_escalates_through_tier2_when_rules_say_so`**
+755. **`test_backfill.py::test_backfill_escalates_through_tier2_when_rules_say_so`**
      A message an `always`-matching catch-all rule escalates gets a
      real Tier 2 verdict via `RecordedLLMClient`, recorded as
      `tier_reached="tier2"`.
 
-732. **`test_backfill.py::test_backfill_respects_the_limit_option`**
+756. **`test_backfill.py::test_backfill_respects_the_limit_option`**
      5 messages available, `--limit 2`: exactly 2 end up processed.
 
-733. **`test_backfill.py::test_backfill_writes_a_control_plane_audit_entry`**
+757. **`test_backfill.py::test_backfill_writes_a_control_plane_audit_entry`**
      One `backfill_triggered` audit entry per run, same pattern as
      `reclassify_triggered`.
 
-734. **`test_backfill_edge_cases.py::test_backfill_never_reprocesses_a_message_already_marked_processed`**
+758. **`test_backfill_edge_cases.py::test_backfill_never_reprocesses_a_message_already_marked_processed`**
      Running backfill twice: the second run reports 0 Tier 1 actions
      and 0 Tier 2 verdicts, and `processed_messages` still has exactly
      3 rows, not 6 — `process_message()`'s idempotency gate is what
      M8's dedup guarantee actually rests on.
 
-735. **`test_backfill_edge_cases.py::test_backfill_reports_a_clean_error_for_a_provider_without_the_capability`**
+759. **`test_backfill_edge_cases.py::test_backfill_reports_a_clean_error_for_a_provider_without_the_capability`**
      A provider with no `query_messages()` (`NoBackfillProvider`,
      `tests/support/`): exit 1, `"does not support backfill"` on
      stderr, no traceback.
 
-736. **`test_backfill_edge_cases.py::test_backfill_with_a_page_size_larger_than_the_limit_still_stops_at_the_limit`**
+760. **`test_backfill_edge_cases.py::test_backfill_with_a_page_size_larger_than_the_limit_still_stops_at_the_limit`**
      `--limit 1 --page-size 50` against 5 available messages still
      processes exactly 1.
 
 ### tests/core/providers/jmap — recorded flow replay (M1c)
 
-737. **`test_flow_replay.py::test_baseline_fetch_replays_from_the_recorded_flow_not_a_canned_response`**
+761. **`test_flow_replay.py::test_baseline_fetch_replays_from_the_recorded_flow_not_a_canned_response`**
      With zero canned responses configured, `jmap_mitm_harness(replay_flows=[...])`
      answers `JmapClient.connect()`/`fetch_new_messages()` entirely
      from the real recorded flow — the real captured account id and

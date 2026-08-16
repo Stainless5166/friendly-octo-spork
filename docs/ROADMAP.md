@@ -845,6 +845,62 @@ verification, crash-loop verification) and the exit criterion all share
 that one blocker — not new scope invented for M7, the same one M1's own
 exit criteria has stated since the beginning.
 
+## M7a — Mutation & fuzz testing hardening
+
+**Goal:** verify that the modules already at 100% line coverage are
+actually *checked*, not just executed — property-based tests catch
+input shapes example-based tests never tried, mutation testing catches
+assertions weak enough to survive a deliberately wrong implementation.
+Scoped to spork's actual decision logic (docs/DESIGN.md §16.1/§16.2):
+`spork.core.rules.engine`, `spork.core.actions.executor`,
+`spork.core.dispatch.combine`, `spork.core.pipeline.default`.
+
+- [x] Design: property-based + mutation testing strategy, scope, and
+      why neither runs in the fast per-push loop (docs/DESIGN.md
+      §16.1/§16.2) (S)
+- [x] Hypothesis property tests for the four in-scope modules —
+      `test_<module>_fuzz.py` siblings, part of the ordinary `uv run
+      pytest` gate like any other correctness test (M) — 19 tests
+      (docs/TEST_COVERAGE.md 707–725), all passing against the
+      existing implementation with no `src/spork` change: coverage
+      that was already earned, per CLAUDE.md's TDD discipline for this
+      kind of gap-closing round.
+- [x] `mutmut` wired up: dev dependency, `[tool.mutmut]` scoped to the
+      four in-scope modules, `mutation/README.md` documenting manual
+      invocation and the current baseline mutation score (S) —
+      `source_paths` copies the whole package (so the four mutated
+      files still have the rest of `spork.core` importable),
+      `only_mutate` narrows what actually gets mutated to the four in
+      scope.
+- [x] `.github/workflows/mutation-testing.yml`: weekly + manual
+      (`workflow_dispatch`) run, uploads the result summary as a build
+      artifact — deliberately non-blocking, same reasoning as
+      `benchmarks/` staying outside the PR gate (S)
+- [x] First baseline mutation run against the four modules; every
+      surviving mutant either killed with a targeted test (committed
+      as an ordinary test-improvement commit) or recorded as
+      equivalent in `mutation/README.md` (M) — 174 mutants generated,
+      171 killed. Five real, behavior-changing gaps found and closed
+      (docs/TEST_COVERAGE.md 726–730): a classifier/dispatch call
+      receiving the wrong argument in two places
+      (`rules.engine.evaluate`, `DispatchingClassifier.classify`),
+      `process_message()` silently dropping its `new_correlation_id=`/
+      `classifier=` injection points, the default clock never checked
+      for being UTC, `build_default_pipeline()`'s own `force` default
+      never exercised, and one docstring-documented "no scores = 0.0
+      confidence" contract with no deterministic test (a property test
+      only reached that path by chance, so the mutant's kill status
+      flickered between runs — fixed with two pinned examples, not a
+      bigger Hypothesis budget). 3 remaining survivors confirmed
+      equivalent and documented in `mutation/README.md`, not silently
+      ignored.
+
+**Exit criteria met:** `uv run pytest` includes the new property-based
+tests and stays green (785 tests total); `uv run mutmut run` against
+the four in-scope modules has no surviving mutant that isn't recorded
+as equivalent in `mutation/README.md` — verified reproducible across
+repeated runs.
+
 ## M8 — Backfill / retroactive categorization
 
 **Goal:** triage the maintainer's existing several-thousand-message

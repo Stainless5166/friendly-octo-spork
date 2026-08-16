@@ -104,8 +104,16 @@ def test_classifier_condition_without_configured_classifier_raises(make_message:
         )
     ]
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError) as exc_info:
         evaluate(message, rules, default_unmatched_action=Action(type="ignore"))
+
+    # Exact equality, not a substring match — a substring alone can't
+    # distinguish the real message from one wrapped in extra characters
+    # that still contain the substring (a mutation-testing target).
+    assert str(exc_info.value) == (
+        "a rule condition requires a local classifier, "
+        "but none was configured (see docs/DESIGN.md §9.1)"
+    )
 
 
 def test_classifier_is_invoked_at_most_once_per_evaluation(make_message: Any) -> None:
@@ -115,9 +123,11 @@ def test_classifier_is_invoked_at_most_once_per_evaluation(make_message: Any) ->
     class CountingClassifier:
         def __init__(self) -> None:
             self.calls = 0
+            self.messages_seen: list[NormalizedMessage] = []
 
         def classify(self, message: NormalizedMessage) -> ClassificationResult:
             self.calls += 1
+            self.messages_seen.append(message)
             return ClassificationResult(category="newsletter")
 
     classifier = CountingClassifier()
@@ -149,3 +159,6 @@ def test_classifier_is_invoked_at_most_once_per_evaluation(make_message: Any) ->
 
     assert verdict.matched_rule_id == "is-newsletter"
     assert classifier.calls == 1
+    # The exact message under evaluation must reach the classifier, not
+    # some other/empty value — the whole point of classifying at all.
+    assert classifier.messages_seen == [message]

@@ -113,6 +113,67 @@ about what it does. If a fixture-backed implementation is independently
 useful (see `FileProvider`), build and document it as what it actually
 is, not as a stand-in for the blocked thing.
 
+### Property-based (fuzz) and mutation testing — when to reach for each
+
+Both exist to catch what 100% line coverage can't: a test suite that
+executes every line without actually checking the right thing (docs/DESIGN.md
+§16.1/§16.2, `mutation/README.md`). Neither is a default part of the
+TDD loop above — reach for them only when a module is **both**
+decision-critical (a bug silently misfiles or misfires on real mail —
+the failure mode §11 exists to bound) **and** already at 100% line
+coverage from ordinary example-based tests. Today that's exactly four
+modules: `spork.core.rules.engine`, `spork.core.actions.executor`,
+`spork.core.dispatch.combine`, `spork.core.pipeline.default`. A module
+being decision logic, or being fully covered, isn't enough on its own —
+it needs both before either technique is worth the cost.
+
+- **Property-based tests (Hypothesis)** are ordinary correctness
+  tests — they belong in the normal `uv run pytest` gate, following
+  the same TDD discipline as any edge-case round (step 5 above: run
+  them, and if they pass against the existing implementation with no
+  code change, that's coverage that was already earned, not wasted
+  effort). Add them as `test_<module>_fuzz.py` siblings, same
+  mirrored-path convention as `test_<module>_edge_cases.py`. Each
+  states an invariant that must hold for *any* Hypothesis-generated
+  input, not one hand-picked example.
+  - Don't pass a function-scoped pytest fixture (`tmp_path`,
+    `make_message`, ...) into a `@given(...)`-decorated test —
+    Hypothesis's function-scoped-fixture health check fails loudly
+    because the fixture isn't reset between generated examples. Use
+    `tmp_path_factory.mktemp(...)` inside the test body instead, or a
+    module-level fixed value when the fixture's content genuinely
+    doesn't affect the property under test.
+  - If a property test only reaches a specific input shape by chance
+    (an empty-collection default, a tie, a boundary value) — rather
+    than widening `max_examples`, pin it with a deterministic example
+    instead. See `test_highest_confidence_combiner_treats_no_scores_as_exactly_zero_confidence`:
+    a mutation-testing survivor's kill status was flickering between
+    runs because the property test only generated an empty-`scores`
+    result sometimes.
+- **Mutation testing (`mutmut`)** is a different kind of test than
+  correctness — never part of `uv run pytest` or either CI gate, same
+  reasoning `benchmarks/` already gets for staying out of the fast
+  loop. Run it manually (`uv run mutmut run`, scoped to the four
+  in-scope modules via `pyproject.toml`'s `[tool.mutmut]`) after
+  adding or changing tests for one of them, or rely on the weekly
+  schedule (`.github/workflows/mutation-testing.yml`). A surviving
+  mutant is a prompt to look, not an automatic bug — decide which:
+  - **Real gap** (the mutated code is behaviorally distinguishable and
+    nothing caught it) → close it with one more targeted test,
+    committed as an ordinary test-improvement commit, same as any
+    other coverage gap (TDD step 6). The fix is always a better test —
+    never change `src/spork` just to make a mutant die.
+  - **Equivalent mutant** (genuinely indistinguishable from the
+    original for every input — e.g. mutating a value nothing
+    downstream reads, or a `None`/`False` swap that only ever appears
+    in a boolean context) → record it in `mutation/README.md` with the
+    reasoning. Don't leave an unexplained survivor in the list.
+  - Adding a fifth module to scope (once it reaches 100% coverage and
+    proves decision-critical) means adding it to `pyproject.toml`'s
+    `only_mutate` list and re-baselining `mutation/README.md` — treat
+    that as a real scope decision worth its own commit, not a silent
+    config tweak.
+
 ## Conventions
 
 - **Typed Python everywhere**, `mypy --strict` must stay clean.
