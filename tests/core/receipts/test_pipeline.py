@@ -196,3 +196,64 @@ def test_a_write_failure_propagates_instead_of_being_swallowed(tmp_path: Path) -
 
         with pytest.raises(ReceiptArchiveError):
             augment.augment(_payload(_message()))
+
+
+def test_dry_run_skips_the_pdf_write_but_still_sets_audit_fields(tmp_path: Path) -> None:
+    """--observe (docs/DESIGN.md, 'process and audit messages without
+    changing mail or creating drafts') needs an archive_receipt
+    equivalent: extraction and audit still happen, but nothing is
+    actually written to disk. Tagging is suppressed the same way
+    apply_action() is in observe mode -- by injecting an
+    observe-mode-safe KeywordApplier at the daemon-wiring layer, not
+    by ArchiveReceiptAugment itself, so this test uses a real
+    (non-suppressed) keyword_applier to isolate dry_run's own effect."""
+    output_dir = tmp_path / "receipts"
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        db.learn_known_sender(
+            "acmecloud.com", company="Acme Cloud", learned_from="seed", learned_at="t0"
+        )
+        keyword_applier = _FakeKeywordApplier()
+        augment = ArchiveReceiptAugment(
+            db,
+            ReceiptArchiveComponents(
+                attachment_fetcher=_FakeAttachmentFetcher(),
+                keyword_applier=keyword_applier,
+                extraction_client=_FakeExtractionClient("unused", "unused"),
+                output_dir=output_dir,
+                dry_run=True,
+            ),
+        )
+
+        result = augment.augment(_payload(_message()))
+
+    assert not output_dir.exists() or list(output_dir.glob("*.pdf")) == []
+    assert keyword_applier.calls[0][1][:2] == ["receipt", "company:Acme Cloud"]
+    assert result.meta.audit_event == "receipt_archived"
+    assert result.meta.audit_detail_json is not None
+    assert "Acme Cloud" in result.meta.audit_detail_json
+
+
+def test_dry_run_does_not_require_a_writable_output_dir(tmp_path: Path) -> None:
+    """A dry run never touches the filesystem, so an unwritable/
+    nonexistent output_dir is fine -- unlike the real write path
+    (test_a_write_failure_propagates_instead_of_being_swallowed)."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        db.learn_known_sender(
+            "acmecloud.com", company="Acme Cloud", learned_from="seed", learned_at="t0"
+        )
+        augment = ArchiveReceiptAugment(
+            db,
+            ReceiptArchiveComponents(
+                attachment_fetcher=_FakeAttachmentFetcher(),
+                keyword_applier=_FakeKeywordApplier(),
+                extraction_client=_FakeExtractionClient("unused", "unused"),
+                output_dir=blocker / "sub",
+                dry_run=True,
+            ),
+        )
+
+        result = augment.augment(_payload(_message()))  # doesn't raise
+
+    assert result.meta.audit_event == "receipt_archived"
