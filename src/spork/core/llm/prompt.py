@@ -43,6 +43,7 @@ def build_prompt(request: VerdictRequest) -> CompletionPrompt:
     """Represent every request field and force one schema-validated verdict tool call."""
     user_content = json.dumps(
         {
+            "available_categories": list(request.available_categories),
             "available_mailboxes": list(request.available_mailboxes),
             "cleaned_body": request.cleaned_body,
             "from_address": request.from_address,
@@ -65,7 +66,9 @@ def build_prompt(request: VerdictRequest) -> CompletionPrompt:
                     "verdict already is Tier 2's decision. If you are unsure, still choose "
                     "a terminal action and express the uncertainty via a low confidence "
                     "value instead; a low confidence routes to human review without "
-                    "taking action."
+                    "taking action. metadata is optional: include freeform key-value data "
+                    "worth surfacing from this email (e.g. a date, an order number, a "
+                    "reference id) — leave it empty if there's nothing worth extracting."
                 ),
             },
             {"role": "user", "content": user_content},

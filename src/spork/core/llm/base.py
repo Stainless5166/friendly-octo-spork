@@ -29,6 +29,12 @@ class VerdictRequest:
     thread_prior_subject: str | None
     thread_user_has_replied: bool
     available_mailboxes: tuple[str, ...]
+    # This deployment's configured category set (TieringConfig.allowed_categories),
+    # sent to the model for the same reason available_mailboxes is: so
+    # ValidateVerdictFilter's post-hoc check (spork.core.llm.validate)
+    # rejects a genuinely out-of-set answer, not one the model was
+    # never told the set of in the first place.
+    available_categories: tuple[str, ...]
 
 
 class Verdict(BaseModel):
@@ -63,6 +69,15 @@ class Verdict(BaseModel):
     summary: str
     draft_reply: str | None = None
     reasoning: str
+    # Freeform extracted data (dates, order numbers, ticket ids —
+    # whatever's worth surfacing from this specific email) the model
+    # judged worth keeping, distinct from category/suggested_action.mailbox:
+    # those are validated against a closed, deployment-configured set
+    # (spork.core.llm.validate); this is deliberately open-ended and
+    # never validated — string values only, so the forced tool schema
+    # stays a flat, deterministic object rather than an arbitrary-JSON
+    # blob some backends handle inconsistently in structured output.
+    metadata: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("suggested_action")
     @classmethod

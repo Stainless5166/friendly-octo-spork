@@ -87,9 +87,16 @@ class BudgetGateSelector:
 
 class BuildVerdictRequestFilter:
     """Cleans payload.text via clean_body() and assembles a
-    VerdictRequest from it plus meta's caller-supplied fields."""
+    VerdictRequest from it plus meta's caller-supplied fields.
 
-    def __init__(self, max_body_chars: int = 4000) -> None:
+    available_categories is a constructor argument, not a meta field —
+    it comes from this deployment's config (TieringConfig.allowed_categories),
+    the same relationship max_body_chars already has to this filter,
+    not a per-message Provider read the way available_mailboxes is.
+    """
+
+    def __init__(self, available_categories: Sequence[str], max_body_chars: int = 4000) -> None:
+        self._available_categories = available_categories
         self._max_body_chars = max_body_chars
 
     def apply(self, payload: Payload[Tier2Meta]) -> Payload[Tier2Meta]:
@@ -103,6 +110,7 @@ class BuildVerdictRequestFilter:
             thread_prior_subject=meta.thread_prior_subject,
             thread_user_has_replied=meta.thread_user_has_replied,
             available_mailboxes=tuple(meta.available_mailboxes),
+            available_categories=tuple(self._available_categories),
         )
         return dataclasses.replace(
             payload, text=cleaned, meta=dataclasses.replace(meta, request=request)

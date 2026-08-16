@@ -94,7 +94,7 @@ def build_tier2_pipeline(
     budget_ok: Pipeline[Tier2Meta] = Pipeline(
         wrap_stages(
             [
-                BuildVerdictRequestFilter(max_body_chars),
+                BuildVerdictRequestFilter(allowed_categories, max_body_chars),
                 CallLLMAugment(llm_client),
                 RecordLLMUsageFilter(state_db),
                 ValidateVerdictFilter(allowed_categories),

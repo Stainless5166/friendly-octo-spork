@@ -36,7 +36,9 @@ def test_build_prompt_contains_the_complete_message_context() -> None:
                 "verdict already is Tier 2's decision. If you are unsure, still choose "
                 "a terminal action and express the uncertainty via a low confidence "
                 "value instead; a low confidence routes to human review without "
-                "taking action."
+                "taking action. metadata is optional: include freeform key-value data "
+                "worth surfacing from this email (e.g. a date, an order number, a "
+                "reference id) — leave it empty if there's nothing worth extracting."
             ),
         },
         {
