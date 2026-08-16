@@ -209,10 +209,11 @@ def test_escalate_message_or_quarantine_passes_through_a_normal_verdict(
             }
         )
     )
-
     with StateDB(tmp_path / "state.sqlite3") as state_db:
+        kwargs = _base_kwargs(tmp_path, message, state_db)
+        kwargs["mailbox_lister"] = _RecordingMailboxLister(["Needs-Reply", "Inbox"])
         result = escalate_message_or_quarantine(
-            **_base_kwargs(tmp_path, message, state_db),
+            **kwargs,
             llm_client=RecordedLLMClient(responses_path),
             tiering=TieringConfig(allowed_categories=["needs_reply"]),
         )
@@ -365,7 +366,7 @@ def test_escalate_message_or_quarantine_does_not_catch_a_real_pipeline_bug(
     response) is deliberately not in QUARANTINABLE_ERRORS — it still
     propagates rather than being silently absorbed as if it were a
     quarantinable model-output failure."""
-    from spork.core.pipeline.core import MissingMetaError
+    from spork.core.pipeline.meta import MissingMetaError
 
     class _BrokenMailboxLister:
         def list_mailboxes(self) -> list[str]:
