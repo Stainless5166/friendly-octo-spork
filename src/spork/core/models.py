@@ -35,3 +35,19 @@ class NormalizedMessage:
     body_text: str
     headers: Mapping[str, str] = field(default_factory=dict)
     mailbox_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class Attachment:
+    """One email attachment, reduced to what the receipt archiver needs
+    (docs/DESIGN.md §9.5) — filename/content type for placement
+    decisions, raw bytes for rendering. Transport-agnostic like
+    `NormalizedMessage`: `Provider.build_attachment_fetcher()` (§9.3)
+    is the only thing that produces these, so nothing downstream needs
+    to know whether they came from a JMAP blob fetch or a local fixture
+    file.
+    """
+
+    filename: str
+    content_type: str
+    data: bytes

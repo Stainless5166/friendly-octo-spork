@@ -60,6 +60,22 @@ already established. No step bindings exist yet; the described
 behavior is covered directly by
 `tests/core/context/clients/entities/`'s pytest suite instead.
 
+`m10_receipt_archiving.feature` is the same "not `@manual`" shape for a
+different reason: the whole pipeline it specifies (docs/DESIGN.md §9.5,
+docs/ROADMAP.md M10) is designed to be offline-testable end to end —
+`FileProvider`, a recorded receipt-extraction fixture, and local PDF
+output, no live account ever required. Fully bound and passing
+(`docs/acceptance/steps/m10_receipt_archiving.py`) — the integration
+proof composing the modules `m10a`/`m10b`/`m10c`/`m10d` already prove
+independently. (`@wip` was used while `spork.core.receipts` was being
+built, same mechanism `@manual` uses for "needs a live account" but
+for "not built yet" instead, via `SPORK_ACCEPTANCE_WIP` — dropped once
+the real step bindings replaced the `NotImplementedError` stubs and
+every scenario passed for real, same discipline as graduating an
+`xfail` test.) Originally numbered M9; renumbered to M10 when the real
+M9 (`m9_entity_context.feature`, above) landed independently on `main`
+first — see `docs/ROADMAP.md` M10's own note on the collision.
+
 ## Status
 
 | Feature | Scope | Current evidence |
@@ -73,6 +89,11 @@ behavior is covered directly by
 | `m6_systemd.feature` | Service install and operational startup | Unit/install behavior tested; real user-session acceptance open |
 | `m7_hardening.feature` | Unattended operation and v1 release | Requires real mailbox, model, rate-limit, and one-week run |
 | `m9_entity_context.feature` | Structured domain/company/service/person knowledge base | Fully covered by pytest (`tests/core/context/clients/entities/`); no behave bindings, no live dependency to wait on |
+| `m10a_receipt_pdf.feature` | Receipt PDF building + archiving (`spork.core.receipts.pdf`/`archive`) | Fully bound and passing on every run — no live account, no network |
+| `m10b_receipt_senders.feature` | Known-sender registry + deterministic extraction (`spork.core.receipts.registry`/`extract`) | Fully bound and passing on every run — no live account, no network |
+| `m10c_receipt_extraction_llm.feature` | Recorded Tier 2 receipt-extraction fallback (`spork.core.receipts.llm`) | Fully bound and passing on every run — no live model call |
+| `m10d_receipt_provider_capabilities.feature` | Attachment fetching + keyword tagging as Provider capabilities | Fully bound and passing on every run — no live account, no network |
+| `m10_receipt_archiving.feature` | Receipt tagging + combined-PDF archiving, deterministic-first with learned Tier 2 fallback | Fully bound and passing on every run — no live account, no network |
 
 The scenarios are deliberately more demanding than the current automated
 suite. A scenario is complete only when its stated live evidence exists,

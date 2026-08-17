@@ -24,7 +24,13 @@ from pathlib import Path
 
 import pytest
 
-from spork.core.config.schema import BackendSpec, LLMRecordingConfig, SporkConfig, TieringConfig
+from spork.core.config.schema import (
+    BackendSpec,
+    LLMRecordingConfig,
+    ReceiptArchiveConfig,
+    SporkConfig,
+    TieringConfig,
+)
 from spork.core.secrets import Secrets
 from spork.core.state.db import StateDB
 from spork.daemon.loop import run_daemon
@@ -420,3 +426,106 @@ def test_run_daemon_signals_readiness_exactly_once(tmp_path: Path) -> None:
     asyncio.run(_run_briefly(config, notify_fn=calls.append, settle_seconds=0.3))
 
     assert calls.count("READY=1") == 1
+
+
+def _receipt_config(tmp_path: Path) -> SporkConfig:
+    """A self-contained config for the receipt-archiving tests below --
+    one known-sender receipt message, one archive_receipt rule, a
+    RecordedReceiptExtractionClient (never actually called for a known
+    sender, but still required config)."""
+    messages_path = tmp_path / "messages.json"
+    messages_path.write_text(
+        json.dumps(
+            [
+                {
+                    "message_id": "msg-receipt",
+                    "thread_id": "thread-receipt",
+                    "from_address": "billing@acmecloud.com",
+                    "from_domain": "acmecloud.com",
+                    "subject": "Your receipt",
+                    "body_text": "Thanks for your payment.",
+                    "headers": {"Date": "Sat, 01 Aug 2026 00:00:00 +0000"},
+                }
+            ]
+        )
+    )
+    rules_path = tmp_path / "rules.toml"
+    rules_path.write_text(
+        """
+        [[rule]]
+        id = "receipts"
+        when = { from_domain_in = ["acmecloud.com"] }
+        action = { type = "archive_receipt" }
+        """
+    )
+    extractions_path = tmp_path / "extractions.json"
+    extractions_path.write_text("{}")
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text("{}")
+
+    return SporkConfig(
+        provider=BackendSpec(
+            spec="spork.core.providers.file.provider:FileProvider",
+            kwargs={
+                "messages_path": str(messages_path),
+                "actions_log_path": str(tmp_path / "actions.jsonl"),
+            },
+        ),
+        llm=BackendSpec(
+            spec="spork.core.llm.clients.recorded:RecordedLLMClient",
+            kwargs={"responses_path": str(responses_path)},
+        ),
+        alerts=BackendSpec(spec="spork.core.alerts.log:LoggingAlerter"),
+        rules_path=rules_path,
+        db_path=tmp_path / "state.sqlite3",
+        socket_path=tmp_path / "sporkd.sock",
+        receipt_archive=ReceiptArchiveConfig(
+            output_dir=tmp_path / "receipts",
+            extraction=BackendSpec(
+                spec="spork.core.receipts.llm:RecordedReceiptExtractionClient",
+                kwargs={"responses_path": str(extractions_path)},
+            ),
+        ),
+    )
+
+
+def test_run_daemon_archives_a_matched_receipt_message(tmp_path: Path) -> None:
+    """A known sender (seeded directly into StateDB before the loop
+    starts) is archived end to end through the real asyncio loop --
+    the same collaborators build_receipt_archive_components() composes
+    from a real config, not hand-wired in the test."""
+    config = _receipt_config(tmp_path)
+    with StateDB(config.db_path) as db:
+        db.learn_known_sender(
+            "acmecloud.com", company="Acme Cloud", learned_from="seed", learned_at="t0"
+        )
+
+    asyncio.run(_run_briefly(config))
+
+    with StateDB(config.db_path) as db:
+        assert db.has_processed("msg-receipt") is True
+    assert config.receipt_archive is not None
+    saved = list(config.receipt_archive.output_dir.glob("*.pdf"))
+    assert len(saved) == 1
+    keywords_log = json.loads((tmp_path / "keywords.jsonl").read_text().splitlines()[0])
+    assert keywords_log["keywords"][:2] == ["receipt", "company:Acme Cloud"]
+
+
+def test_run_daemon_observe_mode_does_not_archive_or_tag_receipts(tmp_path: Path) -> None:
+    """--observe's contract ('process and audit messages without
+    changing mail or creating drafts') covers archive_receipt too: no
+    PDF written, no keyword applied -- but the message still ends up
+    processed, same as every other observe-mode action."""
+    config = _receipt_config(tmp_path)
+    with StateDB(config.db_path) as db:
+        db.learn_known_sender(
+            "acmecloud.com", company="Acme Cloud", learned_from="seed", learned_at="t0"
+        )
+
+    asyncio.run(_run_briefly(config, observe=True))
+
+    with StateDB(config.db_path) as db:
+        assert db.has_processed("msg-receipt") is True
+    assert config.receipt_archive is not None
+    assert not config.receipt_archive.output_dir.exists()
+    assert not (tmp_path / "keywords.jsonl").exists()

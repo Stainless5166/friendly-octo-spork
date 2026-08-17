@@ -302,7 +302,46 @@ recognized `from_domain`/`from_address` into `ContextSnippet`s. Unlike
 `MarkdownVaultContextProvider`, this has no undecided-retrieval-
 algorithm blocker, so it ships complete, backed by Gherkin
 (`docs/acceptance/m9_entity_context.feature`) and 100%-covered pytest.
-**M9 is now 3/4; the full suite is 892 tests, all green.**
+**M9 is now 3/4; the full suite is 892 tests, all green.** Updated
+once more for M10 (originally numbered M9, renumbered when the real M9
+above landed first): receipt tagging + combined-PDF archiving,
+deterministic-first with a learned Tier 2 fallback
+(`spork.core.receipts.*`, docs/DESIGN.md §9.5) — `build_receipt_pdf()`/
+`save_pdf()`, `StateDB`'s new `known_receipt_senders` table +
+`registry.normalize_sender_domain()`, the deterministic
+`extract_receipt()` path (an `EntityContextProvider`-shaped
+`domain_lookup` collaborator checked ahead of the learned cache),
+`ReceiptExtractionClient`/`RecordedReceiptExtractionClient`, two new
+`Provider` capabilities (`build_attachment_fetcher()`/
+`build_keyword_applier()`), a fourth `rules.schema.Action` terminal
+type (`archive_receipt`), `SporkConfig.receipt_archive`, and
+`ArchiveReceiptAugment` wiring it all into `build_default_pipeline()`/
+`process_message()` via one new optional parameter. One real
+cross-cutting gap found and fixed along the way: `archive_receipt` had
+to be excluded from `Verdict.suggested_action`'s legal values and
+`verdict_tool_schema()`'s tool enum too, same reasoning `escalate`
+already was. Backed by 22 Gherkin scenarios across 5 feature files
+(`docs/acceptance/m10_receipt_archiving.feature` — the full pipeline —
+plus `m10a`/`m10b`/`m10c`/`m10d` for the independently-reusable
+sub-modules), all fully bound and passing, no live account or network
+anywhere. Updated once more to close M10's own stated runtime-wiring
+gap: `spork.core.receipts.loader.load_receipt_extraction_client()` +
+`spork.core.runtime.build_receipt_archive_components()` (the real
+`EntityContextProvider`-as-`domain_lookup` synergy, proven end to end
+this time, not just designed) + `run_daemon()`/`_run_message_loop()`
+actually building and passing `ReceiptArchiveComponents` through to
+`process_message()`, with a new `ArchiveReceiptAugment.dry_run` +
+`_ObserveKeywordApplier` pair making `--observe` genuinely suppress
+receipt archiving's real side effects too. A real circular import this
+surfaced (`spork.core.runtime` -> `spork.core.receipts.pipeline` ->
+`spork.core.pipeline.core`, looping back through
+`spork.core.pipeline.default`'s own import of the same module) was
+found and fixed by making that import function-local. **M10 is now
+fully wired end to end; the full suite is 975 tests, 971 green, 1
+skipped.** The remaining 3 are pre-existing, unrelated
+`test_mitm_fault_injection.py` failures — a sandbox/proxy limitation
+confirmed present on `main` before this work started, not a
+regression this milestone introduced.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -868,6 +907,36 @@ test) — closed with targeted tests, not implementation changes; no
 | `NullContextProvider` (the real default) | ✅ | ✅ — tests 797–798 |
 | A real backend that actually reads content (free-text vault) | — | genuinely undecided design work, not a live-account blocker — `MarkdownVaultContextProvider` (tests 799–800) settles the shape as a stub; the retrieval algorithm choice needs real vault content to validate against |
 | `EntityContextProvider` (structured domain/company/service/person knowledge base, prototype) | ✅ | ✅ — tests 820–841 (100% line coverage on `spork.core.context.clients.entities`); specified in Gherkin (`docs/acceptance/m9_entity_context.feature`) |
+
+### M10 — Receipt archiving — 10/10 built, fully wired end to end
+
+Originally numbered M9; renumbered when the real M9 above landed
+independently on `main` first (see docs/ROADMAP.md M10's own note).
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| `Provider.build_attachment_fetcher()` | ✅ (`FileProvider` real; `JmapProvider` a settled-shape `NotImplementedError`, out of scope not live-blocked) | ✅ — tests 879–886, 891–892 |
+| `Provider.build_keyword_applier()` | ✅ (`FileProvider` real; `JmapProvider` a settled-shape `NotImplementedError`, genuinely write-blocked) | ✅ — tests 885, 887, 893–894 |
+| `spork.core.receipts.registry` (`StateDB.known_receipt_senders` + `normalize_sender_domain()`) | ✅ | ✅ — tests 856–864 |
+| `spork.core.receipts.extract` (deterministic path) | ✅ | ✅ — tests 865–871 |
+| `spork.core.receipts.llm.ReceiptExtractionClient`/`RecordedReceiptExtractionClient` | ✅ | ✅ — tests 872–878 |
+| `rules.schema.Action` gains `"archive_receipt"` | ✅ | ✅ — tests 895–896; found and fixed a real cross-cutting gap in `Verdict`/`verdict_tool_schema()` (test 906) |
+| `spork.core.receipts.pdf.build_receipt_pdf()` | ✅ | ✅ — tests 842–849 |
+| `spork.core.receipts.archive.save_pdf()` | ✅ | ✅ — tests 850–855 |
+| `SporkConfig.receipt_archive` (`output_dir` + required `extraction: BackendSpec`) | ✅ | ✅ — tests 901–903, 914 |
+| Pipeline wiring (`ArchiveReceiptAugment` + `build_default_pipeline()`/`process_message()`, `dry_run`) | ✅ | ✅ — tests 897–900, 904–905, 920–921 |
+| `docs/acceptance/m10_receipt_archiving.feature` bound for real | ✅ | ✅ — 7 scenarios, fully passing; plus 15 more across `m10a`/`m10b`/`m10c`/`m10d` (22 total) |
+| **Runtime wiring** (`spork.core.receipts.loader` + `spork.core.runtime.build_receipt_archive_components()` + `run_daemon()`/`_run_message_loop()`) | ✅ | ✅ — tests 907–913 (loader), 915–919 (runtime composition, including the real M9/M10 `EntityContextProvider` synergy), 922–923 (`run_daemon()` end to end, including `--observe`) |
+
+`sporkd` now builds `ReceiptArchiveComponents` from
+`[receipt_archive]`/`[context]` config at startup and actually uses
+it — the acceptance suite's pipeline-level wiring and the real daemon
+loop are both proven, not just one or the other. The only genuinely
+open item is a live, LLM-backed `ReceiptExtractionClient`
+implementation (docs/ROADMAP.md's Stretch section) — the `Protocol`,
+loader, and config field are all real; only a second backend beyond
+`RecordedReceiptExtractionClient` is missing, the same shape
+`LiteLLMClient` already has relative to `LLMClient`/`RecordedLLMClient`.
 
 ---
 
@@ -4543,3 +4612,360 @@ doc's stable-numbering convention.
      A misconfigured category (an empty keyword tuple) never crashes
      with a divide-by-zero — it just can never win, scored 0.0 like
      any other unmatched category.
+
+### tests/core/receipts — build_receipt_pdf() (docs/ROADMAP.md M10, docs/DESIGN.md §9.5)
+
+842. **`test_pdf.py::test_no_attachments_produces_a_single_cover_page_with_the_tags`**
+     No attachments still produces a valid one-page PDF from the cover
+     content alone (subject/company/date/tags).
+
+843. **`test_pdf.py::test_a_pdf_attachment_is_merged_page_for_page`**
+     An existing PDF attachment's pages are merged into the archive
+     after the cover page, not just referenced.
+
+844. **`test_pdf.py::test_an_image_attachment_becomes_its_own_page`**
+     An image attachment is scaled onto its own full page.
+
+845. **`test_pdf.py::test_an_unrenderable_attachment_gets_a_placeholder_page_naming_it`**
+     An attachment type this module can't render directly (e.g. CSV)
+     becomes a named placeholder page rather than being silently
+     dropped.
+
+846. **`test_pdf.py::test_multiple_attachments_are_combined_in_input_order`**
+     Cover page, then every attachment in the order given — order is
+     preserved, not re-sorted.
+
+847. **`test_pdf.py::test_result_is_exactly_one_valid_pdf_document`**
+     The returned bytes parse as one coherent PDF document.
+
+848. **`test_pdf.py::test_long_body_text_still_produces_one_document_not_a_crash`**
+     A long message body paginates via reportlab's flowable layout
+     instead of crashing or truncating silently.
+
+849. **`test_pdf.py::test_missing_extraction_field_is_rejected`**
+     An empty `company` or `date` raises `ValueError` — this function
+     never builds an archive for a half-resolved extraction.
+
+### tests/core/receipts — save_pdf() (M10)
+
+850. **`test_archive.py::test_saves_bytes_to_a_deterministic_filename_under_output_dir`**
+     Bytes round-trip through `save_pdf()` to a real file under
+     `output_dir`.
+
+851. **`test_archive.py::test_filename_contains_date_company_and_message_id`**
+     The generated filename is sortable by date and human-identifiable
+     by company/message id.
+
+852. **`test_archive.py::test_company_with_spaces_and_punctuation_is_slugified`**
+     A company name with spaces/commas produces a filesystem-safe
+     slug — no raw punctuation in the saved filename.
+
+853. **`test_archive.py::test_creates_output_dir_if_missing`**
+     `output_dir` (and any missing parents) is created on demand.
+
+854. **`test_archive.py::test_unwritable_output_dir_raises_one_wrapped_error_type`**
+     A path component that's a file, not a directory, raises one
+     `ReceiptArchiveError` — deterministic regardless of the running
+     user's privilege level, unlike a chmod-based check (which a
+     root-run suite can't exercise honestly).
+
+855. **`test_archive.py::test_two_saves_for_the_same_message_do_not_collide`**
+     Two different messages, same company/date, produce two distinct
+     files — the message-id slug guarantees uniqueness.
+
+### tests/core/state — known_receipt_senders (M10's learning system)
+
+856. **`test_db_known_senders.py::test_get_known_sender_returns_none_when_never_learned`**
+     An unrecognized domain is `None`, not an error.
+
+857. **`test_db_known_senders.py::test_learn_known_sender_then_get_known_sender_roundtrips`**
+     A learned sender's company/provenance/timestamp round-trip
+     exactly.
+
+858. **`test_db_known_senders.py::test_learn_known_sender_overwrites_a_previous_entry_for_the_same_domain`**
+     Re-learning a domain (a corrected company name) replaces the old
+     row rather than duplicating or erroring.
+
+859. **`test_db_known_senders.py::test_seeded_and_learned_senders_are_both_stored_the_same_way`**
+     `learned_from` ("seed" vs "tier2") is provenance only — both are
+     ordinary rows, looked up identically.
+
+860. **`test_db_known_senders.py::test_known_senders_persist_across_reconnecting_to_the_same_db_file`**
+     Learned senders survive a `StateDB` reconnect, like every other
+     table.
+
+### tests/core/receipts — registry.normalize_sender_domain() (M10)
+
+861. **`test_registry.py::test_lowercases_a_mixed_case_domain`**
+     `BillING.AcmeCloud.com` → `billing.acmecloud.com`.
+
+862. **`test_registry.py::test_strips_surrounding_whitespace`**
+     Leading/trailing whitespace is removed.
+
+863. **`test_registry.py::test_already_normalized_domain_is_unchanged`**
+     Idempotent on an already-canonical domain.
+
+864. **`test_registry.py::test_a_learned_domain_is_found_regardless_of_the_lookup_domain_casing`**
+     A domain learned via one casing is found via any other — the
+     real reason this function exists, proven end to end against a
+     real `StateDB`.
+
+### tests/core/receipts — extract.extract_receipt() (M10)
+
+865. **`test_extract.py::test_known_sender_plus_date_header_produces_an_extraction`**
+     A `KnownSender` hit plus a `Date` header produces a full
+     extraction with no LLM involved.
+
+866. **`test_extract.py::test_domain_lookup_is_checked_before_and_wins_over_known_sender`**
+     An injected `domain_lookup` collaborator (EntityContextProvider-
+     shaped, M9) is checked first and wins over a conflicting learned
+     `KnownSender`.
+
+867. **`test_extract.py::test_falls_back_to_known_sender_when_domain_lookup_has_no_match`**
+     No `domain_lookup` hit falls through to the learned cache.
+
+868. **`test_extract.py::test_domain_lookup_hit_with_no_company_falls_back_to_known_sender`**
+     A tracked `Domain` with no owning company (a real, documented
+     state) isn't treated as a match — falls through instead.
+
+869. **`test_extract.py::test_no_known_sender_and_no_domain_lookup_match_declines`**
+     No company resolvable anywhere declines (`None`), never guesses.
+
+870. **`test_extract.py::test_company_resolved_but_no_date_anywhere_declines`**
+     A resolvable company with no date anywhere still declines — both
+     halves are required.
+
+871. **`test_extract.py::test_falls_back_to_a_body_date_marker_when_no_date_header`**
+     No `Date` header falls back to a literal body marker
+     ("Invoice date:").
+
+### tests/core/receipts — llm.RecordedReceiptExtractionClient (M10)
+
+872. **`test_llm.py::test_extract_receipt_returns_the_recorded_extraction_for_a_matching_domain`**
+     A recorded fixture entry is replayed for its `from_domain`.
+
+873. **`test_llm.py::test_extract_receipt_picks_the_matching_domain_not_just_the_first`**
+     Multiple recorded domains each resolve to their own entry.
+
+874. **`test_llm.py::test_extract_receipt_raises_for_an_unrecorded_domain`**
+     `UnrecordedReceiptExtractionError` names the domains that were
+     recorded.
+
+875. **`test_llm.py::test_missing_responses_file_raises_load_error`**
+     A missing fixture file is `RecordedReceiptExtractionsLoadError`.
+
+876. **`test_llm.py::test_malformed_json_raises_load_error`**
+     Invalid JSON is the same wrapped error.
+
+877. **`test_llm.py::test_non_object_top_level_raises_load_error`**
+     A non-object top level (e.g. a JSON array) is rejected.
+
+878. **`test_llm.py::test_entry_missing_a_required_field_raises_load_error`**
+     An entry missing `company`/`date` is rejected at load time, not
+     lazily on first use.
+
+### tests/core/providers/file — attachments.load_attachments() (M10)
+
+879. **`test_attachments.py::test_load_attachments_parses_attachments_keyed_by_message_id`**
+     A fixture's base64-encoded `"attachments"` array parses into real
+     `Attachment` objects, keyed by `message_id`.
+
+880. **`test_attachments.py::test_a_message_with_no_attachments_key_maps_to_an_empty_list`**
+     Every message gets an entry — `[]`, not a missing key, when it
+     has no attachments.
+
+881. **`test_attachments.py::test_a_message_can_have_multiple_attachments_in_order`**
+     Order is preserved across multiple attachments.
+
+882. **`test_attachments.py::test_missing_file_raises_load_error`**
+     A missing fixture file is `AttachmentsLoadError`.
+
+883. **`test_attachments.py::test_invalid_base64_raises_load_error`**
+     Malformed base64 data is rejected at load time.
+
+884. **`test_attachments.py::test_attachment_missing_a_required_field_raises_load_error`**
+     An attachment entry missing `content_type`/`data_base64` is
+     rejected.
+
+### tests/core/providers — AttachmentFetcher/KeywordApplier capabilities (M10)
+
+885. **`test_provider.py (file)::test_build_attachment_fetcher_returns_attachments_from_the_fixture`**
+     `FileProvider.build_attachment_fetcher()` reads real attachments
+     from the same fixture `build_source()` replays from.
+
+886. **`test_provider.py (file)::test_build_attachment_fetcher_returns_empty_for_a_message_with_none`**
+     A message with no attachments fetches an empty sequence.
+
+887. **`test_provider.py (file)::test_build_keyword_applier_logs_applied_keywords`**
+     Applied keywords are logged to `keywords.jsonl`, distinct from
+     the actions/drafts logs.
+
+888. **`test_provider.py (file)::test_keywords_log_defaults_next_to_the_actions_log`**
+     Not passing `keywords_log_path=` still produces a real,
+     inspectable log next to `actions_log_path` — same convention
+     `drafts_log_path` already has.
+
+889. **`test_client.py (jmap)::test_fetch_attachments_raises_not_implemented`**
+     `JmapClient.fetch_attachments()` is a settled-shape
+     `NotImplementedError`.
+
+890. **`test_client.py (jmap)::test_apply_keywords_raises_not_implemented`**
+     `JmapClient.apply_keywords()` is a settled-shape
+     `NotImplementedError`, blocked on write-scoped credentials like
+     `apply_action()`/`create_draft()`.
+
+891. **`test_provider.py (jmap)::test_build_attachment_fetcher_returns_something_that_propagates_not_implemented`**
+     `JmapProvider.build_attachment_fetcher()` returns an
+     `AttachmentFetcher` whose call propagates the client's
+     `NotImplementedError`.
+
+892. **`test_provider.py (jmap)::test_attachment_fetcher_delegates_to_the_client_directly`**
+     A real delegation to `JmapClient.fetch_attachments()`, not a
+     second placeholder.
+
+893. **`test_provider.py (jmap)::test_build_keyword_applier_returns_something_that_propagates_not_implemented`**
+     Same shape for `build_keyword_applier()`.
+
+894. **`test_provider.py (jmap)::test_keyword_applier_delegates_to_the_client_directly`**
+     A real delegation to `JmapClient.apply_keywords()`.
+
+### tests/core/actions, tests/core/pipeline — archive_receipt routing (M10)
+
+895. **`test_executor.py::test_executor_rejects_archive_receipt_action`**
+     `ActionExecutor` rejects `archive_receipt` outright — a routing
+     bug if it ever reaches the plain `ActionApplier` path, mirroring
+     the existing `escalate` rejection.
+
+896. **`test_modules.py::test_rule_evaluation_selector_routes_archive_receipt_for_a_matched_rule`**
+     `RuleEvaluationSelector` routes a matched `archive_receipt` rule
+     to its own branch, distinct from `"terminal"`.
+
+### tests/core/receipts — ArchiveReceiptAugment pipeline module (M10)
+
+897. **`test_pipeline.py (receipts)::test_known_sender_is_archived_deterministically_with_no_tier2_call`**
+     A known sender is tagged/archived with zero calls to the
+     injected `ReceiptExtractionClient`.
+
+898. **`test_pipeline.py (receipts)::test_unrecognized_sender_calls_tier2_once_and_learns_the_sender`**
+     An unrecognized sender costs exactly one Tier 2 call, and the
+     result is learned into `StateDB` afterward.
+
+899. **`test_pipeline.py (receipts)::test_a_message_with_attachments_produces_a_multi_page_saved_pdf`**
+     A real attachment produces a real multi-page saved PDF file, not
+     just an in-memory assertion.
+
+900. **`test_pipeline.py (receipts)::test_a_write_failure_propagates_instead_of_being_swallowed`**
+     `ReceiptArchiveError` from an unwritable output location
+     propagates out of `augment()` rather than being caught — the
+     fail-open-for-retry contract.
+
+### tests/core/config — ReceiptArchiveConfig (M10)
+
+901. **`test_schema.py (config)::test_sporkconfig_receipt_archive_defaults_to_none`**
+     Unset means the feature is off entirely, same convention as
+     `context`/`tiering.local_classifier`.
+
+902. **`test_schema.py (config)::test_sporkconfig_accepts_optional_receipt_archive_configuration`**
+     A configured `[receipt_archive]` table round-trips.
+
+903. **`test_schema.py (config)::test_receiptarchiveconfig_rejects_unknown_fields`**
+     `extra="forbid"`, same convention as every other hand-edited
+     config table.
+
+### tests/core/pipeline — process_message() with receipt_archive wired (M10)
+
+904. **`test_default.py (pipeline)::test_process_message_archives_a_matched_receipt_end_to_end`**
+     A `receipt_archive=` components bundle wired into
+     `process_message()` archives a matched message and marks it
+     processed — the full integration, not just the standalone
+     `Augment`.
+
+905. **`test_default.py (pipeline)::test_process_message_without_receipt_archive_configured_fails_clearly`**
+     Omitting `receipt_archive=` entirely on an `archive_receipt` rule
+     raises `UnknownBranchError` rather than silently doing nothing.
+
+### tests/core/llm — Verdict/tool-schema archive_receipt exclusion (M10)
+
+906. **`test_base_edge_cases.py::test_verdict_rejects_a_suggested_action_of_archive_receipt`**
+     A real gap the full pytest run caught: adding `archive_receipt`
+     to `Action`'s Literal leaked it into `Verdict.suggested_action`'s
+     legal values too — now rejected the same way `escalate` is
+     (`verdict_tool_schema()` also excludes it from the tool's enum,
+     covered by the existing `test_prompt.py` tests once updated for
+     the new value).
+
+### tests/core/receipts, tests/core/config, tests/core, tests/daemon — M10 runtime wiring (docs/ROADMAP.md M10 follow-up)
+
+907. **`test_loader.py (receipts)::test_load_receipt_extraction_client_imports_and_instantiates_by_spec`**
+     `load_receipt_extraction_client()` (mirrors `load_context_provider()`)
+     imports and constructs a backend by "module:ClassName" spec.
+
+908. **`test_loader.py (receipts)::test_load_receipt_extraction_client_passes_through_constructor_kwargs`**
+     Kwargs reach the backend's constructor unchanged.
+
+909. **`test_loader.py (receipts)::test_load_receipt_extraction_client_raises_for_malformed_spec`**
+     A spec with no `:` separator is `ReceiptExtractionClientLoadError`.
+
+910. **`test_loader.py (receipts)::test_load_receipt_extraction_client_raises_for_an_unimportable_module`**
+     An unimportable module path is the same wrapped error.
+
+911. **`test_loader.py (receipts)::test_load_receipt_extraction_client_raises_for_a_missing_class`**
+     A missing class name is the same wrapped error.
+
+912. **`test_loader.py (receipts)::test_load_receipt_extraction_client_can_load_the_real_recorded_client`**
+     Not just fixture mechanics — proves the loader resolves the one
+     real, shipped backend (`RecordedReceiptExtractionClient`).
+
+913. **`test_loader_edge_cases.py (receipts)::test_load_receipt_extraction_client_raises_when_construction_fails`**
+     A constructor that rejects the given kwargs fails loudly rather
+     than a raw `TypeError` leaking through unwrapped.
+
+914. **`test_schema.py (config)::test_receiptarchiveconfig_requires_an_extraction_backend`**
+     `extraction: BackendSpec` has no default — same "must be
+     explicit" stance `provider`/`llm`/`alerts` have on `SporkConfig`
+     itself.
+
+915. **`test_runtime.py::test_build_receipt_archive_components_returns_none_when_unconfigured`**
+     No `[receipt_archive]` table: the feature is off entirely, not a
+     crash and not an empty-but-present components bundle.
+
+916. **`test_runtime.py::test_build_receipt_archive_components_builds_real_collaborators`**
+     `attachment_fetcher`/`keyword_applier` come from a real
+     `FileProvider` and actually work; `extraction_client` is the real
+     loaded `RecordedReceiptExtractionClient`.
+
+917. **`test_runtime.py::test_build_receipt_archive_components_leaves_domain_lookup_none_for_null_context`**
+     `NullContextProvider` doesn't structurally support `lookup_domain()`
+     — `domain_lookup` stays `None`, same as `[context]` unconfigured.
+
+918. **`test_runtime.py::test_build_receipt_archive_components_wires_an_entitycontextprovider_as_domain_lookup`**
+     The real M9/M10 synergy, proven end to end: a configured
+     `EntityContextProvider` is passed straight through as
+     `domain_lookup`, and a real `lookup_domain()` call against it
+     resolves the expected company.
+
+919. **`test_runtime.py::test_resolve_runtime_secrets_includes_a_configured_receipt_archives_extraction_secret_kwargs`**
+     A `[receipt_archive]` table's `extraction.secret_kwargs` count
+     toward "does anything configured need SecretSpec resolved" the
+     same way provider/llm/alerts/context already do.
+
+920. **`test_pipeline.py (receipts)::test_dry_run_skips_the_pdf_write_but_still_sets_audit_fields`**
+     `ArchiveReceiptAugment(dry_run=True)` never writes a PDF, but
+     still tags (via whatever `keyword_applier` it's given) and sets
+     audit fields — extraction and auditing still happen.
+
+921. **`test_pipeline.py (receipts)::test_dry_run_does_not_require_a_writable_output_dir`**
+     A dry run never touches the filesystem — an unwritable/
+     nonexistent `output_dir` doesn't raise, unlike the real write path.
+
+922. **`test_loop.py (daemon)::test_run_daemon_archives_a_matched_receipt_message`**
+     A known-sender receipt message is archived end to end through the
+     real `run_daemon()` asyncio loop — PDF written, keyword applied,
+     message marked processed — using
+     `build_receipt_archive_components()`'s real composition, not
+     hand-wired collaborators.
+
+923. **`test_loop.py (daemon)::test_run_daemon_observe_mode_does_not_archive_or_tag_receipts`**
+     `--observe` suppresses both the PDF write and the keyword tag for
+     `archive_receipt` too, while the message still ends up marked
+     processed — the same contract every other observe-mode action has.

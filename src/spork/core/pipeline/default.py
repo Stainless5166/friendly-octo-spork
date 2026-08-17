@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from spork.core.actions.executor import ActionExecutor
 from spork.core.classify.base import TextClassifier
@@ -33,6 +34,16 @@ from spork.core.rules.engine import RuleVerdict
 from spork.core.rules.schema import Action, Rule
 from spork.core.state.db import StateDB
 
+if TYPE_CHECKING:
+    # Deferred to a function-local import at runtime (see
+    # build_default_pipeline() below) -- spork.core.receipts.pipeline
+    # itself imports spork.core.pipeline.core, so importing it here at
+    # module level would make spork.core.pipeline's own package
+    # initialization circular. TYPE_CHECKING-only is enough for the
+    # receipt_archive: ReceiptArchiveComponents | None annotation below
+    # (deferred-evaluation strings, per `from __future__ import annotations`).
+    from spork.core.receipts.pipeline import ReceiptArchiveComponents
+
 
 def _utc_now_iso() -> str:
     """Default clock: an ISO 8601 UTC timestamp string."""
@@ -52,6 +63,7 @@ def build_default_pipeline(
     now: Callable[[], str] = _utc_now_iso,
     new_correlation_id: Callable[[], str] = _new_correlation_id,
     force: bool = False,
+    receipt_archive: ReceiptArchiveComponents | None = None,
 ) -> Pipeline[MessageMeta]:
     """Compose the modules that reproduce M2's process_message() behavior.
 
@@ -70,6 +82,14 @@ def build_default_pipeline(
     "already processed," never "already processed, unless told not to
     care") and avoids adding a bypass branch it would otherwise need to
     know about.
+
+    `receipt_archive` (§9.5, M10) wires the `"archive_receipt"` route
+    when given; omitting it (the default — every existing caller) means
+    a rule matching `archive_receipt` reaches `RuleEvaluationSelector`
+    with nowhere to route to, so `Pipeline.run()` raises
+    `UnknownBranchError` — a real config error at composition time, not
+    a silent no-op, same "fail loud on a real gap" stance the rest of
+    this codebase takes.
     """
     terminal: Pipeline[MessageMeta] = Pipeline(
         wrap_stages(
@@ -90,10 +110,27 @@ def build_default_pipeline(
             ops,
         )
     )
+    routes: dict[str, Pipeline[MessageMeta]] = {"terminal": terminal, "escalate": escalate}
+    if receipt_archive is not None:
+        # Local import: breaks the module-level circular import
+        # spork.core.receipts.pipeline -> spork.core.pipeline.core would
+        # otherwise create (see the TYPE_CHECKING guard above).
+        from spork.core.receipts.pipeline import ArchiveReceiptAugment
+
+        routes["archive_receipt"] = Pipeline(
+            wrap_stages(
+                [
+                    ArchiveReceiptAugment(state_db, receipt_archive),
+                    WriteAuditEntryFilter(state_db),
+                    MarkProcessedFilter(state_db),
+                ],
+                ops,
+            )
+        )
     process = Pipeline(
         wrap_stages([TimestampFilter(now), CorrelationIdFilter(new_correlation_id)], ops),
         selector=wrap_selector(RuleEvaluationSelector(), ops),
-        routes={"terminal": terminal, "escalate": escalate},
+        routes=routes,
     )
     if force:
         return process
@@ -115,6 +152,7 @@ def process_message(
     now: Callable[[], str] = _utc_now_iso,
     new_correlation_id: Callable[[], str] = _new_correlation_id,
     force: bool = False,
+    receipt_archive: ReceiptArchiveComponents | None = None,
 ) -> RuleVerdict | None:
     """Run one message through the full Tier 1 pipeline.
 
@@ -131,6 +169,10 @@ def process_message(
     An `escalate` verdict is recorded as pending Tier 2 and deliberately
     remains unprocessed. Tier 2 owns the terminal processed mark, so an
     LLM/provider failure leaves the message retryable after restart.
+
+    `receipt_archive` (§9.5, M10) is passed straight through to
+    `build_default_pipeline()` — see its docstring for what omitting it
+    means for an `archive_receipt` rule.
     """
     pipeline = build_default_pipeline(
         executor=executor,
@@ -139,6 +181,7 @@ def process_message(
         now=now,
         new_correlation_id=new_correlation_id,
         force=force,
+        receipt_archive=receipt_archive,
     )
     payload: Payload[MessageMeta] = Payload(
         text="",

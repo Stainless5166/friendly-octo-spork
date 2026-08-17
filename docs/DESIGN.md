@@ -228,6 +228,15 @@ flowchart TD
             end
         end
 
+        subgraph receipts["receipts/ (§9.5, M10)"]
+            receipts_registry["registry.py<br/>normalize_sender_domain()"]
+            receipts_extract["extract.py<br/>extract_receipt() +<br/>ReceiptExtraction"]
+            receipts_llm["llm.py<br/>ReceiptExtractionClient +<br/>RecordedReceiptExtractionClient"]
+            receipts_pdf["pdf.py<br/>build_receipt_pdf()"]
+            receipts_archive["archive.py<br/>save_pdf()"]
+            receipts_pipeline["pipeline.py<br/>ArchiveReceiptAugment"]
+        end
+
         subgraph actions["actions/"]
             actions_executor["executor.py<br/>ActionExecutor"]
         end
@@ -632,6 +641,10 @@ classDiagram
         <<pydantic BaseModel, extra=forbid>>
         +corpus_path: Path
     }
+    class ReceiptArchiveConfig {
+        <<pydantic BaseModel, extra=forbid>>
+        +output_dir: Path
+    }
     class TieringConfig {
         <<pydantic BaseModel, extra=forbid>>
         +default_unmatched_action: str
@@ -649,6 +662,7 @@ classDiagram
         +alerts: BackendSpec
         +context: Optional~BackendSpec~
         +llm_recording: Optional~LLMRecordingConfig~
+        +receipt_archive: Optional~ReceiptArchiveConfig~
         +rules_path: Path
         +db_path: Path
         +socket_path: Path
@@ -659,6 +673,7 @@ classDiagram
 
     SporkConfig *-- BackendSpec : provider, llm, alerts
     SporkConfig *-- LLMRecordingConfig
+    SporkConfig *-- ReceiptArchiveConfig
     SporkConfig *-- TieringConfig
 
     class resolve_user_config_path { <<function>> }
@@ -724,6 +739,7 @@ classDiagram
     class ContextProvider { <<Protocol>> }
     class NullContextProvider
     class RecordingLLMClient
+    class ReceiptArchiveComponents
     class resolve_runtime_secrets {
         <<function>>
         +resolve_runtime_secrets(config, reason) Secrets
@@ -736,8 +752,12 @@ classDiagram
     class build_llm_client { <<function>> }
     class build_alerter { <<function>> }
     class build_context_provider { <<function>> }
+    class build_receipt_archive_components {
+        <<function>>
+        +build_receipt_archive_components(config, provider, context_provider, secrets) ReceiptArchiveComponents?
+    }
 
-    resolve_runtime_secrets ..> SporkConfig : checks configured secret mappings, including context when set
+    resolve_runtime_secrets ..> SporkConfig : checks configured secret mappings, including context/receipt_archive when set
     resolve_runtime_secrets ..> Secrets : resolves once when needed
     materialize_backend_kwargs ..> BackendSpec : reads kwargs + secret_kwargs
     materialize_backend_kwargs ..> Secrets : reads mapped values
@@ -747,6 +767,9 @@ classDiagram
     build_alerter ..> Alerter : loads with materialized kwargs
     build_context_provider ..> ContextProvider : loads with materialized kwargs when configured
     build_context_provider ..> NullContextProvider : returns when config.context is None
+    build_receipt_archive_components ..> Provider : attachment_fetcher/keyword_applier come from here
+    build_receipt_archive_components ..> ContextProvider : isinstance-checked as an optional domain_lookup (§9.5, M10)
+    build_receipt_archive_components ..> ReceiptArchiveComponents : returns, or None when [receipt_archive] is unconfigured
 ```
 
 `BackendSpec.secret_kwargs` maps a constructor argument to a SecretSpec
@@ -766,6 +789,15 @@ or recorded client in `RecordingLLMClient` after construction. Its
 there is no nested dynamic-client specification and no secret value in
 the corpus configuration.
 
+`build_receipt_archive_components()` (§9.5, M10) is the one composer
+here that isn't a pure `load_*` call: it also derives `domain_lookup`
+from whatever `ContextProvider` is already configured (§10.8), rather
+than loading a second backend — the M9/M10 synergy. `run_daemon()`
+calls it once, right after `build_context_provider()`, and passes the
+result straight through to `process_message()` — see
+`spork.daemon`'s own diagram below for the `--observe`-mode swap
+(`keyword_applier` → a no-op, `dry_run=True`).
+
 #### `spork.core.models`
 
 ```mermaid
@@ -781,11 +813,19 @@ classDiagram
         +headers: dict
         +mailbox_ids: tuple
     }
+    class Attachment {
+        <<dataclass, frozen>>
+        +filename: str
+        +content_type: str
+        +data: bytes
+    }
 ```
 
 The one type nearly every other module below depends on — consumers
 aren't re-drawn on every diagram that just takes a `NormalizedMessage`
 parameter, only where it's genuinely part of the module's own shape.
+`Attachment` (§9.5, M10) is the same kind of transport-agnostic value
+type, produced only by `Provider.build_attachment_fetcher()`.
 
 #### `spork.core.providers.base`
 
@@ -817,6 +857,14 @@ classDiagram
         <<Protocol>>
         +get_message(message_id: str) NormalizedMessage
     }
+    class AttachmentFetcher {
+        <<Protocol>>
+        +fetch_attachments(message: NormalizedMessage) Sequence~Attachment~
+    }
+    class KeywordApplier {
+        <<Protocol>>
+        +apply_keywords(message: NormalizedMessage, keywords: Sequence~str~) None
+    }
     class Provider {
         <<Protocol>>
         +build_source() Source
@@ -825,6 +873,8 @@ classDiagram
         +build_thread_history_reader() ThreadHistoryReader
         +build_mailbox_lister() MailboxLister
         +build_message_lookup() MessageLookup
+        +build_attachment_fetcher() AttachmentFetcher
+        +build_keyword_applier() KeywordApplier
     }
     class Source { <<Protocol>> }
 
@@ -834,6 +884,8 @@ classDiagram
     Provider ..> ThreadHistoryReader : builds
     Provider ..> MailboxLister : builds
     Provider ..> MessageLookup : builds
+    Provider ..> AttachmentFetcher : builds
+    Provider ..> KeywordApplier : builds
     ThreadHistoryReader ..> ThreadContext : returns
     MessageLookup ..> MessageNotFoundError : raises, unknown message_id
 ```
@@ -1572,6 +1624,98 @@ testable fully offline from fixtures alone, the same reasoning that
 already let `FileProvider` ship complete rather than as a stub. See
 §10.8 for the full design and docs/ROADMAP.md M9 for status.
 
+#### `spork.core.receipts`
+
+One diagram for the whole package (§9.5, M10) rather than one per
+file, the same condensed treatment `spork.core.providers.jmap` gets
+below — these six modules only make sense together, composing into
+`ArchiveReceiptAugment` as one pipeline stage.
+
+```mermaid
+classDiagram
+    class ReceiptExtraction {
+        +company: str
+        +date: str
+    }
+    class SenderDomainLookup { <<Protocol>> }
+    class extract_receipt { <<function>> }
+    class resolve_company { <<function>> }
+    class extract_date { <<function>> }
+    class normalize_sender_domain { <<function>> }
+
+    class ReceiptExtractionRequest {
+        +subject: str
+        +from_address: str
+        +from_domain: str
+        +body_text: str
+    }
+    class ReceiptExtractionUsage {
+        +tokens_in: int
+        +tokens_out: int
+    }
+    class ReceiptExtractionResult {
+        +extraction: ReceiptExtraction
+        +usage: ReceiptExtractionUsage
+    }
+    class ReceiptExtractionClient { <<Protocol>> }
+    class RecordedReceiptExtractionClient {
+        -extractions: dict~str, ReceiptExtraction~
+        +extract_receipt(request: ReceiptExtractionRequest) ReceiptExtractionResult
+    }
+    class RecordedReceiptExtractionsLoadError { <<Exception>> }
+    class UnrecordedReceiptExtractionError { <<Exception>> }
+    class load_receipt_extraction_client {
+        <<function>>
+        +load_receipt_extraction_client(spec, kwargs) ReceiptExtractionClient
+    }
+    class ReceiptExtractionClientLoadError { <<Exception>> }
+
+    class ReceiptPdfError { <<Exception>> }
+    class build_receipt_pdf { <<function>> }
+    class ReceiptArchiveError { <<Exception>> }
+    class save_pdf { <<function>> }
+
+    class ReceiptArchiveComponents {
+        +attachment_fetcher: AttachmentFetcher
+        +keyword_applier: KeywordApplier
+        +extraction_client: ReceiptExtractionClient
+        +output_dir: Path
+        +domain_lookup: SenderDomainLookup?
+        +dry_run: bool
+    }
+    class ArchiveReceiptAugment {
+        -state_db: StateDB
+        -components: ReceiptArchiveComponents
+        +augment(payload: Payload~MessageMeta~) Payload~MessageMeta~
+    }
+
+    extract_receipt ..> resolve_company : calls
+    extract_receipt ..> extract_date : calls
+    extract_receipt ..> ReceiptExtraction : returns, or None
+    resolve_company ..> SenderDomainLookup : consults first
+    resolve_company ..> KnownSender : then StateDB's learned cache
+    ReceiptExtractionClient <|.. RecordedReceiptExtractionClient : structurally satisfies
+    RecordedReceiptExtractionClient ..> ReceiptExtractionResult : returns
+    RecordedReceiptExtractionClient ..> UnrecordedReceiptExtractionError : raises
+    RecordedReceiptExtractionClient ..> RecordedReceiptExtractionsLoadError : raises at construction
+    load_receipt_extraction_client ..> ReceiptExtractionClient : imports + constructs by "module:ClassName" spec
+    load_receipt_extraction_client ..> ReceiptExtractionClientLoadError : raises
+    build_receipt_pdf ..> ReceiptPdfError : raises on a missing optional dependency
+    save_pdf ..> ReceiptArchiveError : raises on a write failure
+    ArchiveReceiptAugment --> ReceiptArchiveComponents : holds
+    ArchiveReceiptAugment --> StateDB : lookup/learn known senders
+    ArchiveReceiptAugment ..> extract_receipt : calls first
+    ArchiveReceiptAugment ..> ReceiptExtractionClient : calls on a decline
+    ArchiveReceiptAugment ..> build_receipt_pdf : calls, unless dry_run
+    ArchiveReceiptAugment ..> save_pdf : calls, unless dry_run
+```
+
+`StateDB`/`KnownSender`, `AttachmentFetcher`/`KeywordApplier`,
+`Payload`/`MessageMeta`, and `Attachment` are drawn in their owning
+modules' diagrams (`spork.core.state`, `spork.core.providers.base`,
+`spork.core.pipeline`, `spork.core.models` respectively) — empty boxes
+here would just duplicate them.
+
 #### `spork.core.actions`
 
 ```mermaid
@@ -1674,6 +1818,13 @@ classDiagram
         +tokens_in: int
         +tokens_out: int
     }
+    class KnownSender {
+        <<dataclass, frozen>>
+        +from_domain: str
+        +company: str
+        +learned_from: str
+        +learned_at: str
+    }
     class StateDB {
         -conn: Connection
         +get_cursor(account_id: str) Optional~str~
@@ -1685,11 +1836,14 @@ classDiagram
         +get_audit_entries(jmap_id: Optional~str~) list
         +record_llm_call(date: str, tokens_in: int, tokens_out: int) None
         +get_llm_usage(date: str) LLMUsage
+        +get_known_sender(from_domain: str) Optional~KnownSender~
+        +learn_known_sender(from_domain: str, company, learned_from, learned_at) None
         +close() None
     }
 
     StateDB ..> AuditEntry : returns from get_audit_entries()
     StateDB ..> LLMUsage : returns from get_llm_usage()
+    StateDB ..> KnownSender : returns from get_known_sender()
 ```
 
 The underlying `sqlite3.connect()` call sets `check_same_thread=False`
@@ -1959,11 +2113,11 @@ classDiagram
 
     class build_default_pipeline {
         <<function>>
-        +build_default_pipeline(executor, state_db, ops, now, new_correlation_id, force) Pipeline
+        +build_default_pipeline(executor, state_db, ops, now, new_correlation_id, force, receipt_archive) Pipeline
     }
     class process_message {
         <<function>>
-        +process_message(message, rules, default_unmatched_action, executor, state_db, ops, classifier, now, new_correlation_id, force) Optional~RuleVerdict~
+        +process_message(message, rules, default_unmatched_action, executor, state_db, ops, classifier, now, new_correlation_id, force, receipt_archive) Optional~RuleVerdict~
     }
     build_default_pipeline ..> IdempotencyGateSelector : composes
     build_default_pipeline ..> TimestampFilter : composes
@@ -1973,8 +2127,16 @@ classDiagram
     build_default_pipeline ..> RecordEscalationFilter : composes
     build_default_pipeline ..> WriteAuditEntryFilter : composes
     build_default_pipeline ..> MarkProcessedFilter : composes
+    build_default_pipeline ..> ArchiveReceiptAugment : composes on the "archive_receipt" route, when receipt_archive is given (§9.5, M10)
     process_message ..> build_default_pipeline : builds, then runs
 ```
+
+`ArchiveReceiptAugment`/`ReceiptArchiveComponents` are fully defined in
+`spork.core.receipts`' own diagram above — an empty box here would
+just duplicate it. `receipt_archive: Optional~ReceiptArchiveComponents~`
+defaults to `None` on both functions; omitting it means an
+`archive_receipt` rule has nowhere to route to, so `Pipeline.run()`
+raises `UnknownBranchError` rather than silently doing nothing.
 
 The orchestrator §9 describes in prose — ties idempotency, evaluation,
 action execution, and audit logging into the one call a real message
@@ -2541,6 +2703,8 @@ classDiagram
     class process_message { <<function>> }
     class escalate_message_or_quarantine { <<function>> }
     class IpcServer
+    class ContextProvider { <<Protocol>> }
+    class ReceiptArchiveComponents
 
     class PendingAuditEvent {
         <<dataclass, frozen>>
@@ -2581,6 +2745,8 @@ classDiagram
     run_daemon ..> Provider : build_provider() -> build_source()/build_action_applier()/build_draft_creator()/build_thread_history_reader()/build_mailbox_lister()
     run_daemon ..> StateDB : opens before source composition; reads account cursor
     run_daemon ..> LLMClient : build_llm_client(), optionally recording-wrapped
+    run_daemon ..> ContextProvider : build_context_provider()
+    run_daemon ..> ReceiptArchiveComponents : build_receipt_archive_components(), None when [receipt_archive] unconfigured; --observe swaps keyword_applier for a no-op and sets dry_run=True (§9.5, M10)
     run_daemon --> ActionExecutor : constructs
     run_daemon --> StateDB : opens
     run_daemon --> PipelineObserver : constructs
@@ -2595,7 +2761,8 @@ classDiagram
     _run_message_loop --> StateDB : acknowledges checkpoint only after whole batch succeeds
     _run_message_loop --> DaemonState : skips poll()+processing while paused; drains pending_control_plane_events each iteration (M7, §6.2.2)
     _run_message_loop --> RulesState : reads .rules fresh every poll iteration (§6.2.2)
-    _run_message_loop ..> process_message : Tier 1, via asyncio.to_thread
+    _run_message_loop ..> process_message : Tier 1, via asyncio.to_thread; receipt_archive passed straight through
+    ReceiptArchiveComponents ..> process_message : the archive_receipt route's collaborators (§9.5, M10)
     _run_message_loop ..> escalate_message_or_quarantine : Tier 2, when Tier 1 escalates, a second sequential asyncio.to_thread (§6.2.1) — spork.core.pipeline.tier2.escalate (M5), also used by spork reclassify/spork backfill; result not branched on here, a quarantine already marks processed/audits/alerts internally
     escalate_message_or_quarantine ..> ThreadHistoryReader : get_thread_context()
     escalate_message_or_quarantine ..> MailboxLister : list_mailboxes()
@@ -2768,6 +2935,18 @@ corpus_path = "/home/will/spork/tests/fixtures/corpus/live.jsonl"
 [alerts]
 spec = "spork.core.alerts.log:LoggingAlerter"   # v1's only real backend — §12.1
 [alerts.kwargs]
+
+# Optional. Omitting [receipt_archive] entirely turns the feature off —
+# an archive_receipt rule then fails at pipeline composition (§9.5, M10).
+[receipt_archive]
+output_dir = "~/Documents/spork-receipts"
+[receipt_archive.extraction]
+spec = "spork.core.receipts.llm:RecordedReceiptExtractionClient"   # the one real, shipped
+                                                                     # backend today; a live
+                                                                     # LiteLLM-backed one is
+                                                                     # future work (§9.5)
+[receipt_archive.extraction.kwargs]
+responses_path = "/home/will/spork/receipt-extractions.json"
 
 [tiering]
 default_unmatched_action = "escalate"     # "escalate" | "ignore"
@@ -3641,6 +3820,208 @@ change to *what pipeline that route points at*, never a rewrite of
   context, build the prompt, call Claude, parse the verdict — is a
   `Filter`/`Augment` chain over the same `Payload`/`Pipeline` machinery,
   not a new abstraction).
+
+### 9.5 Receipt archiving (M10, built)
+
+**Built — originally numbered M9**, renumbered to M10 when M9 landed
+independently as §10.8's "read-only knowledgebase context retrieval"
+(an unrelated, concurrently-developed milestone that reached `main`
+first). `docs/ROADMAP.md` M10 tracks this milestone; every scenario in
+`docs/acceptance/m10_receipt_archiving.feature` (the full pipeline)
+and its four sub-module companions
+(`m10a`/`m10b`/`m10c`/`m10d_receipt_*.feature`, 22 scenarios total) is
+fully bound and passes on every `uv run behave`, no live account or
+network required. This section is the design those scenarios were
+written against, per CLAUDE.md's "design first, then tests, then
+implementation" order. One real synergy with §10.8's
+`EntityContextProvider`, built as designed: its `lookup_domain()` is a
+curated, read-only domain→company source this milestone's
+deterministic extractor consults ahead of its own learned cache,
+rather than inventing a second static-seed-file format.
+`spork.core.runtime.build_receipt_archive_components()` (§6.4) closes
+the runtime-wiring gap this section used to flag as open: `sporkd`
+itself now builds `ReceiptArchiveComponents` from `[receipt_archive]`/
+`[context]` config at startup, via a new
+`spork.core.receipts.loader.load_receipt_extraction_client()` (mirroring
+`load_context_provider()`/`load_llm_client()`) and a new required
+`ReceiptArchiveConfig.extraction: BackendSpec` field — the same
+"module:ClassName" spec mechanism every other backend already uses.
+`--observe` (`spork.daemon`, §6.4) genuinely honors its "process and
+audit messages without changing mail or creating drafts" contract for
+`archive_receipt` too, not just move/tag/escalate:
+`ArchiveReceiptAugment` gained a `dry_run` flag (skips the PDF write
+entirely) and the daemon swaps `keyword_applier` for a no-op, the same
+shape `_ObserveActionApplier`/`_ObserveDraftCreator` already have.
+
+**Goal:** recognize an automatic-payment receipt email, tag it
+(`receipt`, `company:<name>`, `date:<iso-date>`), and archive a single
+combined PDF — the message plus every attachment — to a configured
+location. Company/date extraction should be **deterministic wherever
+possible** and escalate to Tier 2 only as a last resort, once per
+unfamiliar sender, never repeatedly for the same one:
+
+```mermaid
+flowchart TD
+    A[Tier 1 rule matches: this looks like a receipt] --> B0{EntityContextProvider\nlookup_domain hit? (M9)}
+    B0 -- yes --> C[Deterministic extraction:\ncurated company + Date-pattern parse]
+    B0 -- no --> B{StateDB.get_known_sender\nhit?}
+    B -- yes --> C
+    C --> F[Tag receipt / company / date]
+    B -- no --> D[One narrow Tier 2 call:\nReceiptExtractionClient.extract_receipt]
+    D --> E[StateDB.learn_known_sender\nfrom_domain -> company]
+    E --> F
+    F --> G[build_receipt_pdf: message + attachments -> one PDF]
+    G --> H[save to configured output_dir]
+```
+
+This is deliberately a *narrower* escalation than Tier 2 triage
+(§10): it answers one closed question — "what company, what date" —
+for a message a Tier 1 rule has already decided is a receipt, not "how
+should this message be handled." Reusing the general-purpose `Verdict`
+schema (§10.1) for that would pollute every other category with two
+fields only receipts need; this gets its own small Protocol instead,
+the same "one Protocol per real relationship" call `ThreadHistoryReader`/
+`MailboxLister`/`MessageLookup` already made (§9.3).
+
+**New pieces, all built:**
+
+- **`Provider.build_attachment_fetcher()`** — a new capability
+  alongside the six `Provider` already had (§9.3): resolves a
+  message's raw attachments (filename, content type, bytes).
+  `FileProvider`'s implementation is real (attachments as a
+  base64-encoded `"attachments"` array in the same fixture JSON
+  `load_messages()` already reads, via a sibling
+  `providers.file.attachments.load_attachments()` loader);
+  `JmapProvider` is a settled-shape `NotImplementedError` — unlike
+  `get_thread_context()`/`list_mailboxes()`/`get_message()` (also
+  reads, already real against injected jmapc-shaped responses), this
+  one wasn't built this pass, noted honestly as out of scope rather
+  than a genuine live-account blocker (`JMAP-Mail`'s `Email/get` with
+  `bodyValues`/`blobId` fetching is real and buildable the same way,
+  just not done here).
+- **`Provider.build_keyword_applier()`** — also new. §7.5's "mailboxes
+  as tags" is the right model for a small, fixed set of categories a
+  human browses as folders (`Calendar`, `Reading`), but `company:<name>`
+  and `date:<iso-date>` are per-message dynamic values, not a mailbox
+  anyone would want to browse by folder-per-company. JMAP's `Email`
+  keywords map (arbitrary per-message string flags, distinct from
+  `mailboxIds`) is the honest fit — a second, narrower write
+  capability, not a repurposing of the existing mailbox-based `tag`
+  action. `FileProvider` logs applied keywords the same
+  JSON-lines way `_FileActionApplier` logs actions; `JmapProvider` is
+  again a settled-shape stub pending a live `Email/set` write.
+- **`StateDB` gains `known_receipt_senders`** (`get_known_sender()`/
+  `learn_known_sender()`; `from_domain`, `company`, `learned_from` —
+  `"seed"` or `"tier2"` — `learned_at`), **built** — the same
+  one-class-owns-every-table convention `push_cursor`/
+  `processed_messages`/`llm_usage` already follow, not a separate
+  wrapper class (a deliberate deviation from this section's original
+  sketch of a standalone `KnownSenderStore` class, corrected once
+  building it surfaced the existing convention as the better fit).
+  `spork.core.receipts.registry.normalize_sender_domain()` is the pure
+  logic left over once storage is factored out — lowercasing/
+  stripping so a lookup and a prior learn always agree on one key,
+  mirroring how `spork.core.llm.budget.has_budget_remaining()` is pure
+  logic decoupled from `StateDB.get_llm_usage()`. `learn_known_sender()`
+  is called exactly once, right after a Tier 2 extraction succeeds, so
+  the *next* message from that domain never reaches Tier 2 again —
+  this is the "learning system" the milestone is named for, not a
+  model being retrained, just a durable cache of one narrow judgment
+  call spork should only ever need to make once per sender it has to
+  resolve itself.
+- **`spork.core.receipts.extract`** — the deterministic path, checked
+  in two layers before ever escalating: an optionally-injected
+  `EntityContextProvider.lookup_domain()`-shaped collaborator first
+  (M9's curated, hand-authored domain→company data — reused here
+  rather than this milestone inventing a second static-seed-file
+  format), then `StateDB.get_known_sender()` (this milestone's own
+  learned cache). Either hit supplies `company` directly; `date` is
+  parsed from a small, closed set of patterns (the `Date` header
+  first, then a short list of literal body markers like "Invoice
+  date:"/"Payment date:" — deliberately not a general
+  date-in-any-format parser, same "closed, auditable pattern set"
+  philosophy as `rules.schema.Condition`, §7.5). No match on either
+  half means this path declines rather than guessing — that's what
+  routes to Tier 2, not a low-confidence deterministic answer.
+- **`spork.core.receipts.llm.ReceiptExtractionClient`** — the Tier 2
+  fallback: one Protocol, `extract_receipt(request) -> ReceiptExtraction`,
+  loaded the same `"module:ClassName"` way as `LLMClient`/`Provider`/
+  `Alerter` (§9.1/§9.3/§10.1/§12.1). A `RecordedReceiptExtractionClient`
+  (mirroring `RecordedLLMClient`, §10.5) replays fixtures for CI/
+  acceptance — no live API call anywhere in the test suite, including
+  `m10_receipt_archiving.feature`.
+- **`rules.schema.Action` gains a fourth terminal type,
+  `"archive_receipt"`** (alongside `move`/`tag`/`ignore` — `escalate`
+  stays Tier-2-triage-only, §9.4/§9.3). A Tier 1 rule decides *that* a
+  message is a receipt using the existing closed `Condition` set
+  (sender/domain, subject pattern, `local_classifier_category_in`);
+  matching that rule is what may trigger the one narrow Tier 2 call
+  above — deliberately not routed through the general `escalate`
+  action, since nothing here is asking "how should this be handled,"
+  only "what are its company/date."
+- **`spork.core.receipts.pdf.build_receipt_pdf()`** — pure function,
+  `(NormalizedMessage, attachments, extraction) -> bytes`: a cover
+  page (subject, sender, date, company, the three tags) followed by
+  every attachment in order — an existing PDF attachment merged
+  page-for-page, an image attachment placed on its own page, anything
+  else noted by filename/type rather than silently dropped. No
+  attachments at all still produces a one-page PDF from the cover
+  content alone (the "message itself" half of the feature request).
+  Dependencies (`pypdf` for merging, `reportlab` for rendering the
+  cover/text pages, `Pillow` for image-to-PDF-page conversion) live
+  behind the new optional `spork[receipts]` extra, lazily imported
+  inside this module — same lazy-optional-import pattern `litellm`
+  already uses (§10.1) — so importing `spork.core.receipts.pdf` never
+  requires them unless a caller actually builds a PDF.
+- **`spork.core.receipts.archive.save_pdf()`** — writes the built PDF
+  to `SporkConfig.receipt_archive.output_dir` under a deterministic
+  filename (`{date}-{company-slug}-{message_id}.pdf`); a write failure
+  (unwritable directory, full disk) raises one wrapped error, same
+  one-error-type-per-boundary convention as `RulesLoadError`/
+  `ProviderLoadError`/etc. (Conventions, above) — `ArchiveReceiptAugment`
+  doesn't catch it, so it propagates out of the pipeline run entirely:
+  `WriteAuditEntryFilter`/`MarkProcessedFilter` never run, and the
+  message is **not** marked processed, the same fail-open-for-retry
+  behavior `m2_rules.feature`'s `@audit` scenario already specifies for
+  a transient action-applier failure.
+- **`SporkConfig.receipt_archive: ReceiptArchiveConfig | None = None`**
+  — a new, optional config table (`output_dir: Path`). No separate
+  seed-file field: curated domain→company seeding is `[context]`'s job
+  now that `EntityContextProvider` (M9, §10.8) exists — the extractor
+  reads it through the same optionally-configured collaborator
+  described above, so `[receipt_archive]` only needs to say where
+  PDFs go, not repeat a second seed-data mechanism. `None` (the
+  default) means the feature is off entirely: an `archive_receipt`
+  rule matched with no `receipt_archive` components wired reaches
+  `RuleEvaluationSelector` with nowhere to route to, so `Pipeline.run()`
+  raises `UnknownBranchError` — a real error at pipeline-composition
+  time, not a silent no-op, though not (yet) a dedicated config-loading-
+  time check the way a missing `provider`/`llm`/`alerts` table is.
+- **Pipeline wiring** — `ArchiveReceiptAugment` (§9.4) on a new
+  `"archive_receipt"` branch alongside `"terminal"`/`"escalate"`,
+  selected by `RuleEvaluationSelector` when `meta.verdict.action.type
+  == "archive_receipt"`: look up or learn the sender, extract, tag via
+  `KeywordApplier`, build and save the PDF, then `WriteAuditEntryFilter`/
+  `MarkProcessedFilter` same as the `"terminal"` branch's own tail.
+  `build_default_pipeline()`/`process_message()` gain one new optional
+  `receipt_archive: ReceiptArchiveComponents | None` parameter wiring
+  it in — every existing caller (unaffected, defaults to `None`). Same
+  "independently testable against a bare `Payload`, no full
+  `process_message()` needed" shape every other module in §9.4 already
+  has.
+
+**Exit criteria:** a known-sender receipt is tagged and
+archived with zero Tier 2 calls; a message from an unrecognized sender
+makes exactly one Tier 2 extraction call and is learned; a second
+message from that now-learned sender is handled deterministically; a
+message with attachments and a message with none both produce exactly
+one PDF at the configured location; a write failure to that location
+leaves the message retryable, not silently dropped. Every one of these
+is offline-testable (`FileProvider` + `RecordedReceiptExtractionClient`)
+— unlike M1/M3's live-account-blocked items, nothing about this
+milestone's exit criterion depends on a live Fastmail or Anthropic
+session, so there's no reason for it to stay partially met once the
+modules above are actually written.
 
 ## 10. LLM integration (Claude API)
 

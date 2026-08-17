@@ -91,10 +91,18 @@ class Verdict(BaseModel):
         """A schema-level invariant, not a deployment-specific one: a
         verdict's own suggested_action can't be "escalate" — that
         would mean Tier 2 escalating what it was already asked to
-        decide on."""
+        decide on — nor "archive_receipt" (docs/DESIGN.md §9.5, M10),
+        which is Tier-1-rule-only and needs the deterministic/Tier-2-
+        extraction machinery a general triage verdict has no access to.
+        """
         if action.type == "escalate":
             raise ValueError(
                 'suggested_action.type cannot be "escalate" — Verdict is already Tier 2\'s output'
+            )
+        if action.type == "archive_receipt":
+            raise ValueError(
+                'suggested_action.type cannot be "archive_receipt" — that action is '
+                "Tier-1-rule-only, not a general Tier 2 verdict"
             )
         return action
 

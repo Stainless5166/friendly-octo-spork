@@ -19,8 +19,12 @@ class CompletionPrompt:
     tool_choice: dict[str, object]
 
 
+_ILLEGAL_TIER2_ACTION_TYPES = frozenset({"escalate", "archive_receipt"})
+
+
 def verdict_tool_schema() -> dict[str, Any]:
-    """`Verdict.model_json_schema()`, minus "escalate" from suggested_action.type.
+    """`Verdict.model_json_schema()`, minus every `Action.type` value a
+    Tier 2 verdict's own validator already rejects.
 
     `suggested_action` reuses `rules.schema.Action` (§10.1), whose
     `type` enum legally includes `"escalate"` for Tier 1's own use —
@@ -32,10 +36,15 @@ def verdict_tool_schema() -> dict[str, Any]:
     schema itself is the stronger of the two fixes that finding
     named — it can't offer what it isn't told is legal — the system
     prompt below carries the complementary explanation.
+    `"archive_receipt"` (§9.5, M10) joins it for the same reason: it's
+    Tier-1-rule-only, also rejected by `Verdict`'s validator, and
+    equally worth never offering as an option in the first place.
     """
     schema = copy.deepcopy(Verdict.model_json_schema())
     action_type = schema["$defs"]["Action"]["properties"]["type"]
-    action_type["enum"] = [value for value in action_type["enum"] if value != "escalate"]
+    action_type["enum"] = [
+        value for value in action_type["enum"] if value not in _ILLEGAL_TIER2_ACTION_TYPES
+    ]
     return schema
 
 

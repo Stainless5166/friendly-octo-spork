@@ -34,6 +34,17 @@ def test_verdict_rejects_a_suggested_action_of_escalate() -> None:
         Verdict.model_validate(_verdict_json(suggested_action={"type": "escalate"}))
 
 
+def test_verdict_rejects_a_suggested_action_of_archive_receipt() -> None:
+    """archive_receipt (docs/DESIGN.md §9.5, M10) is Tier-1-rule-only —
+    it needs the deterministic/Tier-2-extraction machinery a general
+    Tier 2 triage verdict doesn't have access to, same reasoning
+    "escalate" is rejected for: a schema-level contradiction, caught
+    here rather than reaching ActionExecutor (which would reject it
+    too, just later and less clearly)."""
+    with pytest.raises(ValidationError, match="archive_receipt"):
+        Verdict.model_validate(_verdict_json(suggested_action={"type": "archive_receipt"}))
+
+
 def test_verdict_rejects_confidence_above_one() -> None:
     """confidence is a probability — out of [0, 1] is a malformed
     response, not something to silently clamp."""

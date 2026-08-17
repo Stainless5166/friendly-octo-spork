@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from spork.core.config.schema import (
     BackendSpec,
     LLMRecordingConfig,
+    ReceiptArchiveConfig,
     SporkConfig,
     TieringConfig,
 )
@@ -159,3 +160,46 @@ def test_sporkconfig_accepts_optional_context_provider_configuration() -> None:
 
     assert config.context is not None
     assert config.context.spec == "spork.core.context.clients.null:NullContextProvider"
+
+
+def test_sporkconfig_receipt_archive_defaults_to_none() -> None:
+    """Unset means the feature is off entirely -- an archive_receipt
+    rule with no [receipt_archive] configured fails at pipeline
+    composition, not silently (docs/DESIGN.md §9.5, M10)."""
+    config = _minimal_sporkconfig()
+
+    assert config.receipt_archive is None
+
+
+def test_sporkconfig_accepts_optional_receipt_archive_configuration(tmp_path: Path) -> None:
+    config = _minimal_sporkconfig(
+        receipt_archive=ReceiptArchiveConfig(
+            output_dir=tmp_path / "receipts",
+            extraction=BackendSpec(spec="spork.core.receipts.llm:RecordedReceiptExtractionClient"),
+        )
+    )
+
+    assert config.receipt_archive is not None
+    assert config.receipt_archive.output_dir == tmp_path / "receipts"
+    assert (
+        config.receipt_archive.extraction.spec
+        == "spork.core.receipts.llm:RecordedReceiptExtractionClient"
+    )
+
+
+def test_receiptarchiveconfig_rejects_unknown_fields() -> None:
+    with pytest.raises(ValidationError):
+        ReceiptArchiveConfig(
+            output_dir=Path("/tmp/receipts"),
+            extraction=BackendSpec(spec="a:B"),
+            bogus_field="x",  # type: ignore[call-arg]
+        )
+
+
+def test_receiptarchiveconfig_requires_an_extraction_backend() -> None:
+    """No default -- same "must be explicit, no fallback that could
+    surprise later" stance provider/llm/alerts already have on
+    SporkConfig itself; the one narrow Tier 2 fallback call has to
+    know which backend to use."""
+    with pytest.raises(ValidationError):
+        ReceiptArchiveConfig(output_dir=Path("/tmp/receipts"))  # type: ignore[call-arg]

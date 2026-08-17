@@ -12,11 +12,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from spork.core.models import NormalizedMessage
+from spork.core.models import Attachment, NormalizedMessage
 from spork.core.providers.base import (
     ActionApplier,
+    AttachmentFetcher,
     BackfillPage,
     DraftCreator,
+    KeywordApplier,
     MailboxLister,
     MessageLookup,
     ThreadContext,
@@ -154,6 +156,32 @@ class _JmapMessageLookup:
         return self._client.get_message(message_id)
 
 
+class _JmapAttachmentFetcher:
+    """Adapts `JmapClient.fetch_attachments()` to the `AttachmentFetcher`
+    contract (docs/DESIGN.md §9.5, M10). A pure delegation, same shape
+    as `_JmapActionApplier`.
+    """
+
+    def __init__(self, client: JmapClient) -> None:
+        self._client = client
+
+    def fetch_attachments(self, message: NormalizedMessage) -> Sequence[Attachment]:
+        return self._client.fetch_attachments(message)
+
+
+class _JmapKeywordApplier:
+    """Adapts `JmapClient.apply_keywords()` to the `KeywordApplier`
+    contract (docs/DESIGN.md §9.5, M10). A pure delegation, same shape
+    as `_JmapActionApplier`.
+    """
+
+    def __init__(self, client: JmapClient) -> None:
+        self._client = client
+
+    def apply_keywords(self, message: NormalizedMessage, keywords: Sequence[str]) -> None:
+        self._client.apply_keywords(message, keywords)
+
+
 class JmapProvider:
     """Adapts a JMAP account to the `Provider` contract.
 
@@ -246,3 +274,9 @@ class JmapProvider:
 
     def build_message_lookup(self) -> MessageLookup:
         return _JmapMessageLookup(self._client)
+
+    def build_attachment_fetcher(self) -> AttachmentFetcher:
+        return _JmapAttachmentFetcher(self._client)
+
+    def build_keyword_applier(self) -> KeywordApplier:
+        return _JmapKeywordApplier(self._client)

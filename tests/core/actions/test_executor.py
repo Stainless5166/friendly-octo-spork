@@ -91,3 +91,21 @@ def test_executor_rejects_move_action_without_a_mailbox(make_message) -> None:
         executor.execute(make_message(), Action(type="move"))
 
     assert applier.calls == []
+
+
+def test_executor_rejects_archive_receipt_action(make_message) -> None:
+    """An archive_receipt action reaching the executor is a routing bug
+    upstream — receipt archiving has its own pipeline branch
+    (docs/DESIGN.md §9.5, M10), never the plain ActionApplier path."""
+    applier = _RecordingApplier()
+    executor = ActionExecutor(applier)
+
+    action = Action(type="archive_receipt")
+    with pytest.raises(ActionExecutionError) as exc_info:
+        executor.execute(make_message(), action)
+
+    assert str(exc_info.value) == (
+        f"ActionExecutor cannot execute an archive_receipt action: {action!r} — "
+        "receipt archiving is its own pipeline branch, not the terminal action step"
+    )
+    assert applier.calls == []

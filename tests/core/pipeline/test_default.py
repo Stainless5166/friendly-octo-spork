@@ -306,3 +306,92 @@ def test_process_message_returns_the_verdict(tmp_path: Path, make_message) -> No
     assert verdict is not None
     assert verdict.matched_rule_id == "r1"
     assert verdict.action == Action(type="ignore")
+
+
+def test_process_message_archives_a_matched_receipt_end_to_end(
+    tmp_path: Path, make_message
+) -> None:
+    """A message matching an archive_receipt rule, with receipt_archive
+    components wired, is archived and marked processed via the full
+    process_message() call -- not just the standalone Augment
+    (docs/DESIGN.md §9.5, M10)."""
+    from spork.core.receipts.llm import (
+        ReceiptExtractionRequest,
+        ReceiptExtractionResult,
+        ReceiptExtractionUsage,
+    )
+    from spork.core.receipts.pipeline import ReceiptArchiveComponents
+
+    class _FakeAttachmentFetcher:
+        def fetch_attachments(self, message):  # type: ignore[no-untyped-def]
+            return []
+
+    class _FakeKeywordApplier:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, list[str]]] = []
+
+        def apply_keywords(self, message, keywords):  # type: ignore[no-untyped-def]
+            self.calls.append((message, list(keywords)))
+
+    class _FakeExtractionClient:
+        def extract_receipt(self, request: ReceiptExtractionRequest) -> ReceiptExtractionResult:
+            from spork.core.receipts.extract import ReceiptExtraction
+
+            return ReceiptExtractionResult(
+                extraction=ReceiptExtraction(company="Acme Cloud", date="2026-08-01"),
+                usage=ReceiptExtractionUsage(tokens_in=0, tokens_out=0),
+            )
+
+    message = make_message(message_id="msg-1", from_domain="acmecloud.com")
+    rules = [Rule(id="r1", when=Condition(always=True), action=Action(type="archive_receipt"))]
+    keyword_applier = _FakeKeywordApplier()
+
+    with StateDB(tmp_path / "state.sqlite3") as db:
+        verdict = process_message(
+            message,
+            rules,
+            default_unmatched_action=Action(type="escalate"),
+            executor=ActionExecutor(_RecordingApplier()),
+            state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
+            now=lambda: "t1",
+            receipt_archive=ReceiptArchiveComponents(
+                attachment_fetcher=_FakeAttachmentFetcher(),
+                keyword_applier=keyword_applier,
+                extraction_client=_FakeExtractionClient(),
+                output_dir=tmp_path / "receipts",
+            ),
+        )
+
+        assert db.has_processed("msg-1") is True
+
+    assert verdict is not None
+    assert verdict.action.type == "archive_receipt"
+    assert keyword_applier.calls[0][1] == ["receipt", "company:Acme Cloud", "date:2026-08-01"]
+    assert len(list((tmp_path / "receipts").glob("*.pdf"))) == 1
+
+
+def test_process_message_without_receipt_archive_configured_fails_clearly(
+    tmp_path: Path, make_message
+) -> None:
+    """An archive_receipt rule with no receipt_archive= given is a
+    config error, not a silent no-op -- same "fail loud" stance as
+    everything else in this pipeline (docs/DESIGN.md §9.5, M10)."""
+    from spork.core.pipeline.core import UnknownBranchError
+
+    message = make_message(message_id="msg-1")
+    rules = [Rule(id="r1", when=Condition(always=True), action=Action(type="archive_receipt"))]
+
+    with (
+        StateDB(tmp_path / "state.sqlite3") as db,
+        pytest.raises(UnknownBranchError),
+    ):
+        process_message(
+            message,
+            rules,
+            default_unmatched_action=Action(type="escalate"),
+            executor=ActionExecutor(_RecordingApplier()),
+            state_db=db,
+            ops=PipelineObserver(_FakeAlerter()),
+            now=lambda: "t1",
+        )

@@ -49,6 +49,25 @@ class LLMRecordingConfig(BaseModel):
     corpus_path: Path
 
 
+class ReceiptArchiveConfig(BaseModel):
+    """The `[receipt_archive]` table (docs/DESIGN.md §9.5, M10) — where
+    `archive_receipt` rule actions save their combined PDFs and which
+    `ReceiptExtractionClient` backend answers the one narrow Tier 2
+    fallback call. `None` (`SporkConfig.receipt_archive`'s default)
+    means the feature is off entirely: an `archive_receipt` rule with
+    no `[receipt_archive]` configured is a real config error at
+    pipeline composition, same "fail loud on a real gap" stance as
+    every other required-but-unset config dependency in this codebase.
+    `extraction` has no default for the same reason `provider`/`llm`/
+    `alerts` don't on `SporkConfig` itself — it must be explicit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    output_dir: Path
+    extraction: BackendSpec
+
+
 class TieringConfig(BaseModel):
     """The `[tiering]` table — Tier 1/Tier 2 thresholds and policy.
 
@@ -95,6 +114,9 @@ class SporkConfig(BaseModel):
     # missing-field error, same convention as tiering.local_classifier.
     context: BackendSpec | None = None
     llm_recording: LLMRecordingConfig | None = None
+    # None means receipt archiving is off entirely (§9.5, M10) — same
+    # "unset is a real, valid state" convention as context/local_classifier.
+    receipt_archive: ReceiptArchiveConfig | None = None
     rules_path: Path
     db_path: Path
     socket_path: Path | None = None

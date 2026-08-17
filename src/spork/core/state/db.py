@@ -46,6 +46,13 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     tokens_in INTEGER NOT NULL DEFAULT 0,
     tokens_out INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS known_receipt_senders (
+    from_domain TEXT PRIMARY KEY,
+    company TEXT NOT NULL,
+    learned_from TEXT NOT NULL,
+    learned_at TEXT NOT NULL
+);
 """
 
 
@@ -72,6 +79,24 @@ class LLMUsage:
     calls: int
     tokens_in: int
     tokens_out: int
+
+
+@dataclass(frozen=True, slots=True)
+class KnownSender:
+    """One row from known_receipt_senders — M9's "learning system": a
+    sender domain spork has already resolved to a company, so the next
+    receipt from it is archived deterministically instead of costing
+    another Tier 2 extraction call (docs/DESIGN.md §9.5).
+
+    `learned_from` is `"seed"` (a hand-authored starting entry) or
+    `"tier2"` (recorded automatically right after a successful
+    extraction) — provenance only; both are looked up identically.
+    """
+
+    from_domain: str
+    company: str
+    learned_from: str
+    learned_at: str
 
 
 class StateDB:
@@ -281,3 +306,45 @@ class StateDB:
             return LLMUsage(date=date, calls=0, tokens_in=0, tokens_out=0)
         calls, tokens_in, tokens_out = row
         return LLMUsage(date=date, calls=calls, tokens_in=tokens_in, tokens_out=tokens_out)
+
+    # --- known_receipt_senders: M9's deterministic-extraction cache --
+
+    def get_known_sender(self, from_domain: str) -> KnownSender | None:
+        """Return what spork already knows about `from_domain`, or None
+        if it's never been seeded or learned — the deterministic
+        receipt-archiving path's first question (docs/DESIGN.md §9.5).
+        Callers are expected to pass an already-normalized domain
+        (`spork.core.receipts.registry.normalize_sender_domain()`) so a
+        lookup and a prior `learn_known_sender()` call agree on one key.
+        """
+        row = self._conn.execute(
+            "SELECT from_domain, company, learned_from, learned_at "
+            "FROM known_receipt_senders WHERE from_domain = ?",
+            (from_domain,),
+        ).fetchone()
+        return KnownSender(*row) if row else None
+
+    def learn_known_sender(
+        self,
+        from_domain: str,
+        *,
+        company: str,
+        learned_from: str,
+        learned_at: str,
+    ) -> None:
+        """Record (or correct) what `from_domain` resolves to.
+
+        Re-learning a domain overwrites its previous entry rather than
+        erroring or duplicating it — the same upsert shape
+        `set_cursor()` already uses, since a corrected company name
+        should simply replace the old one, not accumulate alongside it.
+        """
+        self._conn.execute(
+            "INSERT INTO known_receipt_senders "
+            "(from_domain, company, learned_from, learned_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(from_domain) DO UPDATE SET "
+            "company = excluded.company, learned_from = excluded.learned_from, "
+            "learned_at = excluded.learned_at",
+            (from_domain, company, learned_from, learned_at),
+        )
+        self._conn.commit()

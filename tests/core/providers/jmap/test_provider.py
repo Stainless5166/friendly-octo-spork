@@ -16,9 +16,11 @@ from spork.core.providers.jmap.client import JmapClient, JmapFetchResult
 from spork.core.providers.jmap.provider import (
     JmapProvider,
     _JmapActionApplier,
+    _JmapAttachmentFetcher,
     _JmapCheckpointedSource,
     _JmapContentFetcher,
     _JmapDraftCreator,
+    _JmapKeywordApplier,
     _JmapMailboxLister,
     _JmapMessageLookup,
     _JmapThreadHistoryReader,
@@ -244,3 +246,53 @@ def test_message_lookup_delegates_to_the_client_directly(make_message, monkeypat
     monkeypatch.setattr(JmapClient, "get_message", lambda self, message_id: expected)
 
     assert lookup.get_message("msg-1") == expected
+
+
+def test_build_attachment_fetcher_returns_something_that_propagates_not_implemented(
+    make_message,
+) -> None:
+    """build_attachment_fetcher() (docs/DESIGN.md §9.5, M10) returns an
+    object satisfying AttachmentFetcher; fetch_attachments() would need
+    a live jmapc session's blob-download support -- not built yet."""
+    provider = JmapProvider(host="api.fastmail.com", api_token="fake-token")
+
+    fetcher = provider.build_attachment_fetcher()
+
+    with pytest.raises(NotImplementedError):
+        fetcher.fetch_attachments(make_message())
+
+
+def test_attachment_fetcher_delegates_to_the_client_directly(make_message) -> None:
+    """The fetcher is a real delegation to JmapClient.fetch_attachments(),
+    not a second placeholder — mirrors
+    test_action_applier_delegates_to_the_client_directly."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+    fetcher = _JmapAttachmentFetcher(client)
+
+    with pytest.raises(NotImplementedError):
+        fetcher.fetch_attachments(make_message())
+
+
+def test_build_keyword_applier_returns_something_that_propagates_not_implemented(
+    make_message,
+) -> None:
+    """build_keyword_applier() (docs/DESIGN.md §9.5, M10) returns an
+    object satisfying KeywordApplier; apply_keywords() would need a
+    live jmapc session's Email/set write access -- not built yet."""
+    provider = JmapProvider(host="api.fastmail.com", api_token="fake-token")
+
+    applier = provider.build_keyword_applier()
+
+    with pytest.raises(NotImplementedError):
+        applier.apply_keywords(make_message(), ["receipt"])
+
+
+def test_keyword_applier_delegates_to_the_client_directly(make_message) -> None:
+    """The applier is a real delegation to JmapClient.apply_keywords(),
+    not a second placeholder — mirrors
+    test_action_applier_delegates_to_the_client_directly."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+    applier = _JmapKeywordApplier(client)
+
+    with pytest.raises(NotImplementedError):
+        applier.apply_keywords(make_message(), ["receipt"])

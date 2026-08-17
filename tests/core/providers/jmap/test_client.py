@@ -242,3 +242,22 @@ def test_get_message_fetches_and_normalizes_one_email() -> None:
     assert message.message_id == "msg-1"
     assert message.subject == "A subject"
     assert type(backend.requests[-1]).__name__ == "EmailGet"
+
+
+def test_fetch_attachments_raises_not_implemented(make_message) -> None:
+    """fetch_attachments() would resolve blobId-backed attachments via
+    Email/get against a live session (docs/DESIGN.md §9.5, M10) --
+    not built yet."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+
+    with pytest.raises(NotImplementedError):
+        client.fetch_attachments(make_message())
+
+
+def test_apply_keywords_raises_not_implemented(make_message) -> None:
+    """apply_keywords() would mutate the keywords map via Email/set
+    against a live session (docs/DESIGN.md §9.5, M10) -- not built yet."""
+    client = JmapClient(host="api.fastmail.com", api_token="fake-token")
+
+    with pytest.raises(NotImplementedError):
+        client.apply_keywords(make_message(), ["receipt"])

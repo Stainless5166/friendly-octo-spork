@@ -291,3 +291,80 @@ def test_drafts_log_defaults_next_to_the_actions_log(tmp_path: Path, make_messag
 
     assert (tmp_path / "drafts.jsonl").exists()
     assert not (tmp_path / "actions.jsonl").exists()  # nothing applied, only drafted
+
+
+def test_build_attachment_fetcher_returns_attachments_from_the_fixture(
+    tmp_path: Path, make_message
+) -> None:
+    """build_attachment_fetcher() (docs/DESIGN.md §9.5, M10) reads the
+    same fixture file build_source() replays from -- attachments are
+    real, not invented, matching build_thread_history_reader()'s own
+    "derive from the fixture" convention."""
+    import base64
+
+    messages_path = tmp_path / "messages.json"
+    messages_path.write_text(
+        json.dumps(
+            [
+                {
+                    "message_id": "msg-1",
+                    "thread_id": "thread-1",
+                    "from_address": "a@example.com",
+                    "from_domain": "example.com",
+                    "subject": "Receipt",
+                    "body_text": "Thanks.",
+                    "attachments": [
+                        {
+                            "filename": "invoice.pdf",
+                            "content_type": "application/pdf",
+                            "data_base64": base64.b64encode(b"%PDF-1.4 fake").decode("ascii"),
+                        }
+                    ],
+                }
+            ]
+        )
+    )
+    provider = FileProvider(messages_path, tmp_path / "actions.jsonl")
+    fetcher = provider.build_attachment_fetcher()
+
+    attachments = fetcher.fetch_attachments(make_message(message_id="msg-1"))
+
+    assert [a.filename for a in attachments] == ["invoice.pdf"]
+    assert attachments[0].data == b"%PDF-1.4 fake"
+
+
+def test_build_attachment_fetcher_returns_empty_for_a_message_with_none(
+    tmp_path: Path, make_message
+) -> None:
+    messages_path = tmp_path / "messages.json"
+    _write_messages(messages_path)
+    provider = FileProvider(messages_path, tmp_path / "actions.jsonl")
+    fetcher = provider.build_attachment_fetcher()
+
+    assert fetcher.fetch_attachments(make_message(message_id="msg-1")) == ()
+
+
+def test_build_keyword_applier_logs_applied_keywords(tmp_path: Path, make_message) -> None:
+    """build_keyword_applier() (docs/DESIGN.md §9.5, M10) logs to its
+    own JSON-lines file, distinct from actions/drafts -- a keyword
+    isn't a mailbox action or a draft."""
+    provider = FileProvider(tmp_path / "messages.json", tmp_path / "actions.jsonl")
+    applier = provider.build_keyword_applier()
+
+    applier.apply_keywords(make_message(message_id="msg-1"), ["receipt", "company:Acme Cloud"])
+
+    log_path = tmp_path / "keywords.jsonl"
+    assert log_path.exists()
+    entry = json.loads(log_path.read_text().splitlines()[0])
+    assert entry["message_id"] == "msg-1"
+    assert entry["keywords"] == ["receipt", "company:Acme Cloud"]
+
+
+def test_keywords_log_defaults_next_to_the_actions_log(tmp_path: Path, make_message) -> None:
+    provider = FileProvider(tmp_path / "messages.json", tmp_path / "actions.jsonl")
+    applier = provider.build_keyword_applier()
+
+    applier.apply_keywords(make_message(), ["receipt"])
+
+    assert (tmp_path / "keywords.jsonl").exists()
+    assert not (tmp_path / "actions.jsonl").exists()
