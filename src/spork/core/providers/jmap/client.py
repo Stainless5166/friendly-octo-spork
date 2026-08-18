@@ -479,6 +479,24 @@ class JmapClient:
         if updated is None or message_id not in updated:
             raise JmapError(f"Email/set did not acknowledge update for {message_id!r}")
 
+    def _draft_exists(self, drafts_id: str, message_id: str) -> bool:
+        """Find an existing draft reply so uncertain retries stay idempotent."""
+        email_query, filter_condition_cls = _query_types()
+        response = self._request(
+            email_query(
+                filter=filter_condition_cls(
+                    in_mailbox=drafts_id,
+                    has_keyword="$draft",
+                    header=["In-Reply-To", message_id],
+                ),
+                limit=1,
+            )
+        )
+        ids = getattr(response, "ids", None)
+        if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+            raise JmapError("Email/query returned invalid draft IDs")
+        return bool(ids)
+
     @staticmethod
     def _true_flags(value: object) -> dict[str, bool]:
         """Keep only active boolean flags from a JMAP map."""
@@ -582,9 +600,13 @@ class JmapClient:
         self._require_write_access()
         self.connect()
         drafts_id = self._mailbox_id("Drafts", role="drafts")
+        message_id = message.headers.get("Message-ID")
+        if message_id is None:
+            raise JmapError("cannot create a threaded draft without a Message-ID")
+        if self._draft_exists(drafts_id, message_id):
+            return
         state, _ = self._current_email(message.message_id)
         email_set, email_type, address_type, body_part_type, body_value_type = _write_types()
-        message_id = message.headers.get("Message-ID")
         references = message.headers.get("References", "").split()
         if message_id is not None and message_id not in references:
             references.append(message_id)
