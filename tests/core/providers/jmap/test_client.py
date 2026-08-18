@@ -1,9 +1,8 @@
 """Acceptance tests for JmapClient (docs/ROADMAP.md M1).
 
-Session and fetch behavior use a jmapc-shaped injected client so CI
-asserts Spork's exact request/checkpoint/normalization contract without
-making a network call. The mutation-side methods remain settled-shape
-NotImplementedError placeholders until their own live work lands.
+Session, fetch, and write behavior use a jmapc-shaped injected client so CI
+asserts Spork's exact request/checkpoint/normalization and mutation contract
+without making a network call.
 """
 
 from __future__ import annotations
