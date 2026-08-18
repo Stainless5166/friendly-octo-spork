@@ -44,11 +44,8 @@ class _JmapContentFetcher:
 
     Holds the starting cursor (typically `StateDB.get_cursor()`'s
     result) so `JmapProvider` callers don't need to know `JmapClient`'s
-    fetch signature. Cursor *advancement* is real integration work that
-    lands once `fetch_new_messages()` itself returns something to
-    advance from — it's a `NotImplementedError` stub today (see
-    `spork.core.providers.jmap.client`), so there's nothing to advance
-    yet; this class isn't pretending otherwise.
+    fetch signature. Cursor advancement is returned by the client and
+    remains owned by the daemon after the batch completes.
     """
 
     def __init__(self, client: _FetchClient, *, cursor: str | None = None) -> None:
