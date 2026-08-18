@@ -8,7 +8,7 @@ recorded Fastmail contracts land.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Protocol, cast
@@ -20,6 +20,14 @@ from spork.core.rules.schema import Action
 
 class JmapError(Exception):
     """One catchable boundary for session, transport, and JMAP failures."""
+
+
+@dataclass(frozen=True, slots=True)
+class JmapPermissions:
+    """Read/write permission facts derived from one authenticated account."""
+
+    can_read_mail: bool
+    can_write_mail: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +127,69 @@ def _query_types() -> tuple[type[Any], type[Any]]:
     return methods.EmailQuery, models.EmailQueryFilterCondition
 
 
+def _field(value: object, *names: str) -> object:
+    """Read an attribute or mapping key across jmapc model shapes."""
+    for name in names:
+        if isinstance(value, Mapping) and name in value:
+            return value[name]
+        result = getattr(value, name, None)
+        if result is not None:
+            return result
+    return None
+
+
+def _mapping(value: object) -> Mapping[object, object] | None:
+    """Treat model/dict Session Object fields uniformly without trusting casts."""
+    return value if isinstance(value, Mapping) else None
+
+
+def _capability_names(value: object) -> set[object]:
+    """Normalize jmapc's typed capabilities and plain Session dictionaries."""
+    mapping = _mapping(value)
+    if mapping is not None:
+        return set(mapping)
+    names: set[object] = set()
+    if _field(value, "core") is not None:
+        names.add("urn:ietf:params:jmap:core")
+    extensions = _mapping(_field(value, "extensions"))
+    if extensions is not None:
+        names.update(extensions)
+    urns = _field(value, "urns")
+    if isinstance(urns, (set, frozenset, list, tuple)):
+        names.update(urns)
+    return names
+
+
+def _session_permissions(session: object, account_id: str) -> JmapPermissions:
+    """Validate core/mail read access and derive conservative mail write access."""
+    capability_names = _capability_names(_field(session, "capabilities"))
+    if "urn:ietf:params:jmap:core" not in capability_names:
+        raise JmapError("JMAP Session Object has no core capability")
+    if "urn:ietf:params:jmap:mail" not in capability_names:
+        raise JmapError("JMAP Session Object has no mail capability")
+
+    accounts = _mapping(_field(session, "accounts"))
+    account = accounts.get(account_id) if accounts is not None else None
+
+    primary_accounts = _field(session, "primary_accounts", "primaryAccounts")
+    primary_mail_account = _field(primary_accounts, "mail", "urn:ietf:params:jmap:mail")
+    if primary_mail_account != account_id:
+        raise JmapError(f"JMAP account {account_id!r} is not the primary mail account")
+
+    if account is not None:
+        account_capabilities = _mapping(
+            _field(account, "account_capabilities", "accountCapabilities")
+        )
+        if account_capabilities is None or "urn:ietf:params:jmap:mail" not in account_capabilities:
+            raise JmapError(f"JMAP account {account_id!r} has no mail capability")
+
+    is_read_only = _field(account, "is_read_only", "isReadOnly") if account is not None else None
+    return JmapPermissions(
+        can_read_mail=True,
+        can_write_mail=is_read_only is False,
+    )
+
+
 class JmapClient:
     """A JMAP session against a single Fastmail account.
 
@@ -132,14 +203,17 @@ class JmapClient:
         api_token: str,
         *,
         client_factory: ClientFactory = _default_client_factory,
+        allow_writes: bool = False,
     ) -> None:
         self._host = host
         self._api_token = api_token
         self._client_factory = client_factory
+        self._allow_writes = allow_writes
         self._client: _JmapcClient | None = None
         self._account_id: str | None = None
         self._inbox_id: str | None = None
         self._mailboxes: dict[str, tuple[str, str | None]] = {}
+        self._permissions: JmapPermissions | None = None
 
     def connect(self) -> None:
         """Authenticate once and resolve the primary account and Inbox."""
@@ -164,6 +238,9 @@ class JmapClient:
             account_id = client.account_id
             if not account_id:
                 raise JmapError("JMAP session has no primary mail account")
+            permissions = _session_permissions(client.jmap_session, account_id)
+            if self._allow_writes and not permissions.can_write_mail:
+                raise JmapError("JMAP account is read-only; write access was explicitly requested")
         except JmapError:
             raise
         except Exception as exc:
@@ -177,6 +254,16 @@ class JmapClient:
             for mailbox in mailboxes
             if isinstance((mailbox_id := getattr(mailbox, "id", None)), str)
         }
+        self._permissions = permissions
+
+    def _require_write_access(self) -> None:
+        """Prevent mutation attempts unless session and config both allow them."""
+        if (
+            not self._allow_writes
+            or self._permissions is None
+            or not self._permissions.can_write_mail
+        ):
+            raise JmapError("JMAP client is read-only; write access is not enabled")
 
     @property
     def account_id(self) -> str:
@@ -403,6 +490,7 @@ class JmapClient:
     def apply_action(self, message: NormalizedMessage, action: Action) -> None:
         """Mutate `message`'s mailboxes via `Email/set` per `action`
         (docs/DESIGN.md §9.3) — the write side of the JMAP provider."""
+        self._require_write_access()
         raise NotImplementedError(
             "JmapClient.apply_action() requires a live jmapc session — "
             "not implemented yet, see docs/ROADMAP.md M1"
@@ -412,6 +500,7 @@ class JmapClient:
         """Create a draft reply to `message` via `Email/set` into the
         account's Drafts mailbox — never `EmailSubmission/set`
         (docs/DESIGN.md §10.6, §11's "draft, never send" invariant)."""
+        self._require_write_access()
         raise NotImplementedError(
             "JmapClient.create_draft() requires a live jmapc session — "
             "not implemented yet, see docs/ROADMAP.md M3"
@@ -434,6 +523,7 @@ class JmapClient:
         §9.5, M10) — the write side, alongside `apply_action()`/
         `create_draft()`, both also blocked on write-scoped credentials
         the maintainer's live (read-only) account doesn't have."""
+        self._require_write_access()
         raise NotImplementedError(
             "JmapClient.apply_keywords() requires a live jmapc session with "
             "write access — not implemented yet, see docs/ROADMAP.md M10"

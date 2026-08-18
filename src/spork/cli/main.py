@@ -21,6 +21,7 @@ from spork.cli.commands.install_service import install_service_command
 from spork.cli.commands.logs import logs
 from spork.cli.commands.pause import pause, resume
 from spork.cli.commands.reclassify import reclassify
+from spork.cli.commands.report import report
 from spork.cli.commands.rules import app as rules_app
 from spork.cli.commands.secrets import app as secrets_app
 from spork.cli.commands.status import status
@@ -42,6 +43,7 @@ app.command("pause")(pause)
 app.command("resume")(resume)
 app.command("logs")(logs)
 app.command("reclassify")(reclassify)
+app.command("report")(report)
 app.command("backfill")(backfill)
 app.command("install-service")(install_service_command)
 
