@@ -54,9 +54,9 @@ enforcement + `llm_usage` tracking (`StateDB` extended,
 `spork.core.llm.budget`); `RecordedLLMClient` (`spork.core.llm.clients.recorded`)
 — the `LLMClient` equivalent of `FileProvider`, a second fully real
 adapter for CI/offline use; and the draft creation path
-(`Provider.build_draft_creator()`, a `JmapClient.create_draft()`
-settled-shape stub, a real `FileProvider` implementation). **M3 is
-7/7** — see the milestone table below for the same "done in the same
+(`Provider.build_draft_creator()`, a guarded JMAP `Email/set` implementation
+with retry-safe Drafts creation, and a real `FileProvider` implementation).
+**M3 is 7/7** — see the milestone table below for the same "done in the same
 sense JmapProvider was" caveat that applies to every item touching a
 live account. Two real gaps were found and fixed along the way (not
 just documented): `StateDB.record_llm_call()` had no guard against
@@ -358,7 +358,7 @@ Updated once more for the read-only deployment slice: JMAP Session Object
 core/mail capability checks, default read-only mutation guardrails, and the
 bounded `spork report` command/action plan, isolated observer-mode execution,
 and the classification decision model are covered by the daemon/configuration
-tests. **The full suite is now 1003 tests,
+tests. **The full suite is now 1013 tests,
 all green.** The live report was verified against the
 configured account with 25 messages: zero Tier 2 calls, zero mailbox
 mutations, and zero messages marked processed.
@@ -5064,3 +5064,28 @@ doc's stable-numbering convention.
 
 932. **`test_report.py::test_report_rejects_an_unwritable_action_plan_without_traceback`**
       An invalid action-plan destination produces a clean CLI error.
+
+### tests/core/providers/jmap — guarded live writes
+
+933. **`test_client.py::test_apply_action_moves_message_with_email_state_guard`**
+      A move resolves the target mailbox and sends an `Email/set` update with
+      the current `ifInState` value.
+
+934. **`test_client.py::test_apply_action_tags_without_removing_existing_mailboxes`**
+      A tag adds mailbox membership without removing the message's existing
+      mailboxes.
+
+935. **`test_client.py::test_apply_keywords_merges_existing_keyword_flags`**
+      Keyword updates preserve existing JMAP flags and add only requested
+      keywords.
+
+936. **`test_client.py::test_create_draft_uses_drafts_mailbox_and_reply_headers`**
+      Draft creation uses the Drafts role mailbox, `$draft`, body values, and
+      reply-threading headers without an EmailSubmission call.
+
+937. **`test_client.py::test_create_draft_is_a_noop_when_the_thread_already_has_a_matching_draft`**
+      A retry finds an existing matching Drafts message and performs no create.
+
+938. **`test_client.py::test_apply_keywords_requires_email_set_to_acknowledge_the_update`**
+      A missing `Email/set` acknowledgement raises the single JMAP boundary
+      error instead of reporting success.

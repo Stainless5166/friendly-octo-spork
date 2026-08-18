@@ -3605,11 +3605,9 @@ generic caller should know how to do itself.
 - **The Adapter: `JmapProvider`.** Wraps `JmapClient` +
   `JmapPushTrigger` (§8) into a `Source` via the existing
   `TriggeredSource` (§9.2) for `build_source()`, and wraps
-  `JmapClient.apply_action()` (one of seven `NotImplementedError` stubs
-  alongside `connect()`/`fetch_new_messages()`/`create_draft()`/
-  `get_thread_context()`/`list_mailboxes()`/`get_message()`, same
-  reason — a live session is real-network work) for
+  `JmapClient`'s guarded write methods for
   `build_action_applier()`/`build_draft_creator()`/
+  `build_keyword_applier()`, alongside its read methods
   `build_thread_history_reader()`/`build_mailbox_lister()`/
   `build_message_lookup()`. `JmapProvider` doesn't reimplement
   fetch/push/mutate logic, it composes pieces that already exist into
@@ -4388,15 +4386,12 @@ on the same `Provider` contract every backend already adapts to — a
 verdict's draft doesn't need a parallel abstraction, it needs one more
 method on the one that already exists.
 
-- **`JmapClient.create_draft()` is a fourth settled-shape stub**,
-  alongside `connect()`/`fetch_new_messages()`/`apply_action()`:
-  creating a real draft means a real `Email/set` call against a live
-  Fastmail session, which this environment can't exercise honestly.
-  Signature settled now (`create_draft(message, body) -> None`),
-  raises `NotImplementedError` pointing at `docs/ROADMAP.md`'s M3 in
-  the meantime. `_JmapDraftCreator` (in `spork.core.providers.jmap.provider`,
-  alongside `_JmapContentFetcher`/`_JmapActionApplier`) is a pure
-  delegation to it, same shape as the other two.
+- **`JmapClient.create_draft()` is a guarded `Email/set` implementation**:
+  it resolves the Drafts role mailbox, checks for an existing matching
+  `In-Reply-To`, reads the current Email state, and creates a threaded
+  `$draft` only when no prior draft exists. `_JmapDraftCreator` (in
+  `spork.core.providers.jmap.provider`, alongside
+  `_JmapContentFetcher`/`_JmapActionApplier`) remains a pure delegation.
 - **`FileProvider.build_draft_creator()` is real**, same reasoning as
   its `build_action_applier()`: `_FileDraftCreator` appends every
   created draft to a second JSON-lines log (`drafts_log_path`,
