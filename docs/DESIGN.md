@@ -3267,7 +3267,10 @@ reach, never an error, since the file write itself already succeeded.
   unrelated keywords. A draft uses a stable client-create key for one
   request, the Drafts role mailbox, the `$draft` keyword, the original
   sender as recipient, and `In-Reply-To`/`References` values from the
-  source message. `JmapError` remains the only provider-boundary error.
+  source message. Before creation, Spork queries Drafts for an existing
+  `$draft` with the same `In-Reply-To`; this makes a retry after an
+  ambiguous network result a no-op rather than a duplicate draft.
+  `JmapError` remains the only provider-boundary error.
 - **Sieve (Tier 0):** for the genuinely deterministic cases (known
   mailing lists, obvious auto-filing), push a Sieve script server-side
   via the Sieve JMAP extension (RFC 9661) / ManageSieve, so those
