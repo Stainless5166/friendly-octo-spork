@@ -393,12 +393,9 @@ drives an action.
       way `confidence_band()` is decoupled from `Verdict`.
 - [x] Draft creation path (`Email/set` into Drafts, never `EmailSubmission`) (M) —
       `Provider` gains `build_draft_creator()` (§9.3, §10.6); `JmapClient.create_draft()`
-      is a fourth settled-shape `NotImplementedError` stub (needs a
-      live Fastmail write contract, unlike the now-real read-only
-      `connect()`/`fetch_new_messages()` path); `FileProvider.build_draft_creator()` is real,
-      appending to a second JSON-lines log distinct from the actions
-      one. Never wired to `EmailSubmission` anywhere — §11's invariant
-      enforced by omission.
+       now builds a guarded `Email/set` draft with the Drafts role mailbox,
+       `$draft`, reply threading headers, and no `EmailSubmission/set` path;
+       `FileProvider.build_draft_creator()` remains a real offline recorder.
 - [x] Recorded-response fixtures for CI (no live API calls in tests) (M) —
       `spork.core.llm.clients.recorded.RecordedLLMClient` (§10.5): the
       `LLMClient` equivalent of `FileProvider` — a second, fully real
@@ -439,15 +436,12 @@ drives an action.
       since it's the integration work those items existed to enable.
 
 **Exit criteria:** an escalated test email gets a sane structured verdict,
-the corresponding action is applied, and a drafted reply lands in Drafts
-un-sent. Budget cutoff verified by lowering `daily_call_budget` to 1 in a
-test run. **All 7 original items above, plus the Tier 2 pipeline wiring,
-are done in the same sense M1's JMAP work is "done"; the LiteLLM
-integration follow-up is now done too.** The exit
-criterion is still **not yet met** as an
-end-to-end exit criterion, still blocked on the Fastmail write path
-(`JmapClient.apply_action()`/`create_draft()`) plus a live model API session through
-`LiteLLMClient` to swap in for `RecordedLLMClient`.
+      the corresponding action is applied, and a drafted reply lands in Drafts
+      un-sent. Budget cutoff verified by lowering `daily_call_budget` to 1 in a
+      test run. **The guarded JMAP write path is now implemented and covered
+      by injected request-contract tests; the end-to-end exit criterion remains
+      open until it is verified against the dedicated test account and a live
+      model provider is explicitly approved and configured.**
 One piece is deliberately still unbuilt even with those two live
   sessions: deciding *which* escalated message needs a Tier 2 run remains
   real `sporkd` main-loop work (M5). Tier 1 now leaves escalations pending
@@ -1088,14 +1082,10 @@ real account on every test run.
       (S). **Not done via `spork backfill` itself** — the corpus
       already has 13 entries (M1c item 4) from hand-sent tagged
       samples, not a `spork backfill` run, because `spork backfill`
-      against the real account would hit
-      `JmapClient.apply_action()`/`create_draft()`'s still-`NotImplementedError`
-      write-side stubs the moment any rule resolves to anything but
-      `ignore` — safe (a clean crash, not a mutation, since the JMAP
-      key is read-only anyway), but not something to run live
-      un-gated. A real `spork backfill` corpus-growth run needs either
-      an all-`ignore` rules file or the write-side JMAP stubs resolved
-      first.
+       against the real account must now use an explicitly write-enabled
+       test configuration and a reviewed rules allowlist. The guarded JMAP
+       write path is implemented, but corpus growth remains a live-account
+       acceptance step, not a CI fixture shortcut.
 
 - [x] Read-only report mode (M) — `spork report` evaluates a bounded sample
       that fetches a bounded 25–50 message sample and evaluates rules without Tier 2,
@@ -1106,14 +1096,15 @@ real account on every test run.
       selected actions without executing them. `--observe` on `sporkd` is not this mode because it still writes
       local audit entries. The command caps `--limit`/`--page-size` at 50 and
       never constructs Tier 2, alerter, action, or StateDB components.
-- [x] Enforce JMAP Session Object read capabilities (M) — authenticated
+- [x] Enforce JMAP Session Object read/write capabilities (M) — authenticated
       session discovery now requires core/mail capabilities, a selected
       primary mail account, and account-level mail capability data where the
       client library exposes it. The client defaults to read-only; an
       explicit `allow_writes` request is rejected for accounts marked
       read-only or lacking affirmative write metadata. Submission capability
-      is not needed because Spork must never send mail. Full JMAP write
-       implementation remains deferred.
+       is not needed because Spork must never send mail. `Email/set` mailbox,
+       keyword, and Drafts operations are now guarded by this capability and
+       an explicit `allow_writes` configuration flag.
 - [x] Company-mail observer safety gate (M) — `sporkd --observe` uses an
       isolated state snapshot, never constructs Tier 2, never persists its
       cursor or audit entries to production state, and preserves the
@@ -1335,10 +1326,9 @@ learned cache, rather than inventing a second static-seed-file format
 
 **Current status:** fully done — every checklist item above, including
 the runtime-wiring follow-up, is real, tested, and wired end to end. No
-`NotImplementedError` stubs remain in `spork.core.receipts.*` (the only
-remaining `NotImplementedError`s are `JmapClient.fetch_attachments()`/
-`apply_keywords()`, the honest live-account-blocked leaves every other
-JMAP write/unbuilt-read path already has). `docs/acceptance/m10_receipt_archiving.feature`
+`NotImplementedError` stubs remain in `spork.core.receipts.*`; the remaining
+JMAP provider gap is attachment fetching, while mailbox, keyword, and draft
+writes now use guarded `Email/set` requests. `docs/acceptance/m10_receipt_archiving.feature`
 and its four sub-module companions (`m10a`/`m10b`/`m10c`/`m10d`, 22
 scenarios total) are fully bound and pass on every `uv run behave`.
 `sporkd` itself now builds `ReceiptArchiveComponents` from
@@ -1377,7 +1367,9 @@ choosing one mailbox and any number of additive tags.
       and an offline labeled-corpus evaluation harness
       (`scripts/evaluate_keyword_corpus.py`).
 - [ ] Wire composite mailbox-plus-tags decisions into live provider actions;
-      report planning remains the only enabled path for this model.
+      the underlying JMAP mailbox/keyword write primitives are now real, but
+      report planning remains the only enabled path for composite decisions
+      until action orchestration and test-account rollout are complete.
 
 The current implementation is deliberately report-first. Existing
 single-action daemon execution remains unchanged until provider semantics for

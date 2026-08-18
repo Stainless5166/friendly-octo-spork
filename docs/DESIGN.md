@@ -5238,9 +5238,12 @@ under Spork:
   content must not be sent to Anthropic until the privacy, contract, data
   retention, redaction, and model-endpoint requirements are explicitly
   approved.
-- JMAP writes remain disabled until `Email/set`, draft creation, keyword
-  updates, and their failure/idempotency behavior are implemented and tested
-  behind an explicit write-capable configuration.
+- JMAP writes remain disabled in normal deployments until the operator has
+  explicitly enabled `allow_writes`, verified the dedicated test account,
+  and reviewed the narrow rules allowlist. The implementation uses guarded
+  `Email/set` mailbox, keyword, and Drafts operations with failure and
+  idempotency contract tests; production enablement is still an operational
+  approval, not a configuration default.
 
 `sporkd --observe` suppresses mailbox mutations and runs against a temporary
 copy of local state, so its cursor, processed marks, and audit entries are not

@@ -1,5 +1,11 @@
 # Test Suite Inventory & Milestone Coverage
 
+**Current write-path update:** `JmapClient` now implements guarded
+`Email/set` mailbox moves/tags, keyword updates, and Drafts creation. The
+provider still defaults to read-only; write behavior is covered with
+injected JMAP-shaped request/response tests, while dedicated test-account
+verification remains a manual acceptance step.
+
 **Status:** snapshot as of the deployment-hardening work following M6,
 updated to add xfail coverage for two known M0 gaps, then updated again
 to cover most of M1's remainder (state DB, poll fallback, and settled-
@@ -524,7 +530,7 @@ backfill-driven volume remains M8's job, not this milestone's.
 |---|---|---|
 | Rule schema + `rules.toml` loader/validator | ✅ | ✅ — schema: engine tests (27–35) + `extra="forbid"` edge cases (96, 97) / loader: tests 90–97 (8 tests) |
 | Tier 1 evaluator | ✅ | ✅ — tests 27–35 (9 tests) |
-| Action executor | ✅ (`ActionApplier`-agnostic, real backend still `NotImplementedError`-stubbed per M1) | ✅ — tests 107–113 (7 tests) |
+| Action executor | ✅ (`ActionApplier`-agnostic; JMAP write primitives are now implemented behind `allow_writes`) | ✅ — tests 107–113 (7 tests) |
 | `processed_messages` idempotency | ✅ — wired into `process_message()` | ✅ — tests 114–121 (8 tests) |
 | `audit_log` writes | ✅ | ✅ — tests 98–103 (6 tests) |
 | `spork rules test` dry-run | ✅ (loading+errors real; live-fetch step `NotImplementedError`, M1) | ✅ — tests 139–146 (8 tests) |
@@ -598,9 +604,10 @@ budget/draft items depend on `StateDB`/`Provider`, both fully testable
 without a network call, and `RecordedLLMClient`'s whole point is *not*
 needing one. **M3 is 8/8**: everything buildable without a live
 Fastmail/model-provider session is real and tested; the genuinely-blocked pieces
-(`JmapClient.connect()`/`fetch_new_messages()`/`apply_action()`/
-`create_draft()`) remain settled-shape `NotImplementedError` stubs; the
-live LLM adapter itself is no longer one.
+(`JmapClient.connect()`/`fetch_new_messages()` are real, and guarded
+`apply_action()`/`create_draft()`/`apply_keywords()` now have request-contract
+coverage); the live LLM adapter itself is no longer one. Dedicated account
+verification remains outside the offline suite.
 
 **Also done (not a new checklist item):**
 `spork.core.pipeline.tier2` (docs/DESIGN.md §10.7, tests 262–298)
@@ -958,7 +965,7 @@ independently on `main` first (see docs/ROADMAP.md M10's own note).
 | Checklist item | Implemented | Tested |
 |---|---|---|
 | `Provider.build_attachment_fetcher()` | ✅ (`FileProvider` real; `JmapProvider` a settled-shape `NotImplementedError`, out of scope not live-blocked) | ✅ — tests 879–886, 891–892 |
-| `Provider.build_keyword_applier()` | ✅ (`FileProvider` real; `JmapProvider` a settled-shape `NotImplementedError`, genuinely write-blocked) | ✅ — tests 885, 887, 893–894 |
+| `Provider.build_keyword_applier()` | ✅ (`FileProvider` recorder and guarded JMAP `Email/set` implementation) | ✅ — tests 885, 887, 893–894 plus JMAP write contract tests |
 | `spork.core.receipts.registry` (`StateDB.known_receipt_senders` + `normalize_sender_domain()`) | ✅ | ✅ — tests 856–864 |
 | `spork.core.receipts.extract` (deterministic path) | ✅ | ✅ — tests 865–871 |
 | `spork.core.receipts.llm.ReceiptExtractionClient`/`RecordedReceiptExtractionClient` | ✅ | ✅ — tests 872–878 |
@@ -969,6 +976,16 @@ independently on `main` first (see docs/ROADMAP.md M10's own note).
 | Pipeline wiring (`ArchiveReceiptAugment` + `build_default_pipeline()`/`process_message()`, `dry_run`) | ✅ | ✅ — tests 897–900, 904–905, 920–921 |
 | `docs/acceptance/m10_receipt_archiving.feature` bound for real | ✅ | ✅ — 7 scenarios, fully passing; plus 15 more across `m10a`/`m10b`/`m10c`/`m10d` (22 total) |
 | **Runtime wiring** (`spork.core.receipts.loader` + `spork.core.runtime.build_receipt_archive_components()` + `run_daemon()`/`_run_message_loop()`) | ✅ | ✅ — tests 907–913 (loader), 915–919 (runtime composition, including the real M9/M10 `EntityContextProvider` synergy), 922–923 (`run_daemon()` end to end, including `--observe`) |
+
+### Live JMAP writes
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| Guarded mailbox move/tag via `Email/set` | ✅ | ✅ — `tests/core/providers/jmap/test_client.py` |
+| Additive keyword updates via `Email/set` | ✅ | ✅ — request-shape and acknowledgement tests |
+| Threaded Drafts creation via `Email/set` | ✅ | ✅ — Drafts-role, `$draft`, body, and reply-header tests |
+| Concurrent-state and server-acknowledgement failures | ✅ | ✅ — fail-closed edge cases |
+| Dedicated Fastmail test-account acceptance | — | pending manual verification |
 
 `sporkd` now builds `ReceiptArchiveComponents` from
 `[receipt_archive]`/`[context]` config at startup and actually uses

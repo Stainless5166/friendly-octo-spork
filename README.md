@@ -108,6 +108,18 @@ you end up with `sporkd` running as a systemd **user** service.
    Edit `~/.config/spork/rules.toml` before enabling triage. Paths in
    `config.toml` are absolute; TOML does not expand `~`.
 
+   The provider is read-only by default. For a dedicated test account only,
+   add this under `[provider.kwargs]` after confirming the token has mail
+   modify access:
+
+   ```toml
+   allow_writes = true
+   ```
+
+   Do not enable this on a personal or company account until the bounded
+   report and action plan have been reviewed. Spork never enables writes by
+   default and never calls `EmailSubmission/set`.
+
    For the older offline FileProvider setup, write the following instead:
 
    ```console
