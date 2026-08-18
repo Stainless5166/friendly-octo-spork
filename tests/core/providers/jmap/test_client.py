@@ -23,7 +23,7 @@ class _FakeJmapcClient:
     account_id = "account-1"
 
     def __init__(self, responses: list[object]) -> None:
-        self.jmap_session = _Response(api_url="https://api.example.test/jmap")
+        self.jmap_session = _session()
         self._responses = responses
         self.requests: list[object] = []
 
@@ -33,6 +33,30 @@ class _FakeJmapcClient:
         if isinstance(response, Exception):
             raise response
         return response
+
+
+def _session(
+    *,
+    capabilities: dict[str, object] | None = None,
+    account_capabilities: dict[str, object] | None = None,
+    is_read_only: bool = False,
+) -> _Response:
+    """Build the authenticated Session Object shape the provider requires."""
+    return _Response(
+        api_url="https://api.example.test/jmap",
+        capabilities=capabilities
+        or {
+            "urn:ietf:params:jmap:core": {},
+            "urn:ietf:params:jmap:mail": {},
+        },
+        accounts={
+            "account-1": _Response(
+                account_capabilities=account_capabilities or {"urn:ietf:params:jmap:mail": {}},
+                is_read_only=is_read_only,
+            )
+        },
+        primary_accounts={"urn:ietf:params:jmap:mail": "account-1"},
+    )
 
 
 def _mailbox_response() -> _Response:
@@ -164,21 +188,46 @@ def test_session_and_request_failures_share_one_jmap_error_boundary() -> None:
         client.connect()
 
 
-def test_apply_action_raises_not_implemented(make_message) -> None:
-    """apply_action() would mutate the mailbox via Email/set against a
-    live session (docs/DESIGN.md §9.3) — not built yet."""
+def test_connect_requires_core_and_mail_session_capabilities() -> None:
+    backend = _FakeJmapcClient([_mailbox_response()])
+    backend.jmap_session = _session(capabilities={"urn:ietf:params:jmap:core": {}})
+    client = JmapClient(
+        host="api.fastmail.com",
+        api_token="fake-token",
+        client_factory=lambda host, token: backend,
+    )
+
+    with pytest.raises(JmapError, match="mail capability"):
+        client.connect()
+
+
+def test_write_access_requires_an_explicitly_writeable_account() -> None:
+    backend = _FakeJmapcClient([_mailbox_response()])
+    backend.jmap_session = _session(is_read_only=True)
+    client = JmapClient(
+        host="api.fastmail.com",
+        api_token="fake-token",
+        allow_writes=True,
+        client_factory=lambda host, token: backend,
+    )
+
+    with pytest.raises(JmapError, match="read-only"):
+        client.connect()
+
+
+def test_apply_action_is_blocked_for_the_default_read_only_client(make_message) -> None:
+    """The default client cannot reach the future Email/set implementation."""
     client = JmapClient(host="api.fastmail.com", api_token="fake-token")
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(JmapError, match="read-only"):
         client.apply_action(make_message(), Action(type="move", mailbox="Reading"))
 
 
-def test_create_draft_raises_not_implemented(make_message) -> None:
-    """create_draft() would create a draft via Email/set into Drafts
-    against a live session (docs/DESIGN.md §10.6) — not built yet."""
+def test_create_draft_is_blocked_for_the_default_read_only_client(make_message) -> None:
+    """The default client cannot reach the future Drafts Email/set path."""
     client = JmapClient(host="api.fastmail.com", api_token="fake-token")
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(JmapError, match="read-only"):
         client.create_draft(make_message(), "Friday 2pm works for me.")
 
 
@@ -254,10 +303,9 @@ def test_fetch_attachments_raises_not_implemented(make_message) -> None:
         client.fetch_attachments(make_message())
 
 
-def test_apply_keywords_raises_not_implemented(make_message) -> None:
-    """apply_keywords() would mutate the keywords map via Email/set
-    against a live session (docs/DESIGN.md §9.5, M10) -- not built yet."""
+def test_apply_keywords_is_blocked_for_the_default_read_only_client(make_message) -> None:
+    """The default client cannot reach the future keyword Email/set path."""
     client = JmapClient(host="api.fastmail.com", api_token="fake-token")
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(JmapError, match="read-only"):
         client.apply_keywords(make_message(), ["receipt"])

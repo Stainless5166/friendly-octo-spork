@@ -19,7 +19,20 @@ class _FakeClient:
     account_id = "account-1"
 
     def __init__(self, responses: list[object]) -> None:
-        self.jmap_session = _Response(api_url="https://api.example.test/jmap")
+        self.jmap_session = _Response(
+            api_url="https://api.example.test/jmap",
+            capabilities={
+                "urn:ietf:params:jmap:core": {},
+                "urn:ietf:params:jmap:mail": {},
+            },
+            accounts={
+                "account-1": _Response(
+                    account_capabilities={"urn:ietf:params:jmap:mail": {}},
+                    is_read_only=False,
+                )
+            },
+            primary_accounts={"urn:ietf:params:jmap:mail": "account-1"},
+        )
         self.responses = responses
         self.requests: list[object] = []
         self._events: Iterable[object] = ()

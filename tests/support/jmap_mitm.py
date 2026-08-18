@@ -111,7 +111,8 @@ class _FaultState:
                     max_objects_in_get=500,
                     max_objects_in_set=500,
                     collation_algorithms={"i;ascii-casemap"},
-                )
+                ),
+                extensions={"urn:ietf:params:jmap:mail": {}},
             ),
         )
         return session.to_dict()

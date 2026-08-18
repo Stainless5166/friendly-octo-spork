@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from spork.core.providers.base import ThreadContext
-from spork.core.providers.jmap.client import JmapClient, JmapFetchResult
+from spork.core.providers.jmap.client import JmapClient, JmapError, JmapFetchResult
 from spork.core.providers.jmap.provider import (
     JmapProvider,
     _JmapActionApplier,
@@ -128,7 +128,7 @@ def test_build_action_applier_returns_something_that_can_apply(make_message) -> 
 
     applier = provider.build_action_applier()
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(JmapError, match="read-only"):
         applier.apply(make_message(), Action(type="move", mailbox="Reading"))
 
 
@@ -139,7 +139,7 @@ def test_action_applier_delegates_to_the_client_directly(make_message) -> None:
     client = JmapClient(host="api.fastmail.com", api_token="fake-token")
     applier = _JmapActionApplier(client)
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(JmapError, match="read-only"):
         applier.apply(make_message(), Action(type="tag", mailbox="Urgent"))
 
 
@@ -151,7 +151,7 @@ def test_build_draft_creator_returns_something_that_can_create_a_draft(make_mess
 
     draft_creator = provider.build_draft_creator()
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(JmapError, match="read-only"):
         draft_creator.create_draft(make_message(), "Friday 2pm works for me.")
 
 
@@ -162,7 +162,7 @@ def test_draft_creator_delegates_to_the_client_directly(make_message) -> None:
     client = JmapClient(host="api.fastmail.com", api_token="fake-token")
     draft_creator = _JmapDraftCreator(client)
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(JmapError, match="read-only"):
         draft_creator.create_draft(make_message(), "Friday 2pm works for me.")
 
 
@@ -283,7 +283,7 @@ def test_build_keyword_applier_returns_something_that_propagates_not_implemented
 
     applier = provider.build_keyword_applier()
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(JmapError, match="read-only"):
         applier.apply_keywords(make_message(), ["receipt"])
 
 
@@ -294,5 +294,5 @@ def test_keyword_applier_delegates_to_the_client_directly(make_message) -> None:
     client = JmapClient(host="api.fastmail.com", api_token="fake-token")
     applier = _JmapKeywordApplier(client)
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(JmapError, match="read-only"):
         applier.apply_keywords(make_message(), ["receipt"])
