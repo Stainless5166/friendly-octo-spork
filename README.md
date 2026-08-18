@@ -48,6 +48,14 @@ you end up with `sporkd` running as a systemd **user** service.
 > enabled, and reports healthy" is genuinely demonstrable without a
 > live account.
 
+> **Company-mail safety gate:** the current JMAP token is expected to be
+> read-only by operator configuration, but Spork does not yet verify JMAP
+> Session Object capabilities. Do not run `spork backfill` against company
+> mail yet: it uses the normal action/Tier 2 pipeline. Use `spork report
+> --limit 25` first; it writes only aggregate metadata to an isolated output
+> path. External LLM processing and JMAP
+> writes require separate approval and are not enabled by this documentation.
+
 1. **Clone and install dependencies.**
 
    ```console

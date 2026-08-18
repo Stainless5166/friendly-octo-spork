@@ -5174,6 +5174,50 @@ WantedBy=default.target
 - No outbound send capability at all in v1 — removes an entire class of
   "LLM did something embarrassing to a real recipient" risk.
 
+### 15.1 Company-mail deployment gate
+
+The current implementation is not approved for unattended company-mail
+triage. The following controls are required before a real mailbox is placed
+under Spork:
+
+- The deployment uses a Fastmail API token that the operator has explicitly
+  confirmed is read-only. Spork must verify this against the authenticated
+  JMAP Session Object, normally fetched from `/.well-known/jmap` or the
+  provider's equivalent session endpoint. The response's `capabilities`,
+  `primaryAccounts`, and `accounts` data identify the account and the
+  available read/set permissions; environment-variable presence alone is
+  not evidence of a read-only token.
+- Read-only operation requires the JMAP core capability and the mail
+  capability (`urn:ietf:params:jmap:core` and
+  `urn:ietf:params:jmap:mail`) for the selected account. Mailbox/email
+  reads use the read-side session capability.
+- Mailbox mutations, drafts, and keyword changes require an explicit mail
+  `set` capability check for the selected account. A missing or ambiguous
+  capability must fail closed. Submission capability
+  (`urn:ietf:params:jmap:submission`) is not required because Spork must
+  never send mail.
+- Initial evaluation uses a bounded, read-only report over 25–50 messages,
+  with an isolated state database. The report must not apply mailbox actions,
+  invoke Tier 2, mark messages processed, or alter the production audit
+  trail.
+- Rules start as a narrow allowlist and unmatched mail defaults to ignore or
+  local review. A disabled or empty rule set must not turn every message into
+  an escalation.
+- External LLM processing is a deployment decision still under review. Email
+  content must not be sent to Anthropic until the privacy, contract, data
+  retention, redaction, and model-endpoint requirements are explicitly
+  approved.
+- JMAP writes remain disabled until `Email/set`, draft creation, keyword
+  updates, and their failure/idempotency behavior are implemented and tested
+  behind an explicit write-capable configuration.
+
+`sporkd --observe` currently suppresses mailbox mutations but still evaluates
+messages and writes local audit entries. It is therefore a connectivity/debug
+mode, not the approved company-mail report mode. `spork report` is the
+separate bounded report path: it uses no `StateDB`, LLM client, alerter, or
+action executor and writes only aggregate metadata to an explicitly chosen
+output path.
+
 ## 16. Testing strategy
 
 - **Unit:** rule engine (condition matching), verdict schema validation,
