@@ -393,6 +393,7 @@ def test_create_draft_uses_drafts_mailbox_and_reply_headers(make_message) -> Non
     backend = _FakeJmapcClient(
         [
             _mailbox_response(),
+            _Response(ids=[]),
             _Response(state="email-state-1", data=[_email("msg-1")]),
             _Response(created={"draft-msg-1": _Response(id="draft-id")}),
         ]
@@ -422,6 +423,36 @@ def test_create_draft_uses_drafts_mailbox_and_reply_headers(make_message) -> Non
     assert draft.subject == "Re: Question"
     assert draft.in_reply_to == ["<msg-1@example.com>"]
     assert draft.body_values["body"].value == "A reply."
+
+
+def test_create_draft_is_a_noop_when_the_thread_already_has_a_matching_draft(
+    make_message,
+) -> None:
+    backend = _FakeJmapcClient(
+        [
+            _mailbox_response(),
+            _Response(ids=["draft-existing"]),
+        ]
+    )
+    client = JmapClient(
+        host="api.fastmail.com",
+        api_token="fake-token",
+        allow_writes=True,
+        client_factory=lambda host, token: backend,
+    )
+
+    client.create_draft(
+        make_message(
+            message_id="msg-1",
+            headers={"Message-ID": "<msg-1@example.com>"},
+        ),
+        "A reply.",
+    )
+
+    assert [type(request).__name__ for request in backend.requests] == [
+        "MailboxGet",
+        "EmailQuery",
+    ]
 
 
 def test_apply_action_rejects_an_unknown_mailbox_without_mutating(make_message) -> None:
