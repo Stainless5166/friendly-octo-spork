@@ -2,12 +2,10 @@
 # milestone-scoped specs elsewhere in this directory, this feature has
 # no live Fastmail or LLM account dependency at all — EntityContextProvider
 # is a self-contained, JSON-fixture-backed lookup subsystem
-# (docs/DESIGN.md §10.8, docs/ROADMAP.md M9). Step bindings are not
-# yet written (docs/acceptance/README.md's "bindings added milestone
-# by milestone" convention) — the behavior described here is covered
-# directly by the pytest suite in
-# tests/core/context/clients/entities/, following this project's
-# normal TDD convention, not by behave.
+# (docs/DESIGN.md §10.8, docs/ROADMAP.md M9). The Behave bindings use a
+# fresh temporary JSON fixture per scenario; the behavior is also covered
+# directly by the pytest suite in tests/core/context/clients/entities/,
+# following this project's normal TDD convention.
 #
 # This spec covers EntityContextProvider specifically, one of several
 # knowledge base backends the ContextProvider seam is meant to hold

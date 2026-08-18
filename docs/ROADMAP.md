@@ -310,6 +310,10 @@ involved yet.
 - [x] Unit tests: condition matching, idempotency (M) — dry-run output
       still pending the JMAP fetch above
 
+  Offline acceptance for deterministic rule selection and retry safety is
+  also bound and passing in `docs/acceptance/m2_local.feature`; it does not
+  replace the live `spork rules test`/JMAP evidence above.
+
 **Exit criteria:** a hand-written `rules.toml` with 3–4 real rules
 correctly files live test mail with no LLM calls; `spork rules test`
 matches what actually happens when the rule goes live. **Not yet
@@ -451,6 +455,10 @@ One piece is deliberately still unbuilt even with those two live
   be retried; the scheduling decision still needs a live JMAP session and
   is not invented here to appear more done than it is.
 
+Offline acceptance for confidence, budget, draft safety, and fail-closed
+verdict handling is bound and passing in `docs/acceptance/m3_local.feature`;
+it does not claim live model or JMAP write evidence.
+
 ## M4 — Alerting
 
 **Goal:** the human actually finds out about Tier 3 / urgent mail without
@@ -552,6 +560,10 @@ Configuring `[alerts] spec =
 "spork.core.alerts.desktop:DesktopAlerter"` on the maintainer's own
 machine and confirming a real popup appears is the actual remaining
 step, not further code.
+
+Offline acceptance for VIP/Tier 2 alert policy and DBus fallback is bound and
+passing in `docs/acceptance/m4_local.feature`; prolonged push-health alerting
+remains intentionally live because its signal depends on a real EventSource.
 
 ## M5 — CLI + daemon control surface
 
@@ -696,6 +708,10 @@ a daemon restart; a value in `/etc/spork/enforced.toml` can't be
 overridden by a user's own `config.toml`, verified by a test that
 tries.
 
+Local acceptance coverage for the Unix-socket control surface is bound and
+passing in `docs/acceptance/m5_local.feature`; real JMAP ingestion and live
+daemon evidence remain part of the exit criterion.
+
 ## M6 — systemd packaging + install flow
 
 **Goal:** a new user can go from clone to "running at every login" in a
@@ -789,6 +805,11 @@ own scope (the unit file, `sd_notify`, the install flow, `spork
 doctor`'s checks, the package) is real; "running healthy against a
 real account" was never this milestone's blocker to unblock — it's
 M1's, same as `spork rules test`'s live-fetch gap always was.
+
+Offline acceptance for unit contents, installation subprocess calls, doctor
+failure isolation, and `sd_notify` is bound and passing in
+`docs/acceptance/m6_local.feature`; real user-manager lifecycle evidence
+remains in `m6_systemd.feature`.
 
 ## M7 — Hardening & v1 release
 
