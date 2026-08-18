@@ -1102,7 +1102,8 @@ real account on every test run.
       mailbox actions, message-processing marks, or production audit writes,
       mailbox actions, message-processing marks, or production audit writes,
       and stores only aggregate metadata in an explicitly selected output
-      path. `--observe` on `sporkd` is not this mode because it still writes
+      path. `--actions-out` additionally writes a sanitized JSONL plan of the
+      selected actions without executing them. `--observe` on `sporkd` is not this mode because it still writes
       local audit entries. The command caps `--limit`/`--page-size` at 50 and
       never constructs Tier 2, alerter, action, or StateDB components.
 - [x] Enforce JMAP Session Object read capabilities (M) — authenticated
@@ -1112,7 +1113,11 @@ real account on every test run.
       explicit `allow_writes` request is rejected for accounts marked
       read-only or lacking affirmative write metadata. Submission capability
       is not needed because Spork must never send mail. Full JMAP write
-      implementation remains deferred.
+       implementation remains deferred.
+- [x] Company-mail observer safety gate (M) — `sporkd --observe` uses an
+      isolated state snapshot, never constructs Tier 2, never persists its
+      cursor or audit entries to production state, and preserves the
+      read-only receipt route without mailbox or filesystem mutations.
 
 **Exit criteria:** a backfill run categorizes a large recorded sample
 of the maintainer's real Inbox end-to-end through the same Tier 1/
@@ -1355,7 +1360,31 @@ retryable. **Fully met** — every clause above is proven by
 `m10_receipt_archiving.feature`'s 7 scenarios against the real
 pipeline, *and* by `tests/daemon/test_loop.py`'s two new tests against
 the real `run_daemon()` asyncio loop with real runtime-composed
-collaborators, no live account or network anywhere.
+      collaborators, no live account or network anywhere.
+
+## M11 — Classification evidence and action decisions
+
+**Goal:** carry multiple classification signals through the pipeline before
+choosing one mailbox and any number of additive tags.
+
+- [x] Classification evidence model with 0–100 scores, stage thresholds, and
+      merge-by-maximum semantics (`spork.core.classify.decisions`).
+- [x] Decision model selects one highest-scoring eligible mailbox and all
+      eligible tags while retaining the full classification evidence.
+- [x] Wire classifier stages, domain rules, exact duplicate detection, and
+      report action planning to the new composite decision model.
+- [x] Add weighted local keyword evidence, notification header/sender signals,
+      and an offline labeled-corpus evaluation harness
+      (`scripts/evaluate_keyword_corpus.py`).
+- [ ] Wire composite mailbox-plus-tags decisions into live provider actions;
+      report planning remains the only enabled path for this model.
+
+The current implementation is deliberately report-first. Existing
+single-action daemon execution remains unchanged until provider semantics for
+one mailbox plus multiple keyword tags are settled and tested.
+The initial 13-example corpus evaluation is evidence only: primary accuracy is
+23.1% and Notification F1 is 0.33, so no threshold is promoted from this
+small corpus without additional labels.
 
 ## Stretch / post-v1 (not scoped, not blocking)
 

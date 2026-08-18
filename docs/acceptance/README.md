@@ -118,6 +118,8 @@ first — see `docs/ROADMAP.md` M10's own note on the collision.
 | `m10b_receipt_senders.feature` | Known-sender registry + deterministic extraction (`spork.core.receipts.registry`/`extract`) | Fully bound and passing on every run — no live account, no network |
 | `m10c_receipt_extraction_llm.feature` | Recorded Tier 2 receipt-extraction fallback (`spork.core.receipts.llm`) | Fully bound and passing on every run — no live model call |
 | `m10d_receipt_provider_capabilities.feature` | Attachment fetching + keyword tagging as Provider capabilities | Fully bound and passing on every run — no live account, no network |
+| `m8_safety.feature` | Company-mail observer, read-only report/action plan, and production safety gate | Manual evidence specification; observer/report implementation is locally tested, live account approval remains open |
+| `m11_classification.feature` | Classification accumulation and one-mailbox/many-tag decisions | Fully bound and passing locally; live provider execution remains open |
 | `m10_receipt_archiving.feature` | Receipt tagging + combined-PDF archiving, deterministic-first with learned Tier 2 fallback | Fully bound and passing on every run — no live account, no network |
 
 The scenarios are deliberately more demanding than the current automated

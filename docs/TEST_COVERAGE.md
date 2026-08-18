@@ -339,7 +339,7 @@ surfaced (`spork.core.runtime` -> `spork.core.receipts.pipeline` ->
 found and fixed by making that import function-local. **M10 is now
 fully wired end to end; the full suite is 975 tests, all green.** The local
 acceptance conversion adds 18 runnable Behave scenarios; the default
-acceptance run now passes 48 scenarios and skips only the 33 live/manual
+acceptance run now passes 51 scenarios and skips only the 36 live/manual
 scenarios guarded by the acceptance environment.
 Updated once more for local acceptance conversion: M2 deterministic rule
 selection/retry safety, M3 recorded Tier 2 policy safety, M4 alert policy
@@ -350,8 +350,10 @@ corresponding live Fastmail, Anthropic, user-systemd, prolonged-outage, or
 operational-run acceptance specifications.
 Updated once more for the read-only deployment slice: JMAP Session Object
 core/mail capability checks, default read-only mutation guardrails, and the
-bounded `spork report` command are covered by five new tests. **The full
-suite is now 980 tests, all green.** The live report was verified against the
+bounded `spork report` command/action plan, isolated observer-mode execution,
+and the classification decision model are covered by the daemon/configuration
+tests. **The full suite is now 1003 tests,
+all green.** The live report was verified against the
 configured account with 25 messages: zero Tier 2 calls, zero mailbox
 mutations, and zero messages marked processed.
 **Purpose:** (1) a plain-English description of every test currently in
@@ -900,7 +902,7 @@ own `force` default never exercised, and one docstring-documented
 test) — closed with targeted tests, not implementation changes; no
 `src/spork` behavior changed in this pass.
 
-### M8 — Backfill / retroactive categorization — 7/8
+### M8 — Backfill / retroactive categorization — 8/9
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
@@ -910,8 +912,34 @@ test) — closed with targeted tests, not implementation changes; no
 | `StateDB`/`processed_messages` dedup reuse | ✅ (reuses `process_message()`'s existing idempotency gate, no new mechanism) | ✅ — test 758 |
 | Backfill-specific throttle/budget policy | ✅ (`--limit`, default 50) | ✅ — tests 756, 760 |
 | Full backfill run growing the corpus at volume | — | not started — a 13-entry hand-picked seed exists (M1c) via direct SMTP+LLM calls, not a `spork backfill` run; that needs an all-`ignore` rules file or the write-side JMAP stubs resolved first (`apply_action()`/`create_draft()` are still `NotImplementedError`) |
-| Bounded read-only `spork report` | ✅ — no Tier 2, mailbox mutation, processed mark, or `StateDB` write | ✅ — tests 924–926 |
+| Bounded read-only `spork report` and action plan | ✅ — no Tier 2, mailbox mutation, processed mark, or `StateDB` write; optional sanitized JSONL plan | ✅ — tests 924–926, 930–932 |
 | JMAP Session Object capability/read-only guard | ✅ — core/mail read checks and default-disabled writes | ✅ — tests 927–928 plus updated JMAP fixtures |
+| Isolated `sporkd --observe` safety boundary | ✅ — temporary state snapshot, no Tier 2 construction, no production cursor/audit writes | ✅ — daemon observer tests and `m8_safety.feature` |
+
+### M11 — Classification evidence and action decisions — 3/4
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| Classification evidence model and merge-by-maximum | ✅ | ✅ — `tests/core/classify/test_decisions.py` |
+| One-mailbox/many-tag decision policy | ✅ | ✅ — `tests/core/classify/test_decisions.py` |
+| Classifier, duplicate detection, and report wiring | ✅ (report path) | ✅ — report/action-plan tests and `tests/core/classify/test_decisions.py` |
+| Live provider mailbox-plus-tags execution | — | Gherkin specification and report evidence only; live write path remains gated |
+
+### Local classifier evaluation
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| Weighted subject/body keyword scoring | ✅ | ✅ — `tests/core/classify/test_keyword.py` |
+| Notification sender/header metadata signals | ✅ | ✅ — `tests/core/classify/test_keyword.py` |
+| Labeled private-corpus metrics harness | ✅ | ✅ — `tests/core/classify/test_evaluation.py`; manually run with `scripts/evaluate_keyword_corpus.py` |
+
+### Standalone Ollama benchmark
+
+The non-production `scripts/ollama_classification_benchmark.py` compares
+local models through LiteLLM with JSON mode, per-call latency/token logging,
+and Ollama `/api/ps` VRAM snapshots. Its six parser/record-boundary tests are
+in `tests/core/llm/test_ollama_benchmark.py`; benchmark output is private and
+stored outside the repository's tracked source tree.
 
 ### M9 — Read-only knowledgebase context retrieval — 3/4
 
@@ -4980,9 +5008,8 @@ doc's stable-numbering convention.
      hand-wired collaborators.
 
 923. **`test_loop.py (daemon)::test_run_daemon_observe_mode_does_not_archive_or_tag_receipts`**
-      `--observe` suppresses both the PDF write and the keyword tag for
-      `archive_receipt` too, while the message still ends up marked
-      processed — the same contract every other observe-mode action has.
+       `--observe` suppresses both the PDF write and the keyword tag for
+       `archive_receipt` too, without changing the production state database.
 
 ### tests/cli/commands — bounded read-only report
 
@@ -5005,3 +5032,18 @@ doc's stable-numbering convention.
 
 928. **`test_client.py::test_write_access_requires_an_explicitly_writeable_account`**
       An explicitly requested write mode rejects an account marked read-only.
+
+929. **`daemon/test_loop.py::test_run_daemon_observe_mode_does_not_build_llm_or_write_production_state`**
+      Observer mode skips LLM construction and runs against an isolated state
+      snapshot, leaving the production database absent or unchanged.
+
+930. **`test_report.py::test_report_writes_a_sanitized_action_plan_without_side_effects`**
+      A bounded report writes per-message planned actions without message
+      content, mailbox writes, or state creation.
+
+931. **`test_report.py::test_report_plans_receipt_archiving_without_building_receipt_pipeline`**
+      Receipt archiving is represented as a plan without requiring receipt
+      extraction or archive collaborators.
+
+932. **`test_report.py::test_report_rejects_an_unwritable_action_plan_without_traceback`**
+      An invalid action-plan destination produces a clean CLI error.

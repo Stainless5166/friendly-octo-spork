@@ -3365,6 +3365,25 @@ class TextClassifier(Protocol):
 - This tier is optional: rules that don't reference classifier output
   never invoke it, so it costs nothing for a config that doesn't use it.
 
+Classification evidence is accumulated separately from mailbox decisions.
+`spork.core.classify.decisions.Classification` uses a 0–100 score; stages add
+only evidence above their own threshold, and repeated names merge by keeping
+the greatest score. A `ClassificationPolicy` then selects at most one primary
+mailbox while allowing every eligible tag to accumulate. This keeps low-score
+evidence available for review without turning it into an action. The model is
+the report/action-plan path. The existing daemon rule engine remains the active
+single-action path until provider semantics for one mailbox plus multiple
+keyword tags are settled.
+
+The dependency-free classifier now weights subject matches above body-only
+matches and uses local sender/header evidence for notification mail. Its
+scores must be tuned against labeled examples, not guessed from a single
+mailbox sample. `scripts/evaluate_keyword_corpus.py` evaluates the private
+recorded corpus without network access or mailbox writes and reports primary
+accuracy plus per-label precision, recall, and F1. The corpus is deliberately
+small, so its metrics guide further labeling rather than authorize production
+thresholds.
+
 ### 9.2 Modularity: message sources and multi-target dispatch
 
 §9.1 makes *which classifier* swappable. This section makes *where
@@ -5211,12 +5230,16 @@ under Spork:
   updates, and their failure/idempotency behavior are implemented and tested
   behind an explicit write-capable configuration.
 
-`sporkd --observe` currently suppresses mailbox mutations but still evaluates
-messages and writes local audit entries. It is therefore a connectivity/debug
-mode, not the approved company-mail report mode. `spork report` is the
-separate bounded report path: it uses no `StateDB`, LLM client, alerter, or
+`sporkd --observe` suppresses mailbox mutations and runs against a temporary
+copy of local state, so its cursor, processed marks, and audit entries are not
+persisted to production state. It does not construct Tier 2, but it still
+evaluates messages and exercises the local pipeline for connectivity/debug
+evidence. It is not the approved company-mail report mode. `spork report` is
+the separate bounded report path: it uses no `StateDB`, LLM client, alerter, or
 action executor and writes only aggregate metadata to an explicitly chosen
-output path.
+output path. Its optional `--actions-out` sidecar writes one sanitized JSONL
+record per sampled message, including the selected action, target mailbox, and
+matched rule, but never executes that action or includes message content.
 
 ## 16. Testing strategy
 
