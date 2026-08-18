@@ -269,6 +269,11 @@ class JmapClient:
                 raise JmapError("JMAP session has no primary mail account")
             permissions = _session_permissions(client.jmap_session, account_id)
             if self._allow_writes and not permissions.can_write_mail:
+                if self._expected_account_email is not None:
+                    raise JmapError(
+                        f"authenticated account {session_username!r} matches the expected "
+                        "account but is read-only; write access was explicitly requested"
+                    )
                 raise JmapError("JMAP account is read-only; write access was explicitly requested")
         except JmapError:
             raise
