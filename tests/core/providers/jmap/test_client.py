@@ -64,6 +64,8 @@ def _mailbox_response() -> _Response:
         data=[
             _Response(id="inbox-id", name="Inbox", role="inbox"),
             _Response(id="sent-id", name="Sent", role="sent"),
+            _Response(id="reading-id", name="Reading", role=None),
+            _Response(id="drafts-id", name="Drafts", role="drafts"),
         ]
     )
 
@@ -72,11 +74,13 @@ def _email(
     message_id: str,
     *,
     mailbox_ids: dict[str, bool] | None = None,
+    keywords: dict[str, bool] | None = None,
 ) -> _Response:
     return _Response(
         id=message_id,
         thread_id=f"thread-{message_id}",
         mailbox_ids=mailbox_ids or {"inbox-id": True},
+        keywords=keywords or {"$seen": True},
         mail_from=[_Response(email="sender@example.com")],
         to=[_Response(email="recipient@example.com")],
         cc=None,
@@ -309,3 +313,106 @@ def test_apply_keywords_is_blocked_for_the_default_read_only_client(make_message
 
     with pytest.raises(JmapError, match="read-only"):
         client.apply_keywords(make_message(), ["receipt"])
+
+
+def test_apply_action_moves_message_with_email_state_guard(make_message) -> None:
+    backend = _FakeJmapcClient(
+        [
+            _mailbox_response(),
+            _Response(state="email-state-1", data=[_email("msg-1")]),
+            _Response(updated={"msg-1": {}}),
+        ]
+    )
+    client = JmapClient(
+        host="api.fastmail.com",
+        api_token="fake-token",
+        allow_writes=True,
+        client_factory=lambda host, token: backend,
+    )
+
+    client.apply_action(make_message(message_id="msg-1"), Action(type="move", mailbox="Reading"))
+
+    request = backend.requests[-1]
+    assert type(request).__name__ == "EmailSet"
+    assert request.if_in_state == "email-state-1"
+    assert request.update == {"msg-1": {"mailboxIds": {"reading-id": True}}}
+
+
+def test_apply_action_tags_without_removing_existing_mailboxes(make_message) -> None:
+    backend = _FakeJmapcClient(
+        [
+            _mailbox_response(),
+            _Response(
+                state="email-state-1",
+                data=[_email("msg-1", mailbox_ids={"inbox-id": True, "existing-id": True})],
+            ),
+            _Response(updated={"msg-1": {}}),
+        ]
+    )
+    client = JmapClient(
+        host="api.fastmail.com",
+        api_token="fake-token",
+        allow_writes=True,
+        client_factory=lambda host, token: backend,
+    )
+
+    client.apply_action(make_message(message_id="msg-1"), Action(type="tag", mailbox="Reading"))
+
+    assert backend.requests[-1].update == {
+        "msg-1": {"mailboxIds": {"inbox-id": True, "existing-id": True, "reading-id": True}}
+    }
+
+
+def test_apply_keywords_merges_existing_keyword_flags(make_message) -> None:
+    backend = _FakeJmapcClient(
+        [
+            _mailbox_response(),
+            _Response(
+                state="email-state-1",
+                data=[_email("msg-1", keywords={"$seen": True, "$flagged": True})],
+            ),
+            _Response(updated={"msg-1": {}}),
+        ]
+    )
+    client = JmapClient(
+        host="api.fastmail.com",
+        api_token="fake-token",
+        allow_writes=True,
+        client_factory=lambda host, token: backend,
+    )
+
+    client.apply_keywords(make_message(message_id="msg-1"), ["receipt", "company:Acme"])
+
+    assert backend.requests[-1].update == {
+        "msg-1": {
+            "keywords": {"$seen": True, "$flagged": True, "receipt": True, "company:Acme": True}
+        }
+    }
+
+
+def test_create_draft_uses_drafts_mailbox_and_reply_headers(make_message) -> None:
+    backend = _FakeJmapcClient(
+        [
+            _mailbox_response(),
+            _Response(state="email-state-1", data=[_email("msg-1")]),
+            _Response(created={"draft-msg-1": _Response(id="draft-id")}),
+        ]
+    )
+    client = JmapClient(
+        host="api.fastmail.com",
+        api_token="fake-token",
+        allow_writes=True,
+        client_factory=lambda host, token: backend,
+    )
+
+    client.create_draft(make_message(message_id="msg-1", subject="Question"), "A reply.")
+
+    request = backend.requests[-1]
+    draft = request.create["draft-msg-1"]
+    assert request.if_in_state == "email-state-1"
+    assert draft.mailbox_ids == {"drafts-id": True}
+    assert draft.keywords == {"$draft": True}
+    assert draft.to[0].email == "sender@example.com"
+    assert draft.subject == "Re: Question"
+    assert draft.in_reply_to == ["<msg-1@example.com>"]
+    assert draft.body_values["body"].value == "A reply."
