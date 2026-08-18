@@ -39,11 +39,13 @@ class LiteLLMClient:
         model: str,
         *,
         api_key: str | None = None,
+        api_base: str | None = None,
         max_tokens: int = 1024,
         completion: Completion | None = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
+        self._api_base = api_base
         self._max_tokens = max_tokens
         self._completion = completion if completion is not None else _load_completion()
 
@@ -59,6 +61,8 @@ class LiteLLMClient:
         }
         if self._api_key is not None:
             kwargs["api_key"] = self._api_key
+        if self._api_base is not None:
+            kwargs["api_base"] = self._api_base
         try:
             response = self._completion(**kwargs)
         except Exception as exc:
