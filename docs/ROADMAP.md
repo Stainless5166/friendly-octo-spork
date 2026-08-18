@@ -1097,6 +1097,23 @@ real account on every test run.
       an all-`ignore` rules file or the write-side JMAP stubs resolved
       first.
 
+- [x] Read-only report mode (M) — `spork report` evaluates a bounded sample
+      that fetches a bounded 25–50 message sample and evaluates rules without Tier 2,
+      mailbox actions, message-processing marks, or production audit writes,
+      mailbox actions, message-processing marks, or production audit writes,
+      and stores only aggregate metadata in an explicitly selected output
+      path. `--observe` on `sporkd` is not this mode because it still writes
+      local audit entries. The command caps `--limit`/`--page-size` at 50 and
+      never constructs Tier 2, alerter, action, or StateDB components.
+- [x] Enforce JMAP Session Object read capabilities (M) — authenticated
+      session discovery now requires core/mail capabilities, a selected
+      primary mail account, and account-level mail capability data where the
+      client library exposes it. The client defaults to read-only; an
+      explicit `allow_writes` request is rejected for accounts marked
+      read-only or lacking affirmative write metadata. Submission capability
+      is not needed because Spork must never send mail. Full JMAP write
+      implementation remains deferred.
+
 **Exit criteria:** a backfill run categorizes a large recorded sample
 of the maintainer's real Inbox end-to-end through the same Tier 1/
 Tier 2 pipeline live ingestion uses, respects its own budget policy,
@@ -1105,6 +1122,11 @@ Applying the resulting categorization as real mailbox actions (labels,
 moves) is gated on write-scoped JMAP credentials, same limitation as
 M2/M3/M5's own live-action items — this milestone's exit criterion is
 about correct read-side categorization, not the write.
+
+Company-mail rollout remains staged: first run the isolated 25–50 message
+report, review the proposed rule distribution, then enable only a narrow
+allowlist. External Tier 2 data handling and live JMAP writes are separate
+future decisions, not implied by a successful read-side backfill.
 
 ## M9 — Read-only knowledgebase context retrieval
 

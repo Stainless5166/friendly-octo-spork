@@ -348,6 +348,12 @@ have separate fully bound Behave features (`m2_local.feature` through
 `m6_local.feature`). These are offline evidence and do not replace the
 corresponding live Fastmail, Anthropic, user-systemd, prolonged-outage, or
 operational-run acceptance specifications.
+Updated once more for the read-only deployment slice: JMAP Session Object
+core/mail capability checks, default read-only mutation guardrails, and the
+bounded `spork report` command are covered by five new tests. **The full
+suite is now 980 tests, all green.** The live report was verified against the
+configured account with 25 messages: zero Tier 2 calls, zero mailbox
+mutations, and zero messages marked processed.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -894,7 +900,7 @@ own `force` default never exercised, and one docstring-documented
 test) — closed with targeted tests, not implementation changes; no
 `src/spork` behavior changed in this pass.
 
-### M8 — Backfill / retroactive categorization — 4/5
+### M8 — Backfill / retroactive categorization — 7/8
 
 | Checklist item | Implemented | Tested |
 |---|---|---|
@@ -904,6 +910,8 @@ test) — closed with targeted tests, not implementation changes; no
 | `StateDB`/`processed_messages` dedup reuse | ✅ (reuses `process_message()`'s existing idempotency gate, no new mechanism) | ✅ — test 758 |
 | Backfill-specific throttle/budget policy | ✅ (`--limit`, default 50) | ✅ — tests 756, 760 |
 | Full backfill run growing the corpus at volume | — | not started — a 13-entry hand-picked seed exists (M1c) via direct SMTP+LLM calls, not a `spork backfill` run; that needs an all-`ignore` rules file or the write-side JMAP stubs resolved first (`apply_action()`/`create_draft()` are still `NotImplementedError`) |
+| Bounded read-only `spork report` | ✅ — no Tier 2, mailbox mutation, processed mark, or `StateDB` write | ✅ — tests 924–926 |
+| JMAP Session Object capability/read-only guard | ✅ — core/mail read checks and default-disabled writes | ✅ — tests 927–928 plus updated JMAP fixtures |
 
 ### M9 — Read-only knowledgebase context retrieval — 3/4
 
@@ -4972,6 +4980,28 @@ doc's stable-numbering convention.
      hand-wired collaborators.
 
 923. **`test_loop.py (daemon)::test_run_daemon_observe_mode_does_not_archive_or_tag_receipts`**
-     `--observe` suppresses both the PDF write and the keyword tag for
-     `archive_receipt` too, while the message still ends up marked
-     processed — the same contract every other observe-mode action has.
+      `--observe` suppresses both the PDF write and the keyword tag for
+      `archive_receipt` too, while the message still ends up marked
+      processed — the same contract every other observe-mode action has.
+
+### tests/cli/commands — bounded read-only report
+
+924. **`test_report.py::test_report_outputs_a_bounded_aggregate_without_creating_state`**
+      A limited report evaluates Tier 1 and emits aggregate metadata without
+      creating a StateDB.
+
+925. **`test_report.py::test_report_can_write_an_explicit_non_sensitive_output_file`**
+      An explicit output path receives aggregate data without message bodies
+      or other message content.
+
+926. **`test_report.py::test_report_rejects_missing_configuration_without_traceback`**
+      Missing configuration produces a clean CLI error.
+
+### tests/core/providers/jmap — Session Object capability gate
+
+927. **`test_client.py::test_connect_requires_core_and_mail_session_capabilities`**
+      Session discovery rejects a token/session that does not expose the
+      required core and mail capabilities.
+
+928. **`test_client.py::test_write_access_requires_an_explicitly_writeable_account`**
+      An explicitly requested write mode rejects an account marked read-only.
