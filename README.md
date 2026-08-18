@@ -114,8 +114,11 @@ you end up with `sporkd` running as a systemd **user** service.
 
    ```toml
    allow_writes = true
+   expected_account_email = "your-test-account@example.com"
    ```
 
+   `spork doctor` verifies that the authenticated JMAP Session Object
+   username matches `expected_account_email` before reporting connectivity.
    Do not enable this on a personal or company account until the bounded
    report and action plan have been reviewed. Spork never enables writes by
    default and never calls `EmailSubmission/set`.

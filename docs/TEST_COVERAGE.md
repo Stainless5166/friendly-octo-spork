@@ -985,6 +985,7 @@ independently on `main` first (see docs/ROADMAP.md M10's own note).
 | Additive keyword updates via `Email/set` | ✅ | ✅ — request-shape and acknowledgement tests |
 | Threaded Drafts creation via `Email/set` | ✅ | ✅ — Drafts-role, `$draft`, body, and reply-header tests |
 | Concurrent-state and server-acknowledgement failures | ✅ | ✅ — fail-closed edge cases |
+| Expected account identity check | ✅ | ✅ — matching and mismatched Session Object usernames |
 | Dedicated Fastmail test-account acceptance | — | pending manual verification |
 
 `sporkd` now builds `ReceiptArchiveComponents` from
