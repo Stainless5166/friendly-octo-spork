@@ -3271,6 +3271,12 @@ reach, never an error, since the file write itself already succeeded.
   `$draft` with the same `In-Reply-To`; this makes a retry after an
   ambiguous network result a no-op rather than a duplicate draft.
   `JmapError` remains the only provider-boundary error.
+- **Account identity:** a live provider may set `expected_account_email` in
+  its constructor/configuration. On session discovery, Spork compares that
+  value with the authenticated Session Object `username`, case-insensitively,
+  and fails before mailbox reads or writes if they differ or the session has
+  no username. This prevents a valid token for the wrong account from being
+  accepted by a test or production configuration.
 - **Sieve (Tier 0):** for the genuinely deterministic cases (known
   mailing lists, obvious auto-filing), push a Sieve script server-side
   via the Sieve JMAP extension (RFC 9661) / ManageSieve, so those
