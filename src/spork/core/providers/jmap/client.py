@@ -222,11 +222,13 @@ class JmapClient:
         *,
         client_factory: ClientFactory = _default_client_factory,
         allow_writes: bool = False,
+        expected_account_email: str | None = None,
     ) -> None:
         self._host = host
         self._api_token = api_token
         self._client_factory = client_factory
         self._allow_writes = allow_writes
+        self._expected_account_email = expected_account_email
         self._client: _JmapcClient | None = None
         self._account_id: str | None = None
         self._inbox_id: str | None = None
@@ -241,7 +243,16 @@ class JmapClient:
         _, _, mailbox_get, _ = _method_types()
         try:
             client = self._client_factory(self._host, self._api_token)
-            _ = client.jmap_session
+            session_username = _field(client.jmap_session, "username")
+            if self._expected_account_email is not None:
+                if not isinstance(session_username, str) or not session_username:
+                    raise JmapError("JMAP session has no username for account verification")
+                if session_username.casefold() != self._expected_account_email.casefold():
+                    raise JmapError(
+                        "authenticated account "
+                        f"{session_username!r} does not match expected account "
+                        f"{self._expected_account_email!r}"
+                    )
             response = client.request(mailbox_get(ids=None), raise_errors=True)
             mailboxes = getattr(response, "data", None)
             if not isinstance(mailboxes, list):

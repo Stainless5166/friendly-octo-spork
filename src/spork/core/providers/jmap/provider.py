@@ -199,8 +199,14 @@ class JmapProvider:
         poll_interval_seconds: float = 300.0,
         reconnect_backoff_seconds: Sequence[float] = (2.0, 5.0, 15.0, 60.0, 300.0),
         allow_writes: bool = False,
+        expected_account_email: str | None = None,
     ) -> None:
-        self._client = JmapClient(host=host, api_token=api_token, allow_writes=allow_writes)
+        self._client = JmapClient(
+            host=host,
+            api_token=api_token,
+            allow_writes=allow_writes,
+            expected_account_email=expected_account_email,
+        )
         self._cursor = cursor
         self._poll_interval_seconds = poll_interval_seconds
         self._reconnect_backoff_seconds = tuple(reconnect_backoff_seconds)
