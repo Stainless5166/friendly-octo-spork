@@ -405,14 +405,81 @@ def test_create_draft_uses_drafts_mailbox_and_reply_headers(make_message) -> Non
         client_factory=lambda host, token: backend,
     )
 
-    client.create_draft(make_message(message_id="msg-1", subject="Question"), "A reply.")
+    client.create_draft(
+        make_message(
+            message_id="msg-1",
+            subject="Question",
+            headers={"Message-ID": "<msg-1@example.com>"},
+        ),
+        "A reply.",
+    )
 
     request = backend.requests[-1]
     draft = request.create["draft-msg-1"]
     assert request.if_in_state == "email-state-1"
     assert draft.mailbox_ids == {"drafts-id": True}
     assert draft.keywords == {"$draft": True}
-    assert draft.to[0].email == "sender@example.com"
+    assert draft.to[0].email == "someone@example.com"
     assert draft.subject == "Re: Question"
     assert draft.in_reply_to == ["<msg-1@example.com>"]
     assert draft.body_values["body"].value == "A reply."
+
+
+def test_apply_action_rejects_an_unknown_mailbox_without_mutating(make_message) -> None:
+    backend = _FakeJmapcClient(
+        [
+            _mailbox_response(),
+            _Response(state="email-state-1", data=[_email("msg-1")]),
+        ]
+    )
+    client = JmapClient(
+        host="api.fastmail.com",
+        api_token="fake-token",
+        allow_writes=True,
+        client_factory=lambda host, token: backend,
+    )
+
+    with pytest.raises(JmapError, match="mailbox 'Missing'"):
+        client.apply_action(
+            make_message(message_id="msg-1"), Action(type="move", mailbox="Missing")
+        )
+
+    assert [type(request).__name__ for request in backend.requests] == [
+        "MailboxGet",
+    ]
+
+
+def test_apply_keywords_requires_email_set_to_acknowledge_the_update(make_message) -> None:
+    backend = _FakeJmapcClient(
+        [
+            _mailbox_response(),
+            _Response(state="email-state-1", data=[_email("msg-1")]),
+            _Response(updated={}),
+        ]
+    )
+    client = JmapClient(
+        host="api.fastmail.com",
+        api_token="fake-token",
+        allow_writes=True,
+        client_factory=lambda host, token: backend,
+    )
+
+    with pytest.raises(JmapError, match="did not acknowledge update"):
+        client.apply_keywords(make_message(message_id="msg-1"), ["receipt"])
+
+
+def test_create_draft_requires_a_unique_drafts_mailbox(make_message) -> None:
+    backend = _FakeJmapcClient(
+        [
+            _Response(data=[_Response(id="inbox-id", name="Inbox", role="inbox")]),
+        ]
+    )
+    client = JmapClient(
+        host="api.fastmail.com",
+        api_token="fake-token",
+        allow_writes=True,
+        client_factory=lambda host, token: backend,
+    )
+
+    with pytest.raises(JmapError, match="role 'drafts'"):
+        client.create_draft(make_message(), "A reply.")
