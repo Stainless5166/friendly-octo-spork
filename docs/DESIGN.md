@@ -3277,6 +3277,13 @@ reach, never an error, since the file write itself already succeeded.
   and fails before mailbox reads or writes if they differ or the session has
   no username. This prevents a valid token for the wrong account from being
   accepted by a test or production configuration.
+- **Typed-session compatibility:** the selected `jmapc` version does not
+  expose the Session Object `accounts` map on its typed `Session` model. When
+  that field is absent, the provider uses the already-authenticated client's
+  HTTP session to retrieve the same session resource and reads only the
+  selected account's `accountCapabilities`/`isReadOnly` fields. If that
+  compatibility request fails, write permission remains false and the
+  provider fails closed.
 - **Sieve (Tier 0):** for the genuinely deterministic cases (known
   mailing lists, obvious auto-filing), push a Sieve script server-side
   via the Sieve JMAP extension (RFC 9661) / ManageSieve, so those
