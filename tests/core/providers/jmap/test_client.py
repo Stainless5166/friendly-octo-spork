@@ -43,6 +43,7 @@ def _session(
     """Build the authenticated Session Object shape the provider requires."""
     return _Response(
         api_url="https://api.example.test/jmap",
+        username="validate@fastmail.com",
         capabilities=capabilities
         or {
             "urn:ietf:params:jmap:core": {},
@@ -201,6 +202,31 @@ def test_connect_requires_core_and_mail_session_capabilities() -> None:
     )
 
     with pytest.raises(JmapError, match="mail capability"):
+        client.connect()
+
+
+def test_connect_accepts_the_expected_authenticated_account() -> None:
+    backend = _FakeJmapcClient([_mailbox_response()])
+    client = JmapClient(
+        host="api.fastmail.com",
+        api_token="fake-token",
+        expected_account_email="VALIDATE@FASTMAIL.COM",
+        client_factory=lambda host, token: backend,
+    )
+
+    client.connect()
+
+
+def test_connect_rejects_a_token_for_the_wrong_authenticated_account() -> None:
+    backend = _FakeJmapcClient([_mailbox_response()])
+    client = JmapClient(
+        host="api.fastmail.com",
+        api_token="fake-token",
+        expected_account_email="other@example.com",
+        client_factory=lambda host, token: backend,
+    )
+
+    with pytest.raises(JmapError, match="authenticated account.*other@example.com"):
         client.connect()
 
 
