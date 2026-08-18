@@ -130,7 +130,7 @@ def _config(tmp_path: Path) -> SporkConfig:
 
 
 async def _run_briefly(
-    config: SporkConfig, *, settle_seconds: float = 0.2, **kwargs: object
+    config: SporkConfig, *, settle_seconds: float = 0.5, **kwargs: object
 ) -> None:
     """Runs run_daemon() for just long enough to process FileProvider's
     one fixed batch, then stops it cleanly. Extra kwargs pass straight
