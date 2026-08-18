@@ -219,6 +219,23 @@ def test_run_daemon_observe_mode_never_enters_tier2(tmp_path: Path, monkeypatch)
     assert not (tmp_path / "drafts.jsonl").exists()
 
 
+def test_run_daemon_observe_mode_does_not_build_llm_or_write_production_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Observe mode is an isolated read-only run, not normal processing with
+    the action applier swapped for a no-op."""
+    config = _config(tmp_path)
+
+    def fail_if_built(*args: object, **kwargs: object) -> None:
+        raise AssertionError("observe mode built an LLM client")
+
+    monkeypatch.setattr("spork.daemon.loop.build_llm_client", fail_if_built)
+
+    asyncio.run(_run_briefly(config, observe=True))
+
+    assert not config.db_path.exists()
+
+
 def test_run_daemon_injects_mapped_secrets_and_records_the_live_llm_path(tmp_path: Path) -> None:
     config = _config(tmp_path)
     messages_path = Path(config.provider.kwargs["messages_path"])

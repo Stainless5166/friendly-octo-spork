@@ -98,7 +98,7 @@ def test_tieringconfig_defaults_match_documented_values() -> None:
     table actually resolves to."""
     tiering = TieringConfig()
 
-    assert tiering.default_unmatched_action == "escalate"
+    assert tiering.default_unmatched_action == "ignore"
     assert tiering.alert_threshold == 0.55
     assert tiering.autoact_threshold == 0.85
     assert tiering.daily_call_budget == 200
