@@ -97,6 +97,9 @@ class TieringConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     default_unmatched_action: Literal["escalate", "ignore"] = "ignore"
+    # Explicit release gate: Tier 1 beta configs set this false so an
+    # escalation rule cannot silently activate a model path.
+    tier2_enabled: bool = True
     alert_threshold: float = 0.55
     autoact_threshold: float = 0.85
     daily_call_budget: int = 200

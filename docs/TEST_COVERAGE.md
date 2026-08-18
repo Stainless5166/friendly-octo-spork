@@ -23,9 +23,9 @@ together. Updated once more for `FileProvider` (M1b): a second, fully
 real `Provider` Adapter with no `NotImplementedError` anywhere, proving
 the abstraction itself generalizes beyond `JmapProvider`. Updated again
 for `spork rules test` (M2's last item): real CLI wiring + rules
-loading + clean error handling, with the live-JMAP-fetch step a
-settled-shape `NotImplementedError` reported cleanly rather than left
-to traceback. **M2 is now 7/7.** Updated once more for `spork doctor`
+loading + clean error handling + read-only `BackfillProvider` previews,
+with live JMAP verification against the dedicated test account. **M2 is
+now 7/7.** Updated once more for `spork doctor`
 (M1's last unstubbed item): real CLI wiring, connectivity check a
 settled-shape `NotImplementedError`. **Every item in M0–M2 is now
 either fully implemented or a settled-shape stub with a passing test —
@@ -533,7 +533,7 @@ backfill-driven volume remains M8's job, not this milestone's.
 | Action executor | ✅ (`ActionApplier`-agnostic; JMAP write primitives are now implemented behind `allow_writes`) | ✅ — tests 107–113 (7 tests) |
 | `processed_messages` idempotency | ✅ — wired into `process_message()` | ✅ — tests 114–121 (8 tests) |
 | `audit_log` writes | ✅ | ✅ — tests 98–103 (6 tests) |
-| `spork rules test` dry-run | ✅ (loading+errors real; live-fetch step `NotImplementedError`, M1) | ✅ — tests 139–146 (8 tests) |
+| `spork rules test` dry-run | ✅ (read-only provider query + Tier 1 preview) | ✅ — tests 139–146 plus live Fastmail verification |
 | Unit tests: condition matching / idempotency | ✅ | ✅ |
 
 **7 of 7 items done.** The schema fix is worth calling out: an

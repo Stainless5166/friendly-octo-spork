@@ -258,13 +258,16 @@ def _summary(records: list[dict[str, Any]], baseline: dict[str, str]) -> dict[st
         distribution_drift = 0.0
         if total_primary and total_baseline:
             distribution_labels = set(primary_labels) | set(baseline_distribution)
-            distribution_drift = sum(
-                abs(
-                    primary_labels[label] / total_primary
-                    - baseline_distribution[label] / total_baseline
+            distribution_drift = (
+                sum(
+                    abs(
+                        primary_labels[label] / total_primary
+                        - baseline_distribution[label] / total_baseline
+                    )
+                    for label in distribution_labels
                 )
-                for label in distribution_labels
-            ) / 2
+                / 2
+            )
         baseline_labels = set(baseline.values())
         per_label: dict[str, dict[str, float | int]] = {}
         for label in sorted(baseline_labels | set(primary_labels)):
@@ -277,9 +280,7 @@ def _summary(records: list[dict[str, Any]], baseline: dict[str, str]) -> dict[st
                 "precision": precision,
                 "recall": recall,
                 "f1": (
-                    2 * precision * recall / (precision + recall)
-                    if precision + recall
-                    else 0.0
+                    2 * precision * recall / (precision + recall) if precision + recall else 0.0
                 ),
                 "support": actual,
             }

@@ -96,6 +96,30 @@ every scenario passed for real, same discipline as graduating an
 M9 (`m9_entity_context.feature`, above) landed independently on `main`
 first — see `docs/ROADMAP.md` M10's own note on the collision.
 
+## Docker Release Run
+
+For release evidence, use the bounded Docker runner instead of leaving a
+manually assembled daemon container running:
+
+```bash
+uv run python scripts/docker_live_acceptance.py \
+  --account validate@fastmail.com \
+  --output /tmp/spork-acceptance-report.json
+```
+
+The runner creates a temporary Docker network and a non-root, read-only daemon
+container. It checks status, pause/resume, live rule preview, additive tag,
+move, first-match precedence, restart idempotency, and recovery after the
+daemon's network is disconnected while three messages are sent. The verifier
+queries Fastmail from outside the daemon and compares final mailbox membership
+with the durable SQLite `audit_log`. The report contains message IDs and
+counts, never message bodies or credentials.
+
+The default dependency mounts match the disposable acceptance environment. For
+another prepared image environment, set `SPORK_ACCEPTANCE_VENV` and
+`SPORK_ACCEPTANCE_PACKAGES`, or pass `--venv` and `--packages` explicitly. A
+non-zero exit means at least one check failed; the report is still written.
+
 ## Status
 
 | Feature | Scope | Current evidence |

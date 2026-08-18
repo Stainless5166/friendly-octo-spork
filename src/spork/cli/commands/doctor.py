@@ -48,6 +48,7 @@ class DoctorCheck:
     name: str
     ok: bool
     detail: str
+    warning: bool = False
 
 
 def doctor() -> None:
@@ -55,7 +56,7 @@ def doctor() -> None:
     any of them failed."""
     checks = _run_checks()
     for check in checks:
-        status = "ok" if check.ok else "FAIL"
+        status = "WARN" if check.warning else "ok" if check.ok else "FAIL"
         typer.echo(f"[{status}] {check.name}: {check.detail}")
 
     if any(not check.ok for check in checks):
@@ -72,6 +73,7 @@ def _run_checks() -> list[DoctorCheck]:
         _check_llm(config, secrets),
         _check_alerter(config, secrets),
         _check_rules(config),
+        _check_write_configuration(config),
         _check_classifier(config),
         _check_jmap_connectivity(config, secrets),
         _check_systemd_unit(),
@@ -145,6 +147,21 @@ def _check_rules(config: SporkConfig | None) -> DoctorCheck:
     except Exception as exc:
         return DoctorCheck("rules", False, _failure_detail("could not load rules", exc))
     return DoctorCheck("rules", True, f"{len(rules)} rule(s) loaded from {config.rules_path}")
+
+
+def _check_write_configuration(config: SporkConfig | None) -> DoctorCheck:
+    """Warn when write access lacks an account identity safety fence."""
+    if config is None:
+        return DoctorCheck("write safety", False, "skipped — config failed to load")
+    kwargs = config.provider.kwargs
+    if kwargs.get("allow_writes") is True and not kwargs.get("expected_account_email"):
+        return DoctorCheck(
+            "write safety",
+            True,
+            "writes enabled without expected_account_email",
+            warning=True,
+        )
+    return DoctorCheck("write safety", True, "write configuration has an account safety fence")
 
 
 def _check_classifier(config: SporkConfig | None) -> DoctorCheck:

@@ -16,9 +16,14 @@ from spork.core.config.loader import ConfigLoadError, load_config
 from spork.core.config.paths import resolve_socket_path
 from spork.core.config.schema import SporkConfig
 from spork.core.ipc.client import IpcConnectionError, send_request
+from spork.core.providers.base import BackfillProvider
+from spork.core.providers.loader import ProviderLoadError
+from spork.core.rules.engine import evaluate
 from spork.core.rules.loader import RulesLoadError, load_rules
-from spork.core.rules.schema import Rule
+from spork.core.rules.schema import Action, Rule
 from spork.core.rules.writer import dump_rules
+from spork.core.runtime import build_provider, resolve_runtime_secrets
+from spork.core.secrets import SecretsError
 from spork.core.state.db import StateDB
 
 app = typer.Typer(
@@ -34,16 +39,7 @@ def test(
         ..., help="Path to a rules.toml file to dry-run."
     ),
 ) -> None:
-    """Dry-run a rules.toml file against recent mail (docs/DESIGN.md §13).
-
-    Loads and validates the file first — real, useful on its own, and
-    catches a malformed rules.toml here rather than as a crash once it
-    reaches the daemon. Actually running it against recent mail needs a
-    live JMAP connection (docs/DESIGN.md §9.3, §13): spork has no local
-    mail store to substitute for one, so that part isn't implemented
-    until M1's real JMAP fetch exists — this fails loud rather than
-    faking a result.
-    """
+    """Dry-run a rules.toml file against recent mail without side effects."""
     try:
         rules = load_rules(rules_file)
     except RulesLoadError as exc:
@@ -51,33 +47,103 @@ def test(
         raise typer.Exit(code=1) from exc
 
     typer.echo(f"Loaded {len(rules)} rule(s) from {rules_file}.")
-
-    # Caught and re-reported as a clean message rather than left to
-    # propagate: this is a genuinely unimplemented feature (real
-    # NotImplementedError semantics, see spork.core.rules.loader's
-    # docstring and docs/ROADMAP.md M1), not a bug — a user shouldn't
-    # see a stack trace for "this part isn't built yet."
     try:
         _dry_run_against_recent_mail(rules)
-    except NotImplementedError as exc:
+    except (ConfigLoadError, ProviderLoadError, SecretsError, RulesTestError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
 
-def _dry_run_against_recent_mail(rules: Sequence[Rule]) -> None:
-    """The part that genuinely needs a live JMAP connection (docs/DESIGN.md §13).
+class RulesTestError(Exception):
+    """One CLI boundary for unsupported or failed read-only rule previews."""
 
-    Spork has no local mail store to substitute for "recent mail" —
-    fetching it here means a real `JmapClient.fetch_new_messages()`
-    call, which is itself a settled-shape `NotImplementedError` stub
-    pending a live Fastmail account (docs/ROADMAP.md M1). This function
-    exists so that blocker has one clearly-named place to live, instead
-    of being inlined into the command body.
-    """
-    raise NotImplementedError(
-        "spork rules test requires a live JMAP connection to fetch recent mail — "
-        "not implemented yet, see docs/ROADMAP.md M1"
-    )
+
+def _dry_run_against_recent_mail(rules: Sequence[Rule]) -> None:
+    """Fetch and evaluate a bounded recent-mail sample without pipeline state."""
+    try:
+        config = load_config()
+        secrets = resolve_runtime_secrets(config, reason="rules dry-run")
+        provider = build_provider(config, secrets)
+    except (ConfigLoadError, ProviderLoadError, SecretsError):
+        raise
+    except Exception as exc:
+        raise RulesTestError(f"could not load the configured provider: {exc}") from exc
+
+    if not isinstance(provider, BackfillProvider):
+        raise RulesTestError(
+            f"provider {config.provider.spec!r} does not support read-only message queries"
+        )
+
+    try:
+        page = provider.query_messages(limit=50)
+    except Exception as exc:
+        raise RulesTestError(f"could not fetch recent mail: {exc}") from exc
+
+    for message in page.messages:
+        verdict = evaluate(
+            message,
+            rules,
+            default_unmatched_action=Action(type=config.tiering.default_unmatched_action),
+        )
+        typer.echo(
+            json.dumps(
+                {
+                    "action": {
+                        "mailbox": verdict.action.mailbox,
+                        "reason": verdict.action.reason,
+                        "type": verdict.action.type,
+                    },
+                    "matched_rule_id": verdict.matched_rule_id,
+                    "message_id": message.message_id,
+                },
+                sort_keys=True,
+            )
+        )
+
+    typer.echo(f"Previewed {len(page.messages)} recent message(s); no changes made.")
+
+
+@app.command("validate")
+def validate(
+    rules_file: Path | None = typer.Argument(  # noqa: B008 - idiomatic Typer default
+        None, help="Rules file; defaults to the configured rules.toml."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print machine-readable JSON."),
+) -> None:
+    """Validate a ruleset and report whether it is safe for Tier 1 beta use."""
+    config = _load_config_or_exit()
+    path = rules_file or config.rules_path
+    rules = _load_rules_or_exit(path)
+    enabled = [rule for rule in rules if rule.enabled]
+    action_counts: dict[str, int] = {}
+    for rule in enabled:
+        action_counts[rule.action.type] = action_counts.get(rule.action.type, 0) + 1
+    escalation_rules = [rule.id for rule in enabled if rule.action.type == "escalate"]
+    provider_kwargs = config.provider.kwargs
+    writes_enabled = provider_kwargs.get("allow_writes") is True
+    expected_account = provider_kwargs.get("expected_account_email")
+    result = {
+        "action_counts": dict(sorted(action_counts.items())),
+        "enabled_rules": len(enabled),
+        "escalation_rules": escalation_rules,
+        "expected_account_configured": isinstance(expected_account, str) and bool(expected_account),
+        "path": str(path),
+        "safe_for_tier1": not escalation_rules and (not writes_enabled or bool(expected_account)),
+        "tier2_backend": config.llm.spec,
+        "total_rules": len(rules),
+        "writes_enabled": writes_enabled,
+    }
+    if json_output:
+        typer.echo(json.dumps(result, sort_keys=True))
+    else:
+        typer.echo(f"Rules: {len(enabled)} enabled / {len(rules)} total")
+        typer.echo(f"Actions: {json.dumps(result['action_counts'], sort_keys=True)}")
+        typer.echo(f"Tier 2 escalation rules: {len(escalation_rules)}")
+        typer.echo(f"Writes enabled: {writes_enabled}")
+        typer.echo(f"Expected account configured: {result['expected_account_configured']}")
+        typer.echo(f"Safe for Tier 1 beta: {result['safe_for_tier1']}")
+    if not result["safe_for_tier1"]:
+        raise typer.Exit(code=1)
 
 
 def _load_config_or_exit() -> SporkConfig:

@@ -34,6 +34,26 @@ class _FakeJmapcClient:
         return response
 
 
+class _RawSessionResponse:
+    def __init__(self, payload: object) -> None:
+        self._payload = payload
+
+    def json(self) -> object:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        return
+
+
+class _RawRequestsSession:
+    def __init__(self, payload: object) -> None:
+        self.payload = payload
+
+    def get(self, url: str) -> _RawSessionResponse:
+        del url
+        return _RawSessionResponse(self.payload)
+
+
 def _session(
     *,
     capabilities: dict[str, object] | None = None,
@@ -211,6 +231,29 @@ def test_connect_accepts_the_expected_authenticated_account() -> None:
         host="api.fastmail.com",
         api_token="fake-token",
         expected_account_email="VALIDATE@FASTMAIL.COM",
+        client_factory=lambda host, token: backend,
+    )
+
+    client.connect()
+
+
+def test_connect_uses_raw_session_account_capabilities_when_jmapc_omits_accounts() -> None:
+    backend = _FakeJmapcClient([_mailbox_response()])
+    backend.jmap_session.__dict__.pop("accounts")
+    backend.requests_session = _RawRequestsSession(
+        {
+            "accounts": {
+                "account-1": {
+                    "isReadOnly": False,
+                    "accountCapabilities": {"urn:ietf:params:jmap:mail": {}},
+                }
+            }
+        }
+    )
+    client = JmapClient(
+        host="api.fastmail.com",
+        api_token="fake-token",
+        allow_writes=True,
         client_factory=lambda host, token: backend,
     )
 

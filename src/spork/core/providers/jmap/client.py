@@ -178,7 +178,11 @@ def _capability_names(value: object) -> set[object]:
     return names
 
 
-def _session_permissions(session: object, account_id: str) -> JmapPermissions:
+def _session_permissions(
+    session: object,
+    account_id: str,
+    account_details: Mapping[object, object] | None = None,
+) -> JmapPermissions:
     """Validate core/mail read access and derive conservative mail write access."""
     capability_names = _capability_names(_field(session, "capabilities"))
     if "urn:ietf:params:jmap:core" not in capability_names:
@@ -187,7 +191,7 @@ def _session_permissions(session: object, account_id: str) -> JmapPermissions:
         raise JmapError("JMAP Session Object has no mail capability")
 
     accounts = _mapping(_field(session, "accounts"))
-    account = accounts.get(account_id) if accounts is not None else None
+    account = accounts.get(account_id) if accounts is not None else account_details
 
     primary_accounts = _field(session, "primary_accounts", "primaryAccounts")
     primary_mail_account = _field(primary_accounts, "mail", "urn:ietf:params:jmap:mail")
@@ -206,6 +210,27 @@ def _session_permissions(session: object, account_id: str) -> JmapPermissions:
         can_read_mail=True,
         can_write_mail=is_read_only is False,
     )
+
+
+def _raw_account_details(client: object, host: str, account_id: str) -> Mapping[object, object]:
+    """Read account permissions when jmapc omitted them from its Session model."""
+    http_session = getattr(client, "requests_session", None)
+    get = getattr(http_session, "get", None)
+    if not callable(get):
+        raise JmapError("JMAP client exposes no authenticated session HTTP fallback")
+    try:
+        response: Any = get(f"https://{host.rstrip('/')}/jmap/session")
+        raise_for_status = getattr(response, "raise_for_status", None)
+        if callable(raise_for_status):
+            raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        raise JmapError(f"could not read raw JMAP Session Object: {exc}") from exc
+    accounts = payload.get("accounts") if isinstance(payload, Mapping) else None
+    account = accounts.get(account_id) if isinstance(accounts, Mapping) else None
+    if not isinstance(account, Mapping):
+        raise JmapError(f"raw JMAP Session Object has no account {account_id!r}")
+    return account
 
 
 class JmapClient:
@@ -267,7 +292,15 @@ class JmapClient:
             account_id = client.account_id
             if not account_id:
                 raise JmapError("JMAP session has no primary mail account")
-            permissions = _session_permissions(client.jmap_session, account_id)
+            session_accounts = _mapping(_field(client.jmap_session, "accounts"))
+            account_details = (
+                None
+                if session_accounts is not None or not self._allow_writes
+                else _raw_account_details(client, self._host, account_id)
+            )
+            permissions = _session_permissions(
+                client.jmap_session, account_id, account_details=account_details
+            )
             if self._allow_writes and not permissions.can_write_mail:
                 if self._expected_account_email is not None:
                     raise JmapError(

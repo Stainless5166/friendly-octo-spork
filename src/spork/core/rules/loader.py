@@ -28,8 +28,11 @@ class RulesLoadError(Exception):
     """
 
 
-def load_rules(path: str | Path) -> list[Rule]:
+def load_rules(path: str | Path, *, allow_escalation: bool = True) -> list[Rule]:
     """Parse and validate every `[[rule]]` entry in the file at `path`.
+
+    `allow_escalation=False` is the Tier 1 beta safety gate: escalation
+    rules fail at load time instead of reaching the model pipeline.
 
     Returns rules in file order (the order the Tier 1 evaluator will
     check them in — first-match-wins depends on it). A file with no
@@ -51,6 +54,11 @@ def load_rules(path: str | Path) -> list[Rule]:
             raise RulesLoadError(f"invalid rule at index {index} in {path}: {exc}") from exc
         if rule.id in seen_ids:
             raise RulesLoadError(f"duplicate rule id {rule.id!r} in {path}")
+        if not allow_escalation and rule.action.type == "escalate":
+            raise RulesLoadError(
+                f"rule {rule.id!r} escalates but Tier 2 is disabled; "
+                "set [tiering].tier2_enabled = true before enabling this rule"
+            )
         seen_ids.add(rule.id)
         rules.append(rule)
 

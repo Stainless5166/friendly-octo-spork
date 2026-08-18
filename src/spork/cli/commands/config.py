@@ -133,6 +133,8 @@ api_key = "ANTHROPIC_API_KEY"
 spec = "spork.core.alerts.log:LoggingAlerter"
 
 [tiering]
+tier2_enabled = false
+default_unmatched_action = "ignore"
 """
     rules_text = """[[rule]]
 id = "starter-ignore"

@@ -6,6 +6,9 @@ pipeline — cheap rules first, an LLM only when ambiguous or
 important — and files, tags, or drafts a reply, alerting a human for
 anything uncertain or high-stakes. Never auto-sends.
 
+The internal beta release boundary and burn-in procedure are documented in
+[`docs/BETA.md`](docs/BETA.md).
+
 Ships as two executables:
 
 - **`sporkd`** — the daemon. Runs as a systemd user service at login,

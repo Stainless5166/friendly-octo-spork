@@ -59,9 +59,7 @@ def main() -> None:
     args = parser.parse_args()
     examples = _examples(args.corpus)
     classifier = KeywordClassifier()
-    report = evaluate_classifier(
-        classifier, examples, threshold=args.threshold
-    )
+    report = evaluate_classifier(classifier, examples, threshold=args.threshold)
     print(
         json.dumps(
             {

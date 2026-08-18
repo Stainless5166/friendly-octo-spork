@@ -14,6 +14,7 @@ from pathlib import Path
 import typer
 
 from spork import __version__
+from spork.cli.commands.alerts import app as alerts_app
 from spork.cli.commands.backfill import backfill
 from spork.cli.commands.config import app as config_app
 from spork.cli.commands.doctor import doctor
@@ -35,6 +36,7 @@ app = typer.Typer(
     add_completion=False,
 )
 app.add_typer(rules_app, name="rules")
+app.add_typer(alerts_app, name="alerts")
 app.add_typer(config_app, name="config")
 app.add_typer(secrets_app, name="secrets")
 app.command("doctor")(doctor)

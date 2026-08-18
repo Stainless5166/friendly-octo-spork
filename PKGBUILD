@@ -14,7 +14,7 @@
 # does for development.
 
 pkgname=spork
-pkgver=0.1.0
+pkgver=0.2.0b1
 pkgrel=1
 pkgdesc="Tiered, JMAP-native email triage daemon + CLI for a single Fastmail account"
 arch=('any')

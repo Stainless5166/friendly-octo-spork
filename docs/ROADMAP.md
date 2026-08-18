@@ -295,20 +295,12 @@ involved yet.
       into `spork.core.pipeline.process_message()`
 - [x] `audit_log` writes for every action taken (S)
 - [x] `spork rules test <file>` dry-run against recent mail, no side effects (M)
-      — CLI wiring + rules loading is real, tested, and shipped
-      (`spork.cli.commands.rules`, `tests/cli/commands/test_rules.py`);
-      "against recent mail" itself genuinely needs a live JMAP fetch
-      (there's no local mail store spork could substitute — it's a
-      pure client to JMAP as the source of truth, docs/DESIGN.md
-      §9.3), so that step is a settled-shape `NotImplementedError`,
-      caught and reported as a clean CLI error rather than a
-      traceback, same blocker/treatment as
-      `JmapClient.fetch_new_messages()` (M1). No fixture-file
-      workaround — `FileProvider` (M1b) proves the `Provider`
-      abstraction generalizes, but it isn't and was never meant to be
-      a stand-in for "recent mail" here.
+      — the CLI now uses the provider's read-only `BackfillProvider`
+      capability, evaluates Tier 1 only, and emits sanitized per-message
+      previews without constructing the LLM, StateDB, or action applier.
+      The live path was verified against the dedicated Fastmail account.
 - [x] Unit tests: condition matching, idempotency (M) — dry-run output
-      still pending the JMAP fetch above
+      is covered by the CLI/FileProvider acceptance path
 
   Offline acceptance for deterministic rule selection and retry safety is
   also bound and passing in `docs/acceptance/m2_local.feature`; it does not
@@ -316,11 +308,9 @@ involved yet.
 
 **Exit criteria:** a hand-written `rules.toml` with 3–4 real rules
 correctly files live test mail with no LLM calls; `spork rules test`
-matches what actually happens when the rule goes live. **Not yet
-met** — blocked on the same live Fastmail account/API token as the
-rest of M1's real JMAP work. Everything through action execution +
-idempotency + audit + the CLI command's own loading/error-handling is
-real and tested; only the live fetch inside `spork rules test` remains.
+matches what actually happens when the rule goes live. **Met** — live
+JMAP rule previews and live deterministic actions have been verified
+against the dedicated test account.
 
 ## M3 — LLM escalation (Tier 2)
 

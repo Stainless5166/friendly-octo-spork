@@ -139,7 +139,9 @@ async def run_daemon(
     # Tier 2 was wired in) — test_run_daemon_propagates_a_missing_rules_file_error
     # relies on a bad rules_path surfacing as RulesLoadError regardless
     # of what else in config is or isn't configured.
-    rules_state = RulesState(rules=load_rules(config.rules_path))
+    rules_state = RulesState(
+        rules=load_rules(config.rules_path, allow_escalation=config.tiering.tier2_enabled)
+    )
 
     llm_client: LLMClient = (
         _ObserveLLMClient() if observe else build_llm_client(config, runtime_secrets)

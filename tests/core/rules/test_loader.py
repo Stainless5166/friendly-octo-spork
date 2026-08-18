@@ -42,6 +42,22 @@ def test_load_rules_parses_valid_rules_toml(tmp_path: Path) -> None:
     assert rules[1].when.always is True
 
 
+def test_load_rules_rejects_escalation_when_tier2_is_disabled(tmp_path: Path) -> None:
+    """Tier 1 beta mode fails before an escalation can reach a model."""
+    path = tmp_path / "rules.toml"
+    path.write_text(
+        """
+        [[rule]]
+        id = "fallback"
+        when = { always = true }
+        action = { type = "escalate" }
+        """
+    )
+
+    with pytest.raises(RulesLoadError, match="Tier 2 is disabled"):
+        load_rules(path, allow_escalation=False)
+
+
 def test_load_rules_parses_alert_immediately_on_an_action(tmp_path: Path) -> None:
     """An action can opt into an immediate alert at escalation time
     (docs/DESIGN.md §12.2) — defaults to False when the rule doesn't

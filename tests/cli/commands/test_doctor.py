@@ -191,4 +191,20 @@ def test_doctor_reports_systemd_unit_state(tmp_path: Path) -> None:
     result = _run("doctor", env=_write_full_setup(tmp_path))
 
     assert "systemd unit" in result.stdout
+
+
+def test_doctor_warns_when_writes_lack_an_expected_account(tmp_path: Path) -> None:
+    """Write-enabled beta config must carry an account identity fence."""
+    env = _write_full_setup(tmp_path)
+    config_path = tmp_path / "xdg-config-home" / "spork" / "config.toml"
+    config_path.write_text(
+        config_path.read_text().replace(
+            "actions_log_path =", "allow_writes = true\n        actions_log_path ="
+        )
+    )
+
+    result = _run("doctor", env=env)
+
+    assert result.returncode == 1
+    assert "[WARN] write safety: writes enabled without expected_account_email" in result.stdout
     assert "installed=False" in result.stdout

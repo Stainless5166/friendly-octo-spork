@@ -648,6 +648,7 @@ classDiagram
     class TieringConfig {
         <<pydantic BaseModel, extra=forbid>>
         +default_unmatched_action: str
+        +tier2_enabled: bool
         +alert_threshold: float
         +autoact_threshold: float
         +daily_call_budget: int
@@ -5029,7 +5030,9 @@ spork rules list              # show rules.toml: id/enabled/description/
                                # separate, still-unbuilt item behind a
                                # different command, spork rules stats)
 spork rules test <file>       # dry-run a candidate rules.toml against
-                               # recent mail, no side effects
+                                # recent mail, no side effects
+spork rules validate [file]    # report Tier 1 safety, action counts, and
+                                # escalation rules; --json for automation
 spork rules edit              # open rules.toml in $EDITOR, validate on save,
                                # push a reload to sporkd if it's running
                                # (§6.2.2/§7.5)
@@ -5084,8 +5087,8 @@ spork reclassify <message-id> # standalone, like spork logs — works whether
                                # an ordinary automatic run
 
 spork doctor                  # secretspec check, config/provider/LLM/
-                               # alerter/rules/local-classifier load checks, JMAP auth
-                               # check, systemd unit install/enabled/
+                                # alerter/rules/local-classifier load checks, JMAP auth
+                                # check, write-account safety, systemd unit install/enabled/
                                 # active state — DB migration status
                                 # isn't wired in yet
 
@@ -5103,18 +5106,12 @@ spork install-service [INSTANCE] [--no-enable-now]  # writes the unit template t
 
 `spork rules test` genuinely requires a live JMAP connection — spork is
 a pure client to JMAP as the source of truth (§9.3), with no local mail
-store to substitute (beyond, potentially, a transient cache to survive
-a mid-processing network drop, which is resilience, not an offline
-mode). There's no fixture-file fallback for "recent mail": testing
-against synthetic data isn't testing against recent mail, it's testing
-against synthetic data, and the command would say something else if
-that's what it did. Until M1's live JMAP fetch exists, `spork rules
-test` loads and validates the given `rules.toml` (real, useful on its
-own — catches a malformed file before it ever reaches the daemon) and
-then fails clearly rather than pretending to dry-run anything.
-`FileProvider` (§9.3) doesn't change this: it exists to prove the
-`Provider` abstraction itself, not to give this command a fixture mode
-it deliberately doesn't have.
+store to substitute. It uses the provider's read-only
+`BackfillProvider` capability to fetch a bounded sample, evaluates Tier
+1 only, and prints sanitized action previews. It never constructs the
+LLM, writes mailbox state, marks messages processed, or writes audit
+records. `FileProvider` (§9.3) remains useful for testing the same CLI
+behavior without pretending that fixture data is live mail.
 
 ## 14. systemd integration
 
