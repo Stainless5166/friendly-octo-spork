@@ -56,9 +56,29 @@ reason than the fault-injection feature above: `EntityContextProvider`
 (docs/DESIGN.md §10.8) has no live dependency at all — it's a
 self-contained, JSON-fixture-backed knowledge base lookup, the same
 "buildable and testable fully offline" category `FileProvider`
-already established. No step bindings exist yet; the described
-behavior is covered directly by
-`tests/core/context/clients/entities/`'s pytest suite instead.
+already established. Its Behave bindings use a fresh temporary JSON
+fixture per scenario; the described behavior is also covered directly
+by `tests/core/context/clients/entities/`'s pytest suite.
+
+The `m2_local.feature` through `m6_local.feature` specifications apply
+the same split to behavior that is locally deterministic but whose
+original feature also records live evidence. They use real Spork
+components with temporary files, injected collaborators, recorded model
+responses, subprocess boundaries, or Unix sockets. They do not replace
+the original live specifications:
+
+- M2 local rules and retry behavior run without JMAP; `spork rules test`
+  against recent live mail remains in `m2_rules.feature`.
+- M3 local confidence, budget, draft, and failure-safety behavior runs
+  with recorded responses; live LiteLLM/Anthropic evidence remains in
+  `m3_tier2.feature`.
+- M4 local VIP, Tier 2, and DBus fallback behavior runs with injected
+  alerters; prolonged push-health acceptance remains live.
+- M5 local control-surface behavior uses a real temporary daemon socket;
+  the live feature remains the daemon-account acceptance specification.
+- M6 local unit, install, doctor, and `sd_notify` boundaries use fake
+  systemctl and temporary sockets; real user-manager lifecycle remains
+  live.
 
 `m10_receipt_archiving.feature` is the same "not `@manual`" shape for a
 different reason: the whole pipeline it specifies (docs/DESIGN.md §9.5,
@@ -82,13 +102,18 @@ first — see `docs/ROADMAP.md` M10's own note on the collision.
 |---|---|---|
 | `m1_jmap.feature` | JMAP session, push, fallback, cursor safety | `@baseline` and `@push` bound, live-verified; `@cursor-safety`/`@network-recovery` still open (need a real restart cycle / real network control) |
 | `m1_jmap_fault_injection.feature` | Push/fallback composition, simulated | Fully bound and passing on every run — mitmproxy harness, no live account |
-| `m2_rules.feature` | Live deterministic rules and actions | Offline pipeline tested; live JMAP actions still open |
-| `m3_tier2.feature` | Live LLM verdicts, confidence, budget, drafts | Recorded/offline pipeline tested; live JMAP writes and live model run open |
-| `m4_alerting.feature` | Alerts, push health, desktop delivery | Logging alerts tested; desktop backend and push-health alert open |
-| `m5_control_surface.feature` | Daemon and CLI control surface | FileProvider/systemd-free integration tested; live JMAP path open |
-| `m6_systemd.feature` | Service install and operational startup | Unit/install behavior tested; real user-session acceptance open |
+| `m2_rules.feature` | Live deterministic rules and actions | Live JMAP evidence open; local rules/retry coverage is in `m2_local.feature` |
+| `m2_local.feature` | Offline deterministic rules and retry safety | Fully bound and passing; no live account or network |
+| `m3_tier2.feature` | Live LLM verdicts, confidence, budget, drafts | Live model and JMAP evidence open; local policy coverage is in `m3_local.feature` |
+| `m3_local.feature` | Offline recorded Tier 2 policy and safety | Fully bound and passing; no live model or mailbox |
+| `m4_alerting.feature` | Alerts, push health, desktop delivery | Push-health/live delivery evidence remains open; local policy coverage is in `m4_local.feature` |
+| `m4_local.feature` | Offline alert policy and DBus fallback | Fully bound and passing; no desktop session or live daemon |
+| `m5_control_surface.feature` | Live daemon and CLI control surface | Live-account path remains open; local control coverage is in `m5_local.feature` |
+| `m5_local.feature` | Offline daemon and CLI control surface | Fully bound and passing; real temporary Unix socket, no live account |
+| `m6_systemd.feature` | Live service install and operational startup | Real user-session lifecycle remains open; local boundaries are in `m6_local.feature` |
+| `m6_local.feature` | Offline systemd file, install, doctor, and notify boundaries | Fully bound and passing; no user manager or JMAP |
 | `m7_hardening.feature` | Unattended operation and v1 release | Requires real mailbox, model, rate-limit, and one-week run |
-| `m9_entity_context.feature` | Structured domain/company/service/person knowledge base | Fully covered by pytest (`tests/core/context/clients/entities/`); no behave bindings, no live dependency to wait on |
+| `m9_entity_context.feature` | Structured domain/company/service/person knowledge base | Fully bound and passing; temporary JSON fixture, no live dependency |
 | `m10a_receipt_pdf.feature` | Receipt PDF building + archiving (`spork.core.receipts.pdf`/`archive`) | Fully bound and passing on every run — no live account, no network |
 | `m10b_receipt_senders.feature` | Known-sender registry + deterministic extraction (`spork.core.receipts.registry`/`extract`) | Fully bound and passing on every run — no live account, no network |
 | `m10c_receipt_extraction_llm.feature` | Recorded Tier 2 receipt-extraction fallback (`spork.core.receipts.llm`) | Fully bound and passing on every run — no live model call |

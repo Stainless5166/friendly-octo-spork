@@ -337,11 +337,17 @@ surfaced (`spork.core.runtime` -> `spork.core.receipts.pipeline` ->
 `spork.core.pipeline.core`, looping back through
 `spork.core.pipeline.default`'s own import of the same module) was
 found and fixed by making that import function-local. **M10 is now
-fully wired end to end; the full suite is 975 tests, 971 green, 1
-skipped.** The remaining 3 are pre-existing, unrelated
-`test_mitm_fault_injection.py` failures — a sandbox/proxy limitation
-confirmed present on `main` before this work started, not a
-regression this milestone introduced.
+fully wired end to end; the full suite is 975 tests, all green.** The local
+acceptance conversion adds 18 runnable Behave scenarios; the default
+acceptance run now passes 48 scenarios and skips only the 33 live/manual
+scenarios guarded by the acceptance environment.
+Updated once more for local acceptance conversion: M2 deterministic rule
+selection/retry safety, M3 recorded Tier 2 policy safety, M4 alert policy
+and DBus fallback, M5 Unix-socket control, and M6 systemd boundaries now
+have separate fully bound Behave features (`m2_local.feature` through
+`m6_local.feature`). These are offline evidence and do not replace the
+corresponding live Fastmail, Anthropic, user-systemd, prolonged-outage, or
+operational-run acceptance specifications.
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
