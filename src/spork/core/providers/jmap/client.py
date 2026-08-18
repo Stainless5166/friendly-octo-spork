@@ -2,8 +2,8 @@
 
 Keeps optional `jmapc` types inside this provider boundary and exposes
 only `NormalizedMessage` plus an Email-state checkpoint. Mutation-side
-methods remain settled `NotImplementedError` leaves until their own
-recorded Fastmail contracts land.
+methods use guarded `Email/set` requests after reading the current Email
+state, so concurrent remote changes fail closed.
 """
 
 from __future__ import annotations
@@ -125,6 +125,24 @@ def _query_types() -> tuple[type[Any], type[Any]]:
             "JMAP support requires the optional dependency: install spork[jmap]"
         ) from exc
     return methods.EmailQuery, models.EmailQueryFilterCondition
+
+
+def _write_types() -> tuple[type[Any], type[Any], type[Any], type[Any], type[Any]]:
+    """Load the optional JMAP mutation models only for write operations."""
+    try:
+        methods = import_module("jmapc.methods")
+        models = import_module("jmapc.models")
+    except ImportError as exc:
+        raise JmapError(
+            "JMAP support requires the optional dependency: install spork[jmap]"
+        ) from exc
+    return (
+        methods.EmailSet,
+        models.Email,
+        models.EmailAddress,
+        models.EmailBodyPart,
+        models.EmailBodyValue,
+    )
 
 
 def _field(value: object, *names: str) -> object:
@@ -258,12 +276,12 @@ class JmapClient:
 
     def _require_write_access(self) -> None:
         """Prevent mutation attempts unless session and config both allow them."""
-        if (
-            not self._allow_writes
-            or self._permissions is None
-            or not self._permissions.can_write_mail
-        ):
+        if not self._allow_writes:
             raise JmapError("JMAP client is read-only; write access is not enabled")
+        if self._permissions is None:
+            self.connect()
+        if self._permissions is None or not self._permissions.can_write_mail:
+            raise JmapError("JMAP account is read-only; write access is not enabled")
 
     @property
     def account_id(self) -> str:
@@ -418,6 +436,58 @@ class JmapClient:
             and mailbox_ids.get(self._inbox_id) is True
         )
 
+    def _current_email(self, message_id: str) -> tuple[str, Any]:
+        """Read one message's state before an optimistic-concurrency update."""
+        _, email_get, _, _ = _method_types()
+        response = self._request(
+            email_get(ids=[message_id], properties=["id", "mailboxIds", "keywords"])
+        )
+        state = getattr(response, "state", None)
+        emails = getattr(response, "data", None)
+        if not isinstance(state, str) or not state:
+            raise JmapError("Email/get returned no state for a write")
+        if not isinstance(emails, list) or len(emails) != 1:
+            raise JmapError(f"Email/get returned no unique message for {message_id!r}")
+        if getattr(emails[0], "id", None) != message_id:
+            raise JmapError(f"Email/get returned the wrong message for {message_id!r}")
+        return state, emails[0]
+
+    def _mailbox_id(self, name: str, *, role: str | None = None) -> str:
+        """Resolve a configured mailbox name or role from the session snapshot."""
+        if role is not None:
+            matches = [
+                mailbox_id
+                for mailbox_id, (_, item_role) in self._mailboxes.items()
+                if item_role == role
+            ]
+        else:
+            matches = [
+                mailbox_id
+                for mailbox_id, (mailbox_name, _) in self._mailboxes.items()
+                if mailbox_name == name
+            ]
+        if len(matches) != 1:
+            target = f"role {role!r}" if role is not None else f"mailbox {name!r}"
+            raise JmapError(f"expected exactly one {target}; found {len(matches)}")
+        return matches[0]
+
+    def _email_set_update(self, state: str, message_id: str, update: dict[str, Any]) -> None:
+        """Apply one guarded Email/set update and require its acknowledgement."""
+        email_set, _, _, _, _ = _write_types()
+        response = self._request(email_set(if_in_state=state, update={message_id: update}))
+        updated = _mapping(_field(response, "updated"))
+        if updated is None or message_id not in updated:
+            raise JmapError(f"Email/set did not acknowledge update for {message_id!r}")
+
+    @staticmethod
+    def _true_flags(value: object) -> dict[str, bool]:
+        """Keep only active boolean flags from a JMAP map."""
+        if not isinstance(value, Mapping):
+            return {}
+        return {
+            key: True for key, enabled in value.items() if isinstance(key, str) and enabled is True
+        }
+
     @staticmethod
     def _normalize(email: object) -> NormalizedMessage:
         """Reduce an optional-heavy jmapc Email to the pipeline model."""
@@ -491,20 +561,57 @@ class JmapClient:
         """Mutate `message`'s mailboxes via `Email/set` per `action`
         (docs/DESIGN.md §9.3) — the write side of the JMAP provider."""
         self._require_write_access()
-        raise NotImplementedError(
-            "JmapClient.apply_action() requires a live jmapc session — "
-            "not implemented yet, see docs/ROADMAP.md M1"
-        )
+        self.connect()
+        if action.type == "ignore":
+            return
+        if action.type not in {"move", "tag"} or action.mailbox is None:
+            raise JmapError(f"JMAP client cannot apply action {action!r}")
+        target_id = self._mailbox_id(action.mailbox)
+        state, email = self._current_email(message.message_id)
+        current = self._true_flags(getattr(email, "mailbox_ids", None))
+        if action.type == "move":
+            mailbox_ids = {target_id: True}
+        else:
+            mailbox_ids = {**current, target_id: True}
+        self._email_set_update(state, message.message_id, {"mailboxIds": mailbox_ids})
 
     def create_draft(self, message: NormalizedMessage, body: str) -> None:
         """Create a draft reply to `message` via `Email/set` into the
         account's Drafts mailbox — never `EmailSubmission/set`
         (docs/DESIGN.md §10.6, §11's "draft, never send" invariant)."""
         self._require_write_access()
-        raise NotImplementedError(
-            "JmapClient.create_draft() requires a live jmapc session — "
-            "not implemented yet, see docs/ROADMAP.md M3"
+        self.connect()
+        drafts_id = self._mailbox_id("Drafts", role="drafts")
+        state, _ = self._current_email(message.message_id)
+        email_set, email_type, address_type, body_part_type, body_value_type = _write_types()
+        message_id = message.headers.get("Message-ID")
+        references = message.headers.get("References", "").split()
+        if message_id is not None and message_id not in references:
+            references.append(message_id)
+        subject = (
+            message.subject
+            if message.subject.casefold().startswith("re:")
+            else f"Re: {message.subject}"
         )
+        draft = email_type(
+            mailbox_ids={drafts_id: True},
+            keywords={"$draft": True},
+            to=[address_type(email=message.from_address)],
+            subject=subject,
+            in_reply_to=[message_id] if message_id is not None else None,
+            references=references or None,
+            text_body=[body_part_type(part_id="body")],
+            body_values={"body": body_value_type(value=body)},
+        )
+        response = self._request(
+            email_set(
+                if_in_state=state,
+                create={f"draft-{message.message_id}": draft},
+            )
+        )
+        created = _mapping(_field(response, "created"))
+        if created is None or f"draft-{message.message_id}" not in created:
+            raise JmapError("Email/set did not acknowledge draft creation")
 
     def fetch_attachments(self, message: NormalizedMessage) -> Sequence[Attachment]:
         """Resolve `message`'s attachments via `Email/get`'s `blobId`s
@@ -521,13 +628,13 @@ class JmapClient:
     def apply_keywords(self, message: NormalizedMessage, keywords: Sequence[str]) -> None:
         """Mutate `message`'s keywords map via `Email/set` (docs/DESIGN.md
         §9.5, M10) — the write side, alongside `apply_action()`/
-        `create_draft()`, both also blocked on write-scoped credentials
-        the maintainer's live (read-only) account doesn't have."""
+        `create_draft()`."""
         self._require_write_access()
-        raise NotImplementedError(
-            "JmapClient.apply_keywords() requires a live jmapc session with "
-            "write access — not implemented yet, see docs/ROADMAP.md M10"
-        )
+        self.connect()
+        state, email = self._current_email(message.message_id)
+        current = self._true_flags(getattr(email, "keywords", None))
+        current.update({keyword: True for keyword in keywords if keyword})
+        self._email_set_update(state, message.message_id, {"keywords": current})
 
     def get_thread_context(self, message: NormalizedMessage) -> ThreadContext:
         """Resolve prior subject and Sent-mail state through Thread/get."""
