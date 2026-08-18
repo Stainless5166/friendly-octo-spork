@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from spork.core.classify.base import ClassificationResult, TextClassifier
+from spork.core.classify.decisions import Classification
 from spork.core.models import NormalizedMessage
 from spork.core.rules.schema import Action, Condition, Rule
 
@@ -31,6 +32,7 @@ class RuleVerdict:
 
     action: Action
     matched_rule_id: str | None
+    classifications: tuple[Classification, ...] = ()
 
 
 def _condition_matches(
@@ -105,6 +107,13 @@ def evaluate(
         if not rule.enabled:
             continue
         if _condition_matches(rule.when, message, classify):
-            return RuleVerdict(action=rule.action, matched_rule_id=rule.id)
+            return RuleVerdict(
+                action=rule.action,
+                matched_rule_id=rule.id,
+                classifications=tuple(
+                    Classification(name=name, score=score)
+                    for name, score in sorted(rule.classifications.items())
+                ),
+            )
 
     return RuleVerdict(action=default_unmatched_action, matched_rule_id=None)

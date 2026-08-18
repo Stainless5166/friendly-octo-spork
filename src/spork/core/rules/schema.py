@@ -9,9 +9,9 @@ dry-run without ever calling `eval`/`exec` on anything a user wrote
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Condition(BaseModel):
@@ -87,4 +87,5 @@ class Rule(BaseModel):
     description: str = ""
     when: Condition
     action: Action
+    classifications: dict[str, Annotated[float, Field(ge=0, le=100)]] = Field(default_factory=dict)
     enabled: bool = True

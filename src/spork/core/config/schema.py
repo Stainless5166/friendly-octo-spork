@@ -68,6 +68,24 @@ class ReceiptArchiveConfig(BaseModel):
     extraction: BackendSpec
 
 
+class ClassificationDestinationConfig(BaseModel):
+    """One classification-to-mailbox/tag threshold mapping."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    destination: str
+    minimum_score: float = Field(0, ge=0, le=100)
+
+
+class ClassificationConfig(BaseModel):
+    """The policy that turns classification evidence into destinations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mailboxes: dict[str, ClassificationDestinationConfig] = Field(default_factory=dict)
+    tags: dict[str, ClassificationDestinationConfig] = Field(default_factory=dict)
+
+
 class TieringConfig(BaseModel):
     """The `[tiering]` table — Tier 1/Tier 2 thresholds and policy.
 
@@ -78,7 +96,7 @@ class TieringConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    default_unmatched_action: Literal["escalate", "ignore"] = "escalate"
+    default_unmatched_action: Literal["escalate", "ignore"] = "ignore"
     alert_threshold: float = 0.55
     autoact_threshold: float = 0.85
     daily_call_budget: int = 200
@@ -117,6 +135,7 @@ class SporkConfig(BaseModel):
     # None means receipt archiving is off entirely (§9.5, M10) — same
     # "unset is a real, valid state" convention as context/local_classifier.
     receipt_archive: ReceiptArchiveConfig | None = None
+    classification: ClassificationConfig = Field(default_factory=ClassificationConfig)
     rules_path: Path
     db_path: Path
     socket_path: Path | None = None

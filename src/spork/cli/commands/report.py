@@ -18,6 +18,14 @@ import typer
 
 from spork.core.classify import registry as classify_registry
 from spork.core.classify.base import TextClassifier
+from spork.core.classify.decisions import (
+    Classification,
+    ClassificationPolicy,
+    DestinationPolicy,
+    decide_classifications,
+    exact_duplicate_key,
+    merge_classifications,
+)
 from spork.core.classify.registry import UnknownClassifierError
 from spork.core.config.loader import ConfigLoadError, load_config
 from spork.core.config.schema import SporkConfig
@@ -58,8 +66,18 @@ def report(
     output: Path | None = typer.Option(  # noqa: B008 - idiomatic Typer, not a mutable default
         None, "--output", help="Write the aggregate JSON report to this path."
     ),
+    actions_out: Path | None = typer.Option(  # noqa: B008 - idiomatic Typer, not a mutable default
+        None,
+        "--actions-out",
+        help="Write a sanitized JSONL action plan to this path.",
+    ),
 ) -> None:
-    """Inspect up to 50 messages without Tier 2, writes, or production state."""
+    """Inspect up to 50 messages without Tier 2, writes, or production state.
+
+    `actions_out` is a reviewable plan, not an execution path: each record
+    describes the action the active Tier 1 rules selected without including
+    message content or constructing a mailbox writer.
+    """
     try:
         config = load_config()
     except ConfigLoadError as exc:
@@ -67,10 +85,26 @@ def report(
         raise typer.Exit(code=1) from exc
 
     try:
-        result = _build_report(config, limit=limit, page_size=page_size, unread_only=unread_only)
+        result, action_records = _build_report(
+            config,
+            limit=limit,
+            page_size=page_size,
+            unread_only=unread_only,
+            include_actions=actions_out is not None,
+        )
     except _ReportError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+
+    if actions_out is not None:
+        try:
+            actions_out.parent.mkdir(parents=True, exist_ok=True)
+            actions_out.write_text(
+                "".join(json.dumps(record, sort_keys=True) + "\n" for record in action_records)
+            )
+        except OSError as exc:
+            typer.echo(f"Error: could not write action plan to {actions_out}: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
 
     encoded = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if output is None:
@@ -85,8 +119,13 @@ def report(
 
 
 def _build_report(
-    config: SporkConfig, *, limit: int, page_size: int, unread_only: bool
-) -> dict[str, Any]:
+    config: SporkConfig,
+    *,
+    limit: int,
+    page_size: int,
+    unread_only: bool,
+    include_actions: bool = False,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Evaluate a bounded sample using only read-side and Tier 1 components."""
     secrets = resolve_runtime_secrets(config, reason="read-only report")
     provider = build_provider(config, secrets)
@@ -102,6 +141,22 @@ def _build_report(
         else None
     )
     default_action = Action(type=config.tiering.default_unmatched_action)
+    classification_policy = ClassificationPolicy(
+        mailboxes={
+            name: DestinationPolicy(
+                destination=destination.destination,
+                minimum_score=destination.minimum_score,
+            )
+            for name, destination in config.classification.mailboxes.items()
+        },
+        tags={
+            name: DestinationPolicy(
+                destination=destination.destination,
+                minimum_score=destination.minimum_score,
+            )
+            for name, destination in config.classification.tags.items()
+        },
+    )
     action_counts: Counter[str] = Counter()
     rule_counts: Counter[str] = Counter()
     body_lengths: list[int] = []
@@ -110,6 +165,8 @@ def _build_report(
     total: int | None = None
     has_more = False
     position = 0
+    action_records: list[dict[str, Any]] = []
+    seen_duplicate_keys: dict[str, str] = {}
 
     while sampled < limit:
         page = provider.query_messages(
@@ -128,9 +185,51 @@ def _build_report(
                 default_unmatched_action=default_action,
                 classifier=classifier,
             )
+            classifications = verdict.classifications
+            duplicate_of: str | None = None
+            duplicate_key = exact_duplicate_key(message)
+            if duplicate_key in seen_duplicate_keys:
+                duplicate_of = seen_duplicate_keys[duplicate_key]
+                classifications = merge_classifications(
+                    classifications, (Classification(name="duplicate", score=100),)
+                )
+            else:
+                seen_duplicate_keys[duplicate_key] = message.message_id
+            if classifier is not None:
+                classifier_result = classifier.classify(message)
+                classifications = merge_classifications(
+                    classifications,
+                    tuple(
+                        Classification(name=name, score=score * 100)
+                        for name, score in classifier_result.scores.items()
+                        if score > 0
+                    ),
+                )
+            decision = decide_classifications(classifications, classification_policy)
             action_counts[verdict.action.type] += 1
             if verdict.matched_rule_id is not None:
                 rule_counts[verdict.matched_rule_id] += 1
+            if include_actions:
+                record: dict[str, Any] = {
+                    "action": {
+                        "mailbox": verdict.action.mailbox,
+                        "reason": verdict.action.reason,
+                        "type": verdict.action.type,
+                    },
+                    "matched_rule_id": verdict.matched_rule_id,
+                    "message_id": message.message_id,
+                }
+                if classifications or config.classification.mailboxes or config.classification.tags:
+                    record["classifications"] = [
+                        {"name": item.name, "score": item.score} for item in classifications
+                    ]
+                    record["decision"] = {
+                        "mailbox": decision.mailbox,
+                        "tags": list(decision.tags),
+                    }
+                if duplicate_of is not None:
+                    record["duplicate_of"] = duplicate_of
+                action_records.append(record)
             body_lengths.append(len(message.body_text))
             for field in ("from_address", "from_domain", "subject", "body_text"):
                 if not getattr(message, field):
@@ -140,19 +239,22 @@ def _build_report(
         if not page.has_more:
             break
 
-    return {
-        "sampled_messages": sampled,
-        "available_messages": total,
-        "has_more": has_more,
-        "rule_actions": dict(sorted(action_counts.items())),
-        "matched_rules": dict(sorted(rule_counts.items())),
-        "body_chars": {
-            "min": min(body_lengths, default=0),
-            "median": int(median(body_lengths)) if body_lengths else 0,
-            "max": max(body_lengths, default=0),
+    return (
+        {
+            "sampled_messages": sampled,
+            "available_messages": total,
+            "has_more": has_more,
+            "rule_actions": dict(sorted(action_counts.items())),
+            "matched_rules": dict(sorted(rule_counts.items())),
+            "body_chars": {
+                "min": min(body_lengths, default=0),
+                "median": int(median(body_lengths)) if body_lengths else 0,
+                "max": max(body_lengths, default=0),
+            },
+            "missing_fields": dict(sorted(missing_fields.items())),
+            "tier2_calls": 0,
+            "mailbox_mutations": 0,
+            "messages_marked_processed": 0,
         },
-        "missing_fields": dict(sorted(missing_fields.items())),
-        "tier2_calls": 0,
-        "mailbox_mutations": 0,
-        "messages_marked_processed": 0,
-    }
+        action_records,
+    )

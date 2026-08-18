@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import shutil
 import uuid
 from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from spork.core.actions.executor import ActionExecutor
@@ -25,7 +28,7 @@ from spork.core.config.paths import resolve_socket_path
 from spork.core.config.schema import SporkConfig, TieringConfig
 from spork.core.context.base import ContextProvider
 from spork.core.ipc.server import IpcServer
-from spork.core.llm.base import LLMClient
+from spork.core.llm.base import LLMClient, LLMResult, VerdictRequest
 from spork.core.llm.budget import has_budget_remaining
 from spork.core.pipeline import process_message
 from spork.core.pipeline.observer import PipelineObserver
@@ -81,6 +84,14 @@ class _ObserveKeywordApplier:
         return
 
 
+class _ObserveLLMClient:
+    """Makes accidental Tier 2 entry an immediate local programming error."""
+
+    def get_verdict(self, request: VerdictRequest) -> LLMResult:
+        del request
+        raise RuntimeError("observe mode must not call a Tier 2 LLM client")
+
+
 def _utc_now_iso() -> str:
     """Default `now` for `_run_message_loop()`'s budget-alert check —
     same shape as every other `now: Callable[[], str]` DI default in
@@ -130,7 +141,9 @@ async def run_daemon(
     # of what else in config is or isn't configured.
     rules_state = RulesState(rules=load_rules(config.rules_path))
 
-    llm_client = build_llm_client(config, runtime_secrets)
+    llm_client: LLMClient = (
+        _ObserveLLMClient() if observe else build_llm_client(config, runtime_secrets)
+    )
     context_provider = build_context_provider(config, runtime_secrets)
     receipt_archive = build_receipt_archive_components(
         config, provider, context_provider, runtime_secrets
@@ -164,45 +177,55 @@ async def run_daemon(
         socket_path, handlers=_build_ipc_handlers(daemon_state, rules_state, config.rules_path)
     )
 
-    with StateDB(config.db_path) as state_db:
-        checkpoint_account_id: str | None = None
-        source: Source
-        if isinstance(provider, CheckpointedProvider):
-            checkpoint_account_id = provider.account_id()
-            source = provider.build_checkpointed_source(state_db.get_cursor(checkpoint_account_id))
-        else:
-            source = provider.build_source()
-
-        # Everything above can fail loudly (including JMAP session
-        # discovery); only once composition and cursor loading have
-        # succeeded is this process "ready" in a meaningful sense.
-        notify_fn("READY=1")
-
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(
-                _run_message_loop(
-                    source=source,
-                    rules_state=rules_state,
-                    default_unmatched_action=default_unmatched_action,
-                    executor=executor,
-                    state_db=state_db,
-                    ops=ops,
-                    classifier=classifier,
-                    llm_client=llm_client,
-                    draft_creator=draft_creator,
-                    thread_history_reader=thread_history_reader,
-                    mailbox_lister=mailbox_lister,
-                    context_provider=context_provider,
-                    receipt_archive=receipt_archive,
-                    tiering=config.tiering,
-                    daemon_state=daemon_state,
-                    stop_event=stop_event,
-                    idle_delay_seconds=idle_delay_seconds,
-                    cursor_account_id=checkpoint_account_id,
-                    observe=observe,
-                )
+    with ExitStack() as stack:
+        state_path = config.db_path
+        if observe:
+            state_path = Path(stack.enter_context(TemporaryDirectory(prefix="spork-observe-"))) / (
+                "state.sqlite3"
             )
-            tg.create_task(ipc_server.serve(stop_event))
+            if config.db_path.exists():
+                shutil.copy2(config.db_path, state_path)
+        with StateDB(state_path) as state_db:
+            checkpoint_account_id: str | None = None
+            source: Source
+            if isinstance(provider, CheckpointedProvider):
+                account_id = provider.account_id()
+                checkpoint_account_id = None if observe else account_id
+                cursor = None if observe else state_db.get_cursor(account_id)
+                source = provider.build_checkpointed_source(cursor)
+            else:
+                source = provider.build_source()
+
+            # Everything above can fail loudly (including JMAP session
+            # discovery); only once composition and cursor loading have
+            # succeeded is this process "ready" in a meaningful sense.
+            notify_fn("READY=1")
+
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(
+                    _run_message_loop(
+                        source=source,
+                        rules_state=rules_state,
+                        default_unmatched_action=default_unmatched_action,
+                        executor=executor,
+                        state_db=state_db,
+                        ops=ops,
+                        classifier=classifier,
+                        llm_client=llm_client,
+                        draft_creator=draft_creator,
+                        thread_history_reader=thread_history_reader,
+                        mailbox_lister=mailbox_lister,
+                        context_provider=context_provider,
+                        receipt_archive=receipt_archive,
+                        tiering=config.tiering,
+                        daemon_state=daemon_state,
+                        stop_event=stop_event,
+                        idle_delay_seconds=idle_delay_seconds,
+                        cursor_account_id=checkpoint_account_id,
+                        observe=observe,
+                    )
+                )
+                tg.create_task(ipc_server.serve(stop_event))
 
 
 def _build_ipc_handlers(
