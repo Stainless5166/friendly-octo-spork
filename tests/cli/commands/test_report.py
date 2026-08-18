@@ -9,7 +9,13 @@ import sys
 from pathlib import Path
 
 
-def _write_config(config_dir: Path, tmp_path: Path, count: int = 3) -> tuple[Path, Path]:
+def _write_config(
+    config_dir: Path,
+    tmp_path: Path,
+    count: int = 3,
+    action: str = "ignore",
+    classification: bool = False,
+) -> tuple[Path, Path]:
     config_dir.mkdir(parents=True, exist_ok=True)
     messages_path = tmp_path / "messages.json"
     messages_path.write_text(
@@ -28,13 +34,25 @@ def _write_config(config_dir: Path, tmp_path: Path, count: int = 3) -> tuple[Pat
         )
     )
     rules_path = tmp_path / "rules.toml"
+    action_fields = f'type = "{action}"'
+    if action == "move":
+        action_fields += ', mailbox = "Reading"'
+    classification_line = "classifications = { banking = 100 }" if classification else ""
+    classification_config = (
+        "[classification.mailboxes.banking]\n"
+        'destination = "Banking and Finance"\n'
+        "minimum_score = 70"
+        if classification
+        else ""
+    )
     rules_path.write_text(
-        """
+        f"""
         [[rule]]
         id = "example"
-        when = { from_domain_in = ["example.com"] }
-        action = { type = "ignore" }
-        """
+        when = {{ from_domain_in = ["example.com"] }}
+        action = {{ {action_fields} }}
+        {classification_line}
+         """
     )
     db_path = tmp_path / "state.sqlite3"
     (config_dir / "config.toml").write_text(
@@ -53,9 +71,10 @@ def _write_config(config_dir: Path, tmp_path: Path, count: int = 3) -> tuple[Pat
         [llm.kwargs]
         responses_path = "{tmp_path / "responses.json"}"
 
-        [alerts]
-        spec = "spork.core.alerts.log:LoggingAlerter"
-        """
+         [alerts]
+         spec = "spork.core.alerts.log:LoggingAlerter"
+         {classification_config}
+         """
     )
     (tmp_path / "responses.json").write_text("{}")
     return db_path, messages_path
@@ -105,3 +124,66 @@ def test_report_rejects_missing_configuration_without_traceback(tmp_path: Path) 
     assert result.returncode == 1
     assert "Error:" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_report_writes_a_sanitized_action_plan_without_side_effects(tmp_path: Path) -> None:
+    db_path, messages_path = _write_config(tmp_path / "xdg" / "spork", tmp_path, action="move")
+    plan_path = tmp_path / "planned-actions.jsonl"
+
+    result = _run(tmp_path, "--limit", "2", "--actions-out", str(plan_path))
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["rule_actions"] == {"move": 2}
+    records = [json.loads(line) for line in plan_path.read_text().splitlines()]
+    assert records == [
+        {
+            "action": {"mailbox": "Reading", "reason": None, "type": "move"},
+            "matched_rule_id": "example",
+            "message_id": "msg-0",
+        },
+        {
+            "action": {"mailbox": "Reading", "reason": None, "type": "move"},
+            "matched_rule_id": "example",
+            "message_id": "msg-1",
+        },
+    ]
+    assert "Message 0" not in plan_path.read_text()
+    assert "A body" not in plan_path.read_text()
+    assert not db_path.exists()
+    assert not (messages_path.parent / "actions.jsonl").exists()
+
+
+def test_report_plans_receipt_archiving_without_building_receipt_pipeline(tmp_path: Path) -> None:
+    _write_config(tmp_path / "xdg" / "spork", tmp_path, action="archive_receipt")
+    plan_path = tmp_path / "planned-actions.jsonl"
+
+    result = _run(tmp_path, "--actions-out", str(plan_path))
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["rule_actions"] == {"archive_receipt": 3}
+    record = json.loads(plan_path.read_text().splitlines()[0])
+    assert record["action"]["type"] == "archive_receipt"
+
+
+def test_report_rejects_an_unwritable_action_plan_without_traceback(tmp_path: Path) -> None:
+    _write_config(tmp_path / "xdg" / "spork", tmp_path)
+    parent_file = tmp_path / "not-a-directory"
+    parent_file.write_text("occupied")
+
+    result = _run(tmp_path, "--actions-out", str(parent_file / "plan.jsonl"))
+
+    assert result.returncode == 1
+    assert "Error: could not write action plan" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_report_emits_composite_classification_decision(tmp_path: Path) -> None:
+    _write_config(tmp_path / "xdg" / "spork", tmp_path, classification=True)
+    plan_path = tmp_path / "planned-actions.jsonl"
+
+    result = _run(tmp_path, "--actions-out", str(plan_path))
+
+    assert result.returncode == 0
+    record = json.loads(plan_path.read_text().splitlines()[0])
+    assert record["classifications"] == [{"name": "banking", "score": 100.0}]
+    assert record["decision"] == {"mailbox": "Banking and Finance", "tags": []}

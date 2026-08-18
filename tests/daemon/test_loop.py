@@ -531,8 +531,7 @@ def test_run_daemon_archives_a_matched_receipt_message(tmp_path: Path) -> None:
 def test_run_daemon_observe_mode_does_not_archive_or_tag_receipts(tmp_path: Path) -> None:
     """--observe's contract ('process and audit messages without
     changing mail or creating drafts') covers archive_receipt too: no
-    PDF written, no keyword applied -- but the message still ends up
-    processed, same as every other observe-mode action."""
+    PDF written, no keyword applied, and no production state is changed."""
     config = _receipt_config(tmp_path)
     with StateDB(config.db_path) as db:
         db.learn_known_sender(
@@ -542,7 +541,7 @@ def test_run_daemon_observe_mode_does_not_archive_or_tag_receipts(tmp_path: Path
     asyncio.run(_run_briefly(config, observe=True))
 
     with StateDB(config.db_path) as db:
-        assert db.has_processed("msg-receipt") is True
+        assert db.has_processed("msg-receipt") is False
     assert config.receipt_archive is not None
     assert not config.receipt_archive.output_dir.exists()
     assert not (tmp_path / "keywords.jsonl").exists()

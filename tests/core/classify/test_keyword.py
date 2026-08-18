@@ -73,3 +73,37 @@ def test_keyword_classifier_structurally_satisfies_textclassifier(make_message) 
     result = classifier.classify(make_message())
 
     assert isinstance(result, ClassificationResult)
+
+
+def test_keyword_classifier_gives_subject_matches_more_weight_than_body_only_matches(
+    make_message,
+) -> None:
+    classifier = KeywordClassifier(category_keywords={"notification": ("notification", "digest")})
+
+    subject_result = classifier.classify(
+        make_message(subject="Notification", body_text="Routine message")
+    )
+    body_result = classifier.classify(
+        make_message(subject="Routine message", body_text="Notification")
+    )
+
+    assert subject_result.scores["notification"] > body_result.scores["notification"]
+
+
+def test_keyword_classifier_uses_notification_headers_as_strong_local_evidence(
+    make_message,
+) -> None:
+    result = KeywordClassifier().classify(
+        make_message(headers={"List-Unsubscribe": "<https://example.test/unsubscribe>"})
+    )
+
+    assert result.category == "notification"
+    assert result.scores["notification"] == 1.0
+
+
+def test_keyword_classifier_uses_sender_metadata_for_no_reply_notifications(make_message) -> None:
+    result = KeywordClassifier().classify(
+        make_message(from_address="no-reply@example.com", from_domain="example.com")
+    )
+
+    assert result.scores["notification"] > 0.0
