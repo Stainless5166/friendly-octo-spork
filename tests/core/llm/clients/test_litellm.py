@@ -55,6 +55,7 @@ def test_litellm_client_sends_the_exact_prompt_and_forced_tool_choice() -> None:
     client = LiteLLMClient(
         model="anthropic/claude-sonnet-4-5",
         api_key="test-key",
+        api_base="http://llm.example.test:11434",
         max_tokens=2048,
         completion=completion,
     )
@@ -66,6 +67,7 @@ def test_litellm_client_sends_the_exact_prompt_and_forced_tool_choice() -> None:
         {
             "model": "anthropic/claude-sonnet-4-5",
             "api_key": "test-key",
+            "api_base": "http://llm.example.test:11434",
             "max_tokens": 2048,
             "messages": list(prompt.messages),
             "tools": list(prompt.tools),
