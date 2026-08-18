@@ -3256,6 +3256,18 @@ reach, never an error, since the file write itself already succeeded.
   correct `mailboxIds`, in-reply-to headers set for threading). Spork
   **never** calls `EmailSubmission/set`. Sending is always a human action
   from their normal mail client.
+- **Write contract:** every JMAP mutation is an `Email/set` request after
+  an `Email/get` of the current message state. The response's `updated` or
+  `created` entry must acknowledge the requested operation, and the get
+  state is passed as `ifInState` so a concurrent mailbox change fails closed
+  instead of being silently overwritten. `move` replaces the message's
+  mailbox membership with the resolved target mailbox; `tag` adds the target
+  mailbox while preserving existing membership. Keyword application merges
+  requested keyword flags with the current keyword map and never removes
+  unrelated keywords. A draft uses a stable client-create key for one
+  request, the Drafts role mailbox, the `$draft` keyword, the original
+  sender as recipient, and `In-Reply-To`/`References` values from the
+  source message. `JmapError` remains the only provider-boundary error.
 - **Sieve (Tier 0):** for the genuinely deterministic cases (known
   mailing lists, obvious auto-filing), push a Sieve script server-side
   via the Sieve JMAP extension (RFC 9661) / ManageSieve, so those
