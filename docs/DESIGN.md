@@ -5232,13 +5232,24 @@ close that gap for spork's actual decision logic — the modules that
 decide what happens to a message, as opposed to the plumbing around
 them: `spork.core.rules.engine` (condition matching, first-match-wins),
 `spork.core.actions.executor` (action-type guardrails),
-`spork.core.dispatch.combine` (multi-target reduction), and
+`spork.core.dispatch.combine` (multi-target reduction),
 `spork.core.pipeline.default.process_message()` (idempotency + rule
-evaluation + action + audit, tied together). These four are picked
-because they're both *decision* logic (a bug here silently misfiles or
-misfires on real mail, the exact failure mode §11 exists to bound) and
-already fully covered by example-based tests — the two preconditions
-mutation testing (§16.2) needs to be worth running at all.
+evaluation + action + audit, tied together), `spork.core.llm.confidence`
+(the autoact/alert threshold ladder gating every Tier 2 verdict's
+autonomous-action decision), `spork.core.classify.keyword` (the
+default Tier 1 local classifier's match-fraction scoring and
+first-listed tie-break), `spork.core.receipts.extract` (the
+decline-rather-than-guess company/date resolution chain, M10), and
+`spork.core.pipeline.tier2.escalate` (the `QUARANTINABLE_ERRORS`
+quarantine-vs-propagate boundary that keeps a bad model response from
+crash-looping the daemon). These eight are picked because they're both
+*decision* logic (a bug here silently misfiles or misfires on real
+mail, the exact failure mode §11 exists to bound) and already fully
+covered by example-based tests — the two preconditions mutation
+testing (§16.2) needs to be worth running at all. The second four
+were added in a later pass over every other 100%-covered module
+against the same two preconditions — being decision logic or being
+fully covered alone isn't enough, a module needs both.
 
 Uses [Hypothesis](https://hypothesis.readthedocs.io/): each property
 test states an invariant that must hold for *any* input in a generated
@@ -5262,7 +5273,7 @@ boolean, drop a guard clause), does *some* test actually fail? A
 mutant that survives (every test still passes against the mutated
 code) means the suite has a line that runs but is never actually
 checked — a real gap example-based coverage can't see. Scoped to the
-same four modules as §16.1, for the same reason: only worth running
+same eight modules as §16.1, for the same reason: only worth running
 where coverage is already complete and the logic is decision-critical
 enough that a surviving mutant is worth someone's time to look at.
 
