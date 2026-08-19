@@ -358,7 +358,14 @@ deterministic tests closing 29 real mutmut-found gaps in
 `escalate_message()`/`escalate_message_or_quarantine()` never verified
 the exact value of, the quarantine audit trail's exact content, and
 the default clock's UTC-ness). **The full suite is 991 tests, all
-green.**
+green.** Updated once more for M7c: a third fuzzing rationale,
+robustness against adversarial input rather than decision correctness
+(docs/DESIGN.md §16.3) — `spork.core.llm.clean.clean_body()` parses
+raw email body text an external sender fully controls, so it qualifies
+for property testing without needing §16.1/§16.2's decision-critical-
+and-fully-covered bar, and is deliberately never scoped into mutation
+testing. All four tests passed on their first run: no bug found.
+**The full suite is 995 tests, all green.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -932,6 +939,21 @@ via a repo-root-relative path that doesn't exist inside mutmut's
 `spork` bug, avoided by naming `test_confidence*.py` explicitly in
 `pyproject.toml`'s `pytest_add_cli_args_test_selection` rather than the
 whole `tests/core/llm` directory.
+
+### M7c — Robustness fuzzing for adversarial-input parsing — 2/2
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| Design: robustness fuzzing as a third rationale, separate from §16.1/§16.2 | ✅ | — prose (docs/DESIGN.md §16.3) |
+| Hypothesis property tests for `llm.clean.clean_body()` | ✅ | ✅ — tests 947–950 (`test_clean_fuzz.py`), part of the ordinary `uv run pytest` gate |
+
+Never scoped into mutation testing (mutation/README.md's scope stays
+at the same eight modules M7b left it at) — mutmut's model needs a
+decision to subtly get wrong, and a "never raises"/"length is bounded"
+property doesn't have that shape. All four tests passed against the
+existing implementation on their first run: no bug found, which is
+itself a legitimate outcome for a robustness check `clean_body()` had
+never had before, not a sign the round found nothing worth doing.
 
 ### M8 — Backfill / retroactive categorization — 4/5
 
@@ -5128,3 +5150,26 @@ convention M7a already established for its own strengthened tests.
 946. **`core/pipeline/tier2/test_escalate.py::test_escalate_message_or_quarantine_threads_draft_creator_into_a_requested_draft`**
      Same proof, through `escalate_message_or_quarantine()`'s own
      passthrough to its delegated `escalate_message()` call.
+
+### M7c robustness fuzzing (tests 947–950)
+
+Hypothesis property tests for `spork.core.llm.clean.clean_body()`
+under docs/DESIGN.md §16.3's robustness rationale — the first module
+scoped under it, chosen for parsing raw email body text an external
+sender fully controls.
+
+947. **`core/llm/test_clean_fuzz.py::test_clean_body_never_raises_for_any_generated_text_and_max_chars`**
+     No generated body/max_chars combination — including a
+     misconfigured negative max_chars — ever raises.
+
+948. **`core/llm/test_clean_fuzz.py::test_clean_body_output_length_is_bounded_for_nonnegative_max_chars`**
+     The final output is never longer than max_chars plus the fixed
+     truncation marker, for any generated body.
+
+949. **`core/llm/test_clean_fuzz.py::test_clean_body_never_leaks_a_generated_html_tag_verbatim`**
+     Any well-formed generated `<tag>...</tag>` pair is stripped down
+     to its text content.
+
+950. **`core/llm/test_clean_fuzz.py::test_clean_body_is_idempotent_for_plain_text_with_room_to_spare`**
+     Cleaning already-clean plain text a second time is a no-op, for
+     any generated word list.

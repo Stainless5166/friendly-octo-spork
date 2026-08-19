@@ -1063,6 +1063,41 @@ mutmut run` against all eight in-scope modules has no surviving mutant
 that isn't recorded as equivalent in `mutation/README.md` — verified
 reproducible across repeated runs.
 
+## M7c — Robustness fuzzing for adversarial-input parsing
+
+**Goal:** a third fuzzing rationale (docs/DESIGN.md §16.3), distinct
+from M7a/M7b's decision-correctness one — a module that parses content
+an external party controls (a phishing/spam email's crafted HTML body,
+for `clean_body()`) is worth property-testing for crash-safety even
+when it has no *decision* to get wrong, so it doesn't need M7a/M7b's
+decision-critical-and-fully-covered bar to qualify.
+
+- [x] Design: articulate robustness fuzzing as its own rationale,
+      separate from §16.1's decision-correctness one and never scoped
+      into §16.2's mutation testing (mutmut's model needs a decision
+      to subtly get wrong, which a "never raises" property doesn't
+      have) (S) — docs/DESIGN.md §16.3
+- [x] Hypothesis property tests for `spork.core.llm.clean.clean_body()`,
+      the first module under this rationale — same `test_<module>_fuzz.py`
+      convention and ordinary `uv run pytest` gate as M7a/M7b, but
+      asserting survival (never raises for any generated body/
+      max_chars, including a misconfigured negative max_chars; output
+      length bounded relative to max_chars; generated HTML tag markup
+      never survives stripping; idempotent on already-clean plain
+      text) rather than decision correctness (M) — 4 tests
+      (docs/TEST_COVERAGE.md 947–950), all passing against the
+      existing implementation with no `src/spork` change: no bug
+      found, a legitimate outcome for a robustness check that had
+      never been run before.
+
+**Exit criteria met:** `uv run pytest` includes the new
+`test_clean_fuzz.py` file and stays green (995 tests total).
+`spork.core.providers.jmap.client`'s response parsing is noted in
+docs/DESIGN.md §16.3 as a plausible next candidate under this same
+rationale, deliberately left unscoped — adding a module here is its
+own decision each time, same as M7a/M7b already established for
+mutation testing's scope.
+
 ## M8 — Backfill / retroactive categorization
 
 **Goal:** triage the maintainer's existing several-thousand-message
