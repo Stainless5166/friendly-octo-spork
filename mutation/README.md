@@ -30,14 +30,22 @@ Uses [mutmut](https://mutmut.readthedocs.io/) 3.x, configured in
 
 ## Baseline (this run)
 
-174 mutants generated across the four in-scope files: **171 killed**,
+198 mutants generated across the four in-scope files: **195 killed**,
 **3 survived** — all three confirmed equivalent below, so the real
-kill rate against distinguishable mutants is 171/171. `uv run mutmut
+kill rate against distinguishable mutants is 195/195. `uv run mutmut
 results` after a fresh `uv run mutmut run` should reproduce this same
 3-survivor baseline; a new survivor beyond these three means either a
 real gap (add a targeted test, same as any other coverage gap) or a
 new equivalent mutant (add it to the list below with the same
 reasoning this file already uses).
+
+Re-baselined from an earlier 174/171/3 count: M10's `archive_receipt`
+wiring (commit `0266d0e`) added real lines to `actions/executor.py`
+and `pipeline/default.py` after that baseline was recorded, which
+shifted mutmut's per-file numbering — the two `process_message`
+survivors below moved from `_mutmut_16`/`_mutmut_20` to `_mutmut_18`/
+`_mutmut_22`. Diffed both against the previous baseline to confirm:
+same two literal-`text=` mutations, same reasoning, no new gap.
 
 ## Recorded equivalent mutants
 
@@ -46,8 +54,8 @@ identical to the original for every input — not a test gap, and no
 test could kill them without asserting on something that doesn't
 actually matter.
 
-- **`spork.core.pipeline.default.x_process_message__mutmut_16`** and
-  **`..._mutmut_20`** — both mutate the literal `text=""` passed to
+- **`spork.core.pipeline.default.x_process_message__mutmut_18`** and
+  **`..._mutmut_22`** — both mutate the literal `text=""` passed to
   the initial `Payload` in `process_message()` (to `None` and `"XXXX"`
   respectively). None of the eight concrete pipeline modules
   (`spork.core.pipeline.modules`) ever read `payload.text` — this
