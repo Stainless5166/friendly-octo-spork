@@ -10,6 +10,8 @@ directly, independent of either caller.
 from __future__ import annotations
 
 import json
+import logging
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -77,8 +79,11 @@ class _RecordingApplier:
 
 
 class _RecordingDraftCreator:
+    def __init__(self) -> None:
+        self.calls: list[tuple[NormalizedMessage, str]] = []
+
     def create_draft(self, in_reply_to: NormalizedMessage, body: str) -> None:
-        pass
+        self.calls.append((in_reply_to, body))
 
 
 def test_escalate_message_wires_thread_history_and_mailbox_lister_into_tier2(
@@ -198,6 +203,115 @@ def test_escalate_message_wires_context_provider_into_tier2(tmp_path: Path, make
     assert client.last_request.context_snippets == ("notes/a.md: A note.",)
 
 
+def test_utc_now_iso_default_clock_is_actually_utc() -> None:
+    """_utc_now_iso() (escalate_message_or_quarantine()'s default `now`
+    clock) is timezone-aware UTC, not a naive local timestamp — the same
+    class of gap the M7a mutation round already found in a sibling
+    default clock elsewhere, caught here by a mutmut survivor that swapped
+    datetime.now(UTC) for datetime.now(None) with nothing noticing."""
+    from spork.core.pipeline.tier2.escalate import _utc_now_iso
+
+    assert _utc_now_iso().endswith("+00:00")
+
+
+def test_escalate_message_threads_thread_context_and_max_body_chars_into_the_request(
+    tmp_path: Path, make_message
+) -> None:
+    """thread_prior_subject/thread_user_has_replied (from the injected
+    ThreadHistoryReader) and max_body_chars (from TieringConfig) all
+    reach the actual VerdictRequest sent to the model — not just the
+    mailbox_lister/thread_history_reader call counts test_escalate_message_
+    wires_thread_history_and_mailbox_lister_into_tier2 already proves."""
+    message = make_message(message_id="msg-1", subject="Urgent", body_text="x" * 100)
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text(
+        json.dumps(
+            {
+                "Urgent": {
+                    "category": "needs_reply",
+                    "urgency": "high",
+                    "confidence": 0.95,
+                    "suggested_action": {"type": "ignore"},
+                    "summary": "s",
+                    "reasoning": "r",
+                }
+            }
+        )
+    )
+    client = _RecordingLLMClient(RecordedLLMClient(responses_path))
+
+    with StateDB(tmp_path / "state.sqlite3") as state_db:
+        escalate_message(
+            message,
+            thread_history_reader=_RecordingThreadHistoryReader(
+                ThreadContext(prior_subject="Re: earlier", user_has_replied=True)
+            ),
+            mailbox_lister=_RecordingMailboxLister(["Inbox"]),
+            llm_client=client,
+            executor=ActionExecutor(_RecordingApplier()),
+            draft_creator=_RecordingDraftCreator(),
+            state_db=state_db,
+            ops=PipelineObserver(LoggingAlerter()),
+            tiering=TieringConfig(allowed_categories=["needs_reply"], max_body_chars=10),
+            context_provider=NullContextProvider(),
+        )
+
+    assert client.last_request is not None
+    assert client.last_request.thread_prior_subject == "Re: earlier"
+    assert client.last_request.thread_user_has_replied is True
+    # clean_body() truncates a space-free body to exactly max_chars,
+    # word-boundary logic notwithstanding, plus its truncation marker —
+    # proves the *configured* 10, not process_tier2_message()'s own
+    # default of 4000, actually reached BuildVerdictRequestFilter.
+    assert client.last_request.cleaned_body == "x" * 10 + " ... [truncated]"
+
+
+def test_escalate_message_threads_draft_creator_into_a_requested_draft(
+    tmp_path: Path, make_message
+) -> None:
+    """The exact draft_creator instance passed in is what actually
+    receives create_draft() — proven by giving the model a draft_reply
+    to act on, not just by never crashing (a None draft_creator only
+    fails when a draft is actually requested, which no other test here
+    triggers)."""
+    message = make_message(message_id="msg-1", subject="Urgent")
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text(
+        json.dumps(
+            {
+                "Urgent": {
+                    "category": "needs_reply",
+                    "urgency": "high",
+                    "confidence": 0.95,
+                    "suggested_action": {"type": "ignore"},
+                    "summary": "s",
+                    "reasoning": "r",
+                    "draft_reply": "Thanks, will look into it.",
+                }
+            }
+        )
+    )
+    draft_creator = _RecordingDraftCreator()
+
+    with StateDB(tmp_path / "state.sqlite3") as state_db:
+        escalate_message(
+            message,
+            thread_history_reader=_RecordingThreadHistoryReader(
+                ThreadContext(prior_subject=None, user_has_replied=False)
+            ),
+            mailbox_lister=_RecordingMailboxLister(["Inbox"]),
+            llm_client=RecordedLLMClient(responses_path),
+            executor=ActionExecutor(_RecordingApplier()),
+            draft_creator=draft_creator,
+            state_db=state_db,
+            ops=PipelineObserver(LoggingAlerter()),
+            tiering=TieringConfig(allowed_categories=["needs_reply"]),
+            context_provider=NullContextProvider(),
+        )
+
+    assert draft_creator.calls == [(message, "Thanks, will look into it.")]
+
+
 def test_escalate_message_returns_none_when_the_daily_budget_is_exhausted(
     tmp_path: Path, make_message
 ) -> None:
@@ -243,6 +357,20 @@ class _RecordingAlerter:
         self, title: str, body: str, *, url: str | None = None, urgency: AlertUrgency = "normal"
     ) -> None:
         self.calls.append((title, body, urgency))
+
+
+def _read_processed_record(db_path: Path, jmap_id: str) -> tuple[str | None, str | None]:
+    """(tier_reached, action_taken) for `jmap_id`'s processed_messages row —
+    read via a second, independent sqlite3 connection since StateDB
+    exposes no getter for these two columns (write-only from every
+    caller's own perspective today)."""
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT tier_reached, action_taken FROM processed_messages WHERE jmap_id = ?",
+            (jmap_id,),
+        ).fetchone()
+    assert row is not None
+    return row
 
 
 def _base_kwargs(tmp_path: Path, message: NormalizedMessage, state_db: StateDB, alerter=None):
@@ -294,6 +422,44 @@ def test_escalate_message_or_quarantine_passes_through_a_normal_verdict(
     assert result.suggested_action.mailbox == "Needs-Reply"
 
 
+def test_escalate_message_or_quarantine_threads_draft_creator_into_a_requested_draft(
+    tmp_path: Path, make_message
+) -> None:
+    """escalate_message_or_quarantine()'s own draft_creator kwarg reaches
+    the delegated escalate_message() call unchanged — mirrors
+    test_escalate_message_threads_draft_creator_into_a_requested_draft,
+    but through the quarantine wrapper's own passthrough."""
+    message = make_message(message_id="msg-1", subject="Urgent")
+    responses_path = tmp_path / "responses.json"
+    responses_path.write_text(
+        json.dumps(
+            {
+                "Urgent": {
+                    "category": "needs_reply",
+                    "urgency": "high",
+                    "confidence": 0.95,
+                    "suggested_action": {"type": "ignore"},
+                    "summary": "s",
+                    "reasoning": "r",
+                    "draft_reply": "Thanks, will look into it.",
+                }
+            }
+        )
+    )
+    draft_creator = _RecordingDraftCreator()
+
+    with StateDB(tmp_path / "state.sqlite3") as state_db:
+        kwargs = _base_kwargs(tmp_path, message, state_db)
+        kwargs["draft_creator"] = draft_creator
+        escalate_message_or_quarantine(
+            **kwargs,
+            llm_client=RecordedLLMClient(responses_path),
+            tiering=TieringConfig(allowed_categories=["needs_reply"]),
+        )
+
+    assert draft_creator.calls == [(message, "Thanks, will look into it.")]
+
+
 def test_escalate_message_or_quarantine_still_returns_none_on_budget_exhausted(
     tmp_path: Path, make_message
 ) -> None:
@@ -318,8 +484,12 @@ def test_escalate_message_or_quarantine_quarantines_an_out_of_set_category(
 ) -> None:
     """VerdictValidationError (a category outside allowed_categories) is
     quarantined, not raised: the message is marked processed (never
-    retried forever, never re-burning budget) and audited."""
+    retried forever, never re-burning budget) and audited — with the
+    exact detail_json/tier_reached/action_taken content a human
+    debugging a quarantined message would actually read, not just a
+    bare "some audit entry exists"."""
     message = make_message(message_id="msg-1", subject="Urgent")
+    db_path = tmp_path / "state.sqlite3"
     responses_path = tmp_path / "responses.json"
     responses_path.write_text(
         json.dumps(
@@ -336,7 +506,7 @@ def test_escalate_message_or_quarantine_quarantines_an_out_of_set_category(
         )
     )
 
-    with StateDB(tmp_path / "state.sqlite3") as state_db:
+    with StateDB(db_path) as state_db:
         result = escalate_message_or_quarantine(
             **_base_kwargs(tmp_path, message, state_db),
             llm_client=RecordedLLMClient(responses_path),
@@ -346,7 +516,15 @@ def test_escalate_message_or_quarantine_quarantines_an_out_of_set_category(
         assert isinstance(result, QuarantinedMessage)
         assert state_db.has_processed("msg-1")
         entries = state_db.get_audit_entries(jmap_id="msg-1")
-        assert any(e.event == "tier2_quarantined" for e in entries)
+        quarantine_entries = [e for e in entries if e.event == "tier2_quarantined"]
+        assert len(quarantine_entries) == 1
+        assert quarantine_entries[0].detail_json is not None
+        detail = json.loads(quarantine_entries[0].detail_json)
+        assert detail == {"error_type": "VerdictValidationError", "reason": result.reason}
+
+    tier_reached, action_taken = _read_processed_record(db_path, "msg-1")
+    assert tier_reached == "tier2"
+    assert action_taken == "quarantined"
 
 
 def test_escalate_message_or_quarantine_quarantines_a_malformed_action(
@@ -400,8 +578,9 @@ def test_escalate_message_or_quarantine_quarantines_a_failed_llm_call(
 
 
 def test_escalate_message_or_quarantine_fires_a_critical_alert(
-    tmp_path: Path, make_message
+    tmp_path: Path, make_message, caplog: pytest.LogCaptureFixture
 ) -> None:
+    caplog.set_level(logging.INFO)
     message = make_message(message_id="msg-1", subject="Urgent")
     responses_path = tmp_path / "responses.json"
     responses_path.write_text(
@@ -421,14 +600,31 @@ def test_escalate_message_or_quarantine_fires_a_critical_alert(
     alerter = _RecordingAlerter()
 
     with StateDB(tmp_path / "state.sqlite3") as state_db:
-        escalate_message_or_quarantine(
+        result = escalate_message_or_quarantine(
             **_base_kwargs(tmp_path, message, state_db, alerter=alerter),
             llm_client=RecordedLLMClient(responses_path),
             tiering=TieringConfig(allowed_categories=["needs_reply"]),
         )
 
-    assert len(alerter.calls) == 1
-    assert alerter.calls[0][2] == "critical"
+    assert isinstance(result, QuarantinedMessage)
+    # Exact title/body content, not just that *an* alert fired — the
+    # correlation_id (PipelineObserver.trace()'s record) is a real
+    # uuid4 hex, distinguishable from a mutant that passes None through.
+    assert alerter.calls == [
+        (
+            "Tier 2 verdict quarantined",
+            f"{message.subject!r} from {message.from_address}: {result.reason}",
+            "critical",
+        )
+    ]
+    # The pipeline itself traces several earlier events (TimestampFilter,
+    # CorrelationIdFilter, ...) under its own meta.correlation_id first —
+    # the "Tier 2 verdict quarantined" record is escalate_message_or_
+    # quarantine()'s own ops.alert() call, always the last one logged.
+    correlation_id = caplog.records[-1].correlation_id
+    assert isinstance(correlation_id, str)
+    assert len(correlation_id) == 32
+    int(correlation_id, 16)  # a real hex string, not a stringified None
 
 
 def test_escalate_message_or_quarantine_does_not_catch_a_real_pipeline_bug(
