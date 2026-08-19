@@ -365,7 +365,13 @@ raw email body text an external sender fully controls, so it qualifies
 for property testing without needing §16.1/§16.2's decision-critical-
 and-fully-covered bar, and is deliberately never scoped into mutation
 testing. All four tests passed on their first run: no bug found.
-**The full suite is 995 tests, all green.**
+**The full suite is 995 tests, all green.** Updated once more for a
+test-quality audit of `test_push.py` (tests 951-953): two existing
+tests didn't prove what their names claimed, confirmed empirically
+with a deliberately broken `_is_relevant()` that both old tests missed
+— renamed to describe what they actually prove and paired with three
+new isolated tests that do catch it. **The full suite is 998 tests,
+all green.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -1340,8 +1346,12 @@ pass normally by asserting their settled `NotImplementedError` behavior.
 51. **`test_push.py::test_wait_returns_for_a_relevant_email_event`**
     A relevant Email state event wakes the trigger.
 
-52. **`test_push.py::test_wait_ignores_other_accounts_and_unrelated_events`**
-    Events for another account and unrelated state types are ignored.
+52. **`test_push.py::test_wait_keeps_scanning_past_non_matching_events_in_one_batch`**
+    A relevant event later in the same batch is still found — renamed
+    from `test_wait_ignores_other_accounts_and_unrelated_events`, whose
+    name overclaimed what a batch already containing a real match can
+    prove; see tests 951–952 for the isolated account/state-type claims
+    this one's docstring defers to.
 
 ### tests/core/sources — timer + fallback (M1)
 
@@ -3860,8 +3870,11 @@ range (347–374, 28 entries) undercounts the true 51 collected cases.
 667. **`core/providers/jmap/test_push.py::test_wait_rejects_an_empty_reconnect_schedule`**
     Invalid retry configuration fails through the push boundary.
 
-668. **`core/providers/jmap/test_push.py::test_wait_ignores_events_with_malformed_state_data`**
-    Malformed event data is ignored until a relevant event arrives.
+668. **`core/providers/jmap/test_push.py::test_wait_keeps_scanning_past_malformed_state_data_in_one_batch`**
+    A relevant event after a malformed one in the same batch is still
+    found — renamed from `test_wait_ignores_events_with_malformed_state_data`,
+    same overclaim-fix reasoning as test 52; see test 953 for the
+    isolated claim.
 
 669. **`core/sources/test_checkpoint_fallback.py::test_checkpoint_fallback_uses_polling_after_push_disconnect`**
     A transient push failure returns the polling source's candidate batch.
@@ -5173,3 +5186,31 @@ sender fully controls.
 950. **`core/llm/test_clean_fuzz.py::test_clean_body_is_idempotent_for_plain_text_with_room_to_spare`**
      Cleaning already-clean plain text a second time is a no-op, for
      any generated word list.
+
+### Test-quality audit: JMAP push trigger (tests 951–953)
+
+A suite-wide review of what each test actually verifies (not new
+application code, not tied to a roadmap milestone) found that tests 52
+and 668 didn't prove what their names claimed: both bundled the
+event(s) under test together with a genuinely relevant event in the
+same batch, so `wait()` returning without raising couldn't distinguish
+"correctly rejected the bad event, found the real one" from
+"incorrectly matched the bad event first" — confirmed empirically by
+monkey-patching a deliberately broken `_is_relevant()` (drops the
+`account_id` filter) into the real class in-process and observing both
+old tests still pass unchanged. Tests 52/668 were renamed to describe
+what they actually prove (scanning continues past non-matches within
+one batch); these three isolate the claims a combined batch can't.
+
+951. **`core/providers/jmap/test_push.py::test_wait_does_not_treat_an_event_for_a_different_account_as_relevant`**
+     A batch containing *only* a wrong-account event must disconnect,
+     not return — proven to fail against the broken filter above,
+     unlike test 52.
+
+952. **`core/providers/jmap/test_push.py::test_wait_does_not_treat_a_state_with_no_email_or_delivery_change_as_relevant`**
+     Same isolation for account-1's own state carrying neither an
+     email nor an email_delivery change.
+
+953. **`core/providers/jmap/test_push.py::test_wait_does_not_treat_malformed_state_data_as_relevant`**
+     A batch containing only an event whose `data.changed` isn't a
+     dict must disconnect, not return.
