@@ -54,13 +54,41 @@ def test_wait_returns_for_a_relevant_email_event() -> None:
     trigger.wait()
 
 
-def test_wait_ignores_other_accounts_and_unrelated_events() -> None:
+def test_wait_keeps_scanning_past_non_matching_events_in_one_batch() -> None:
+    """A relevant event later in the same batch is still found — wait()
+    doesn't stop at (or get confused by) the wrong-account/no-state-change
+    events ahead of it. Doesn't by itself prove either of those two is
+    individually rejected — see the two isolated tests below for that;
+    a batch already containing a real match can't distinguish "correctly
+    skipped the earlier events" from "incorrectly matched on one of them
+    instead," since either way wait() returns without raising."""
     trigger, _ = _trigger(
         [[_event("other", email=True), _event("account-1"), _event("account-1", delivery=True)]],
         [],
     )
 
     trigger.wait()
+
+
+def test_wait_does_not_treat_an_event_for_a_different_account_as_relevant() -> None:
+    """Isolates the account-filtering claim: given *only* a wrong-account
+    event (nothing genuinely relevant anywhere in the batch), wait() must
+    disconnect rather than return — the only way to tell "correctly
+    rejected" apart from "incorrectly accepted" when there's no second,
+    real match to mask the difference."""
+    trigger, _ = _trigger([[_event("other", email=True)]], [])
+
+    with pytest.raises(JmapPushDisconnectedError):
+        trigger.wait()
+
+
+def test_wait_does_not_treat_a_state_with_no_email_or_delivery_change_as_relevant() -> None:
+    """Same isolation for account-1's own state carrying neither an email
+    nor an email_delivery change — must disconnect, not return."""
+    trigger, _ = _trigger([[_event("account-1")]], [])
+
+    with pytest.raises(JmapPushDisconnectedError):
+        trigger.wait()
 
 
 def test_wait_sleeps_using_backoff_and_reports_a_disconnect() -> None:
@@ -95,9 +123,24 @@ def test_wait_rejects_an_empty_reconnect_schedule() -> None:
         trigger.wait()
 
 
-def test_wait_ignores_events_with_malformed_state_data() -> None:
+def test_wait_keeps_scanning_past_malformed_state_data_in_one_batch() -> None:
+    """A relevant event after a malformed one in the same batch is still
+    found. Same masking caveat as test_wait_keeps_scanning_past_non_matching_events_in_one_batch —
+    see test_wait_does_not_treat_malformed_state_data_as_relevant below
+    for the isolated claim."""
     trigger, _ = _trigger(
         [[_Response(data=_Response(changed=None)), _event("account-1", email=True)]], []
     )
 
     trigger.wait()
+
+
+def test_wait_does_not_treat_malformed_state_data_as_relevant() -> None:
+    """Isolates the malformed-data claim: a batch containing *only* an
+    event whose data.changed isn't a dict must disconnect, not return —
+    proves the isinstance(changed, dict) guard actually rejects it,
+    rather than being masked by a later real match."""
+    trigger, _ = _trigger([[_Response(data=_Response(changed=None))]], [])
+
+    with pytest.raises(JmapPushDisconnectedError):
+        trigger.wait()
