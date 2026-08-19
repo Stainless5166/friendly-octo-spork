@@ -348,6 +348,17 @@ have separate fully bound Behave features (`m2_local.feature` through
 `m6_local.feature`). These are offline evidence and do not replace the
 corresponding live Fastmail, Anthropic, user-systemd, prolonged-outage, or
 operational-run acceptance specifications.
+Updated once more for M7b: `spork.core.llm.confidence`,
+`spork.core.classify.keyword`, `spork.core.receipts.extract`, and
+`spork.core.pipeline.tier2.escalate` scoped into mutation testing
+alongside M7a's original four (docs/DESIGN.md §16.1/§16.2,
+`mutation/README.md`) — Hypothesis property tests for all four, plus
+deterministic tests closing 29 real mutmut-found gaps in
+`pipeline.tier2.escalate` specifically (argument-passthrough wiring
+`escalate_message()`/`escalate_message_or_quarantine()` never verified
+the exact value of, the quarantine audit trail's exact content, and
+the default clock's UTC-ness). **The full suite is 991 tests, all
+green.**
 **Purpose:** (1) a plain-English description of every test currently in
 the suite, so "what does this test do" never requires re-reading code;
 (2) an honest cross-check of that suite against `docs/ROADMAP.md`'s
@@ -893,6 +904,34 @@ own `force` default never exercised, and one docstring-documented
 "empty scores = exactly 0.0 confidence" contract with no deterministic
 test) — closed with targeted tests, not implementation changes; no
 `src/spork` behavior changed in this pass.
+
+### M7b — Mutation & fuzz testing expansion — 3/3
+
+| Checklist item | Implemented | Tested |
+|---|---|---|
+| Review every 100%-covered module against §16.1's two preconditions; scope in whichever qualify | ✅ — `llm.confidence`, `classify.keyword`, `receipts.extract`, `pipeline.tier2.escalate` | — prose (`mutation/README.md`'s expanded scope rationale) |
+| Hypothesis property tests, four newly-scoped modules | ✅ | ✅ — tests 924–942 (`test_*_fuzz.py` siblings), part of the ordinary `uv run pytest` gate |
+| First baseline mutation run + gap closure | ✅ | ✅ — tests 943–946 close the 29 real gaps `pipeline.tier2.escalate` surfaced on its first run; 386 mutants, 383 killed, 3 recorded-equivalent survivors (the same three M7a already recorded — `llm.confidence`/`classify.keyword`/`receipts.extract` had zero survivors) |
+
+Same non-CI-gate treatment as M7a (mutation/README.md). Unlike M7a's
+first pass, three of the four newly-scoped modules (`llm.confidence`,
+`classify.keyword`, `receipts.extract`) killed every mutant on their
+very first run — the property tests written alongside them already
+fully constrained the behavior. `pipeline.tier2.escalate` was the
+exception: 29 survivors, none equivalent, all real argument-
+passthrough/audit-content gaps (`escalate_message()`/
+`escalate_message_or_quarantine()`'s keyword arguments reaching
+`process_tier2_message()`/the quarantine audit trail unverified, and
+`_utc_now_iso()`'s UTC-ness unchecked — the exact same class of "default
+clock never checked for being UTC" gap M7a found in a sibling clock)
+— closed with targeted tests, no `src/spork` change. Also found and
+sidestepped along the way: `tests/core/llm/test_recording.py`'s
+`test_live_acceptance_corpus_directory_is_gitignored` reads `.gitignore`
+via a repo-root-relative path that doesn't exist inside mutmut's
+`mutants/` working copy — an environment-coupling landmine, not a
+`spork` bug, avoided by naming `test_confidence*.py` explicitly in
+`pyproject.toml`'s `pytest_add_cli_args_test_selection` rather than the
+whole `tests/core/llm` directory.
 
 ### M8 — Backfill / retroactive categorization — 4/5
 
@@ -4975,3 +5014,117 @@ doc's stable-numbering convention.
      `--observe` suppresses both the PDF write and the keyword tag for
      `archive_receipt` too, while the message still ends up marked
      processed — the same contract every other observe-mode action has.
+
+### M7b mutation & fuzz testing expansion (tests 924–946)
+
+Hypothesis property tests for the four newly-scoped modules
+(docs/DESIGN.md §16.1's expanded list), plus deterministic tests
+closing the 29 real gaps an initial `mutmut` baseline run surfaced in
+`pipeline.tier2.escalate` specifically (§16.2, `mutation/README.md`) —
+see that file for the full mutant-by-mutant accounting. Two
+pre-existing tests were also strengthened in place rather than
+replaced (`test_escalate_message_or_quarantine_quarantines_an_out_of_set_category`
+now asserts the exact `detail_json`/`tier_reached`/`action_taken`
+content, not just that some audit entry exists;
+`test_escalate_message_or_quarantine_fires_a_critical_alert` now
+asserts the exact alert title/body and a real uuid4-hex
+correlation_id) — those don't get new numbered entries here, same
+convention M7a already established for its own strengthened tests.
+
+924. **`core/llm/test_confidence_fuzz.py::test_band_is_autoact_iff_confidence_at_or_above_autoact_threshold`**
+     For any valid (non-inverted) threshold pair, "autoact" comes back
+     exactly when confidence meets or exceeds autoact_threshold.
+
+925. **`core/llm/test_confidence_fuzz.py::test_band_is_alert_only_iff_confidence_below_alert_threshold`**
+     "alert_only" comes back exactly when confidence falls below
+     alert_threshold, for any generated threshold pair.
+
+926. **`core/llm/test_confidence_fuzz.py::test_band_is_always_exactly_one_of_the_three_literals`**
+     No generated input ever produces a fourth outcome for a valid
+     threshold ordering.
+
+927. **`core/llm/test_confidence_fuzz.py::test_inverted_thresholds_always_raise_value_error`**
+     Any alert_threshold strictly above autoact_threshold raises, for
+     every confidence Hypothesis generates alongside it.
+
+928. **`core/llm/test_confidence_fuzz.py::test_band_is_monotonic_non_decreasing_in_confidence`**
+     A higher confidence never drops to a less-trusted band than a
+     lower one under the same thresholds.
+
+929. **`core/classify/test_keyword_fuzz.py::test_every_score_is_between_zero_and_one`**
+     A match fraction never falls outside [0, 1], for any generated
+     category/keyword/message combination.
+
+930. **`core/classify/test_keyword_fuzz.py::test_winning_category_always_has_the_maximum_score`**
+     The returned category's score is never beaten by another
+     category's, whether it won on real matches or the default
+     fallback.
+
+931. **`core/classify/test_keyword_fuzz.py::test_a_category_with_no_keywords_never_wins_against_a_matching_one`**
+     An empty keyword tuple always scores exactly 0.0 and never beats a
+     category whose keyword is actually present.
+
+932. **`core/classify/test_keyword_fuzz.py::test_tie_break_always_goes_to_the_first_listed_category`**
+     When every category's keyword is present (every score tied),
+     the winner is always whichever was listed first.
+
+933. **`core/classify/test_keyword_fuzz.py::test_classify_never_raises_for_any_generated_message_or_vocabulary`**
+     `classify()` always returns rather than raising, for any generated
+     message/vocabulary shape.
+
+934. **`core/receipts/test_extract_fuzz.py::test_domain_lookup_company_always_wins_over_known_sender`**
+     For any two distinct non-empty company strings, a domain_lookup
+     hit always resolves ahead of known_sender.
+
+935. **`core/receipts/test_extract_fuzz.py::test_domain_lookup_hit_with_no_company_always_falls_through`**
+     A domain_lookup hit with no company always falls through to
+     known_sender, for any known_sender.company Hypothesis generates.
+
+936. **`core/receipts/test_extract_fuzz.py::test_no_known_sender_and_no_domain_lookup_always_declines`**
+     With neither collaborator supplied, extract_receipt() declines for
+     any message, regardless of Date header or body text.
+
+937. **`core/receipts/test_extract_fuzz.py::test_extract_date_always_prefers_a_present_date_header`**
+     Any non-empty Date header wins over body markers, for any body
+     text generated alongside it.
+
+938. **`core/receipts/test_extract_fuzz.py::test_extract_receipt_result_always_matches_its_own_helpers`**
+     Oracle cross-check: whenever extract_receipt() returns a result,
+     its fields are exactly what resolve_company()/extract_date()
+     independently compute.
+
+939. **`core/pipeline/tier2/test_escalate_fuzz.py::test_parse_to_addresses_recovers_every_stripped_nonempty_token`**
+     Joining any generated address token list with a comma and parsing
+     it back always recovers exactly the stripped tokens, in order.
+
+940. **`core/pipeline/tier2/test_escalate_fuzz.py::test_parse_to_addresses_never_returns_an_empty_string`**
+     No element of the result is ever "", for any generated header
+     text.
+
+941. **`core/pipeline/tier2/test_escalate_fuzz.py::test_every_quarantinable_error_type_is_always_quarantined`**
+     Every member of QUARANTINABLE_ERRORS, with any message string,
+     always comes back as a QuarantinedMessage.
+
+942. **`core/pipeline/tier2/test_escalate_fuzz.py::test_every_non_quarantinable_error_type_always_propagates`**
+     Four non-member exception types always propagate rather than
+     being silently absorbed, for any generated message string.
+
+943. **`core/pipeline/tier2/test_escalate.py::test_utc_now_iso_default_clock_is_actually_utc`**
+     `_utc_now_iso()` is timezone-aware UTC (`datetime.now(UTC)`), not
+     a naive local timestamp — a mutmut survivor caught this had never
+     been checked.
+
+944. **`core/pipeline/tier2/test_escalate.py::test_escalate_message_threads_thread_context_and_max_body_chars_into_the_request`**
+     `thread_prior_subject`/`thread_user_has_replied`/`max_body_chars`
+     all reach the actual `VerdictRequest` sent to the model, not just
+     the mailbox_lister/thread_history_reader call counts an existing
+     test already proved.
+
+945. **`core/pipeline/tier2/test_escalate.py::test_escalate_message_threads_draft_creator_into_a_requested_draft`**
+     The exact `draft_creator` instance passed to `escalate_message()`
+     is what actually receives `create_draft()`, proven via a
+     draft_reply-bearing verdict.
+
+946. **`core/pipeline/tier2/test_escalate.py::test_escalate_message_or_quarantine_threads_draft_creator_into_a_requested_draft`**
+     Same proof, through `escalate_message_or_quarantine()`'s own
+     passthrough to its delegated `escalate_message()` call.

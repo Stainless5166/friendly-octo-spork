@@ -1002,6 +1002,67 @@ the four in-scope modules has no surviving mutant that isn't recorded
 as equivalent in `mutation/README.md` — verified reproducible across
 repeated runs.
 
+## M7b — Mutation & fuzz testing expansion
+
+**Goal:** M7a scoped property-based/mutation testing to four modules
+picked at the time; this milestone is the deliberate follow-up pass —
+review every other module already at 100% line coverage against
+docs/DESIGN.md §16.1's same two preconditions (decision-critical *and*
+already fully covered), and scope in whichever actually qualify,
+rather than letting the four-module list go stale as new
+decision-critical modules (M9/M10's receipt extraction, M10's
+`escalate` quarantine boundary) reach full coverage without ever being
+looked at.
+
+- [x] Review every 100%-line-covered module against §16.1's two
+      preconditions; four qualify beyond the original four:
+      `spork.core.llm.confidence` (autoact/alert threshold ladder),
+      `spork.core.classify.keyword` (match-fraction scoring +
+      first-listed tie-break), `spork.core.receipts.extract`
+      (decline-rather-than-guess company/date resolution, M10), and
+      `spork.core.pipeline.tier2.escalate` (`QUARANTINABLE_ERRORS`
+      quarantine-vs-propagate boundary) (S) — `pipeline.tier2.modules`
+      (the larger Tier 2 concrete-module set `escalate.py` calls into)
+      is a plausible fifth candidate, deliberately left for its own
+      future pass rather than folded in here.
+- [x] Hypothesis property tests for the four newly-scoped modules,
+      same `test_<module>_fuzz.py` convention as M7a (M) — 19 tests
+      (docs/TEST_COVERAGE.md 924–942), all passing against the
+      existing implementation with no `src/spork` change for three of
+      the four (`llm.confidence`/`classify.keyword`/`receipts.extract`)
+      — coverage that was already earned, per CLAUDE.md's TDD
+      discipline.
+- [x] `pyproject.toml`'s `[tool.mutmut]` `only_mutate`/
+      `pytest_add_cli_args_test_selection` expanded to the four new
+      files (S) — `tests/core/llm`'s selection deliberately narrowed to
+      `test_confidence*.py` rather than the whole directory, since
+      `test_recording.py`'s `test_live_acceptance_corpus_directory_is_gitignored`
+      reads `.gitignore` via a repo-root-relative path mutmut's
+      `mutants/` working copy doesn't have — an environment-coupling
+      landmine unrelated to spork's own code.
+- [x] First baseline mutation run against the four newly-scoped
+      modules; every surviving mutant either killed with a targeted
+      test or recorded as equivalent in `mutation/README.md` (M) — 188
+      new mutants generated (386 total across all eight in-scope
+      files). `llm.confidence`/`classify.keyword`/`receipts.extract`
+      had zero survivors on their first run; `pipeline.tier2.escalate`
+      surfaced 29, all real and none equivalent — argument-passthrough
+      wiring `escalate_message()`/`escalate_message_or_quarantine()`
+      never verified the exact value of (`thread_prior_subject`,
+      `thread_user_has_replied`, `max_body_chars`, `draft_creator`),
+      the quarantine audit trail's exact `detail_json`/`tier_reached`/
+      `action_taken`/alert content, and `_utc_now_iso()`'s UTC-ness
+      (the same class of "default clock never checked for being UTC"
+      gap M7a found in a sibling clock) — closed with 4 new + 2
+      strengthened tests (docs/TEST_COVERAGE.md 943–946), no
+      `src/spork` change.
+
+**Exit criteria met:** `uv run pytest` includes the four new
+`test_*_fuzz.py` files and stays green (991 tests total); `uv run
+mutmut run` against all eight in-scope modules has no surviving mutant
+that isn't recorded as equivalent in `mutation/README.md` — verified
+reproducible across repeated runs.
+
 ## M8 — Backfill / retroactive categorization
 
 **Goal:** triage the maintainer's existing several-thousand-message
