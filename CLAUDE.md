@@ -178,6 +178,17 @@ its own — it needs both before either technique is worth the cost.
     non-equivalent survivors on its very first run (`pipeline.tier2.escalate`
     did, 29 of them) — close those with targeted tests, same as any
     other coverage gap, before recording the baseline.
+- **Robustness fuzzing** (docs/DESIGN.md §16.3) is a third, separate
+  rationale from the two above — it applies to a module that parses
+  content an external party controls (`spork.core.llm.clean.clean_body()`
+  on raw email bodies is the first example) even when that module has
+  no *decision* to get wrong, so neither of §16.1/§16.2's two
+  preconditions has to hold. Same Hypothesis/`test_<module>_fuzz.py`
+  mechanics and the same ordinary `uv run pytest` gate as §16.1, but
+  the properties assert survival (never raises, output length bounded)
+  rather than correctness — and it's never scoped into mutation
+  testing, since mutmut's model needs a decision to subtly get wrong,
+  which a "never raises" property doesn't have.
 
 ## Conventions
 

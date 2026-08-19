@@ -5296,6 +5296,44 @@ any other coverage gap; a mutant judged equivalent (the mutated code
 is behaviorally identical to the original, e.g. mutating dead code) is
 recorded as such in `mutation/README.md`, not silently ignored.
 
+### 16.3 Robustness fuzzing of adversarial-input parsing
+
+§16.1/§16.2 both answer "is the *decision* correct" — they don't apply
+to a module that has no decision to get wrong, only input to survive.
+`spork.core.llm.clean.clean_body()` is exactly that: a hand-rolled
+HTML-stripping/quote-chain-collapsing parser fed raw email body text,
+content an external sender fully controls (a phishing/spam email's
+crafted markup is the realistic adversarial case, not a hypothetical
+one). The risk isn't a misfiled message — it's `clean_body()` itself
+raising or hanging on malformed input and taking an in-flight Tier 2
+escalation down with it, a different failure mode than §11's "wrong
+decision" one but still worth bounding.
+
+Property tests here state *robustness* invariants instead of decision
+invariants: never raises for any generated body/`max_chars`
+combination (including a misconfigured negative `max_chars`, which
+`TieringConfig` doesn't itself reject), output length is bounded
+relative to `max_chars` by construction, and generated HTML tag markup
+never survives stripping. Same mechanics and same gate as §16.1
+(Hypothesis, `test_<module>_fuzz.py`, part of the ordinary `uv run
+pytest` run) — the difference is only what's being asserted, not where
+it lives. **Not** scoped into mutation testing (§16.2): mutmut's model
+is "does some test fail against a semantically-mutated version," which
+only means something when there's a decision a mutant can get subtly
+wrong; a robustness property like "never raises" doesn't have that
+shape; a module reaches this rationale for the same *risk* as §16.1
+(a failure that takes something down or corrupts real output) without
+needing the same *decision-critical + fully covered* precondition —
+`clean_body()` qualifies on adversarial-input exposure, not on
+deciding a message's fate.
+
+Other modules that parse content an external party controls
+(`spork.core.providers.jmap.client`'s response parsing, a future HTML
+email in `FileProvider`'s fixture format) are plausible future
+candidates under this same rationale — not added here, since scoping
+a new module in is its own decision each time (same "worth its own
+commit, not a rider" reasoning §16.1/§16.2 already established).
+
 ## 17. Open questions / risks
 
 - **Sieve JMAP client** (RFC 9661) has no existing Python library — needs
