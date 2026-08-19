@@ -47,6 +47,7 @@ dev = [
     "vulture>=2.16",
     "deptry>=0.25.1",
     "pip-audit>=2.10.1",
+    "crosshair-tool>=0.0.110",
 ]
 
 [build-system]
