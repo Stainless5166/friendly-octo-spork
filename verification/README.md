@@ -1,4 +1,4 @@
-# Formal verification (CrossHair)
+# Formal verification (CrossHair + TLA+)
 
 Distinct from every other testing layer in this repo: `uv run pytest`,
 Hypothesis (docs/DESIGN.md §16.1), and mutation testing
@@ -112,6 +112,109 @@ symbolically against; forcing a contract onto a function that calls
 `sqlite3`/`smtplib`/an LLM API wouldn't verify anything real, the same
 "reach for it only when it earns its keep" discipline the rest of
 docs/DESIGN.md §16 already applies.
+
+## TLA+: verifying the design, not the code
+
+CrossHair (above) proves properties about one function's *code*.
+`verification/tla/` proves properties about a *design* — specifically
+`_run_message_loop()`'s control-plane-event queue/drain protocol
+(`spork.daemon.state.DaemonState.pending_control_plane_events`,
+docs/DESIGN.md §6.2.2), the exact mechanism the code's own comments say
+exists to avoid two independent `to_thread()` calls racing the same
+`StateDB` connection. That comment is a claim about *interleavings* —
+every possible order the asyncio scheduler could run the IPC handler
+coroutines and the message loop coroutine in — which is a different
+kind of question than "does this function's code have a bug." CrossHair
+explores input *values*; TLA+ (via its model checker, TLC) explores
+*interleavings* of a system's steps. Neither one is instrumentation —
+see below.
+
+**Is this instrumentation?** No. Instrumentation adds code that
+observes a *running* system — a log line, a metric, a trace span —
+and needs the real system executing to produce anything. A TLA+ spec
+is a separate, standalone mathematical model, written in `verification/tla/`,
+that never touches `src/spork` and never runs alongside `sporkd`. TLC
+(the model checker) doesn't execute spork's Python at all — it
+exhaustively explores every state the *model* can reach and checks
+invariants/properties against that, offline, before any code runs.
+It's closer to a proof than to a monitor: the output is "here is every
+reachable state, and the property holds/fails in all of them," not
+"here is what happened during this one run."
+
+### What's modeled and what TLC found
+
+`ControlPlaneDrain.tla` models exactly the protocol
+`_run_message_loop()`'s own comments describe: an `IPC` process
+(any number of `pause()`/`resume()` calls, each appending one event to
+a shared `pending` list) and a `Loop` process (repeatedly: capture
+`pending` into a local `draining` and reset `pending` to a fresh list
+— one atomic step, no interleaving point in between, matching the real
+code's two plain Python statements with no `await` between them — then
+write each captured event one at a time, each write its own
+interleaving point). Two properties, checked against
+`EVENTS = {1, 2, 3}` (small enough for TLC to exhaust the whole state
+space, large enough to force real interleaving):
+
+```bash
+java -cp tla2tools.jar pcal.trans ControlPlaneDrain.tla   # PlusCal -> TLA+
+java -cp tla2tools.jar tlc2.TLC -config ControlPlaneDrain.cfg ControlPlaneDrain.tla
+```
+
+- **`NoDuplicateWrites`** (invariant, checked at every reachable
+  state): no event is ever written to `StateDB` twice.
+- **`AllEventsEventuallyWritten`** (temporal property, checked under
+  the fairness TLC's `fair process` gives both processes): every
+  enqueued event eventually gets written — no event is silently lost
+  under *any* interleaving.
+
+**Result: both hold.** TLC generated 414 states, found 239 of them
+distinct, and reported no error on either property — the atomic
+capture-and-reset design the code comments claim is safe is, per this
+model, actually safe against every interleaving TLC could construct.
+
+**Proving the model can actually fail** — the same discipline
+`mutation/README.md` applies to a surviving mutant: a check that can't
+distinguish correct from broken isn't verifying anything.
+`ControlPlaneDrainNonAtomic.tla` regresses the one thing that matters —
+splits the capture-and-reset into two separate steps, with an
+interleaving point in between, modeling what a careless future refactor
+could introduce (an accidental `await`, or reverting to `.clear()`).
+TLC finds a real counterexample:
+
+1. IPC enqueues events 2 and 3; `pending = <<2,3>>`.
+2. Loop's capture step runs: `draining := pending` → `draining = <<2,3>>`.
+   `pending` is *not yet* reset (the now-separate `Reset` step hasn't
+   run) — the gap that doesn't exist in the real, atomic design.
+3. IPC interleaves here and enqueues event 1: `pending = <<2,3,1>>`.
+4. Loop's `Reset` step runs: `pending := <<>>` — discarding event 1,
+   which was never captured into `draining` either. It's gone.
+5. `DrainWrite` writes `draining`'s contents (`2`, `3`); the loop
+   repeats forever with nothing left to enqueue. Event `1` never
+   appears in `written_log` — `AllEventsEventuallyWritten` is violated.
+
+That's the real, verified cost of the anti-pattern the code comments
+warn about, not an assumed one — the atomicity isn't decoration, it's
+the one thing standing between this design and a silently-dropped
+control-plane audit event.
+
+### Getting `tla2tools.jar`
+
+Not vendored in this repo (a ~2MB Java archive, and `.gitignore`
+already excludes `verification/tla/states/`/`*.old`, TLC's/pcal.trans's
+own regenerated artifacts). Fetch it fresh:
+
+```bash
+curl -sSL -o tla2tools.jar \
+  https://github.com/tlaplus/tlaplus/releases/latest/download/tla2tools.jar
+```
+
+Requires a JVM (any recent OpenJDK) — nothing else. `pcal.trans`
+regenerates the plain-TLA+ translation (and its own `.cfg` template,
+which the checked-in `.cfg` files already extend with the actual
+`EVENTS`/`INVARIANT`/`PROPERTY` lines) from the `.tla` file's PlusCal
+block; re-run it after editing the `(* --algorithm ... end algorithm; *)`
+block, same as `mutmut`/`crosshair` need re-running after a source
+change.
 
 ## Why a `contracts/` file, not a decorator in `src/spork`
 
