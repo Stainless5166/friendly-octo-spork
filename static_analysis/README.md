@@ -67,24 +67,25 @@ Configured in `pyproject.toml`'s `[tool.bandit]` `skips`:
 
 - **B108** (hardcoded `/tmp` path, medium severity,
   `core/config/paths.py:31`, `_FALLBACK_RUNTIME_DIR_TEMPLATE =
-  "/tmp/spork-{uid}"`) — real. This is the fallback control-socket
-  directory used when `$XDG_RUNTIME_DIR` is unset (expected outside a
-  systemd user session). `IpcServer.serve()`
-  (`core/ipc/server.py:47`) creates it with
+  "/tmp/spork-{uid}"`) — real, and **fixed**, though bandit's own
+  finding still fires (it's a lexical match on the hardcoded path
+  string in this file, blind to the runtime mitigation in
+  `core/ipc/server.py`). This is the fallback control-socket directory
+  used when `$XDG_RUNTIME_DIR` is unset (expected outside a systemd
+  user session). `IpcServer.serve()` used to create it with a bare
   `self._socket_path.parent.mkdir(parents=True, exist_ok=True)` —
-  default permissions, and `exist_ok=True` silently reuses whatever
-  already exists at that path. On a multi-user machine, another local
-  user could pre-create `/tmp/spork-<uid>` (or a symlink at that path)
-  before the daemon ever starts; `mkdir(exist_ok=True)` won't notice.
-  `os.chmod(self._socket_path, _SOCKET_MODE)` runs *after* the socket
-  is bound, which restricts the socket file itself once it exists, but
-  doesn't close the window on directory pre-creation/symlink
-  redirection before that. Real, if narrow — exploitability depends on
-  another local account existing on the same machine, and the
+  default permissions, silently reusing whatever already existed at
+  that path. On a multi-user machine, another local user could have
+  pre-created `/tmp/spork-<uid>` (or a symlink at that path) before
+  the daemon ever started; `mkdir(exist_ok=True)` alone wouldn't
+  notice. Fixed: `_ensure_private_dir()` (`core/ipc/server.py`) now
+  refuses a pre-existing directory that's a symlink, owned by a
+  different uid, or has any group/other permission bit set — raising
+  `IpcServerError` instead of silently proceeding — and creates a
+  fresh one at `0o700` explicitly rather than relying on umask. The
   documented-primary path (`$XDG_RUNTIME_DIR`, a systemd-managed,
-  already-per-user directory) doesn't hit this code at all. Not fixed
-  here — an application-code change, left for a deliberate decision
-  rather than folded into a tooling commit.
+  already-per-user directory) never trips any of the three checks in
+  practice.
 - **B101** (`assert` used, 5 sites: `core/alerts/smtp.py`,
   `core/context/clients/entities/provider.py`,
   `core/providers/jmap/client.py` ×3) — each is an internal
@@ -116,12 +117,23 @@ Three of the four paths are dev-only (`mitmproxy`'s dependency tree,
 never shipped). The fourth — `keyring` → `secretstorage` →
 `cryptography` — **is** in the production dependency graph (`keyring`
 is a base `[project]` dependency, used for the OS keychain backend).
-Not fixed here — this is a routine `uv lock --upgrade-package
-cryptography` (or a broader `uv lock --upgrade`) away, but that's a
-real change to `uv.lock` that deserves its own verification pass
-(`uv run pytest`, `uv run mypy`, confirm `secretstorage`/`keyring`
-still resolve to compatible versions), not folded into a tooling
-commit that's otherwise config-only.
+
+**Not a routine lock refresh after all** — tried it, and it doesn't
+work: every `mitmproxy` 11.x release (`pyproject.toml`'s current
+`mitmproxy>=11,<12` pin) caps its own `cryptography` dependency at
+`<44.1`, below every fix version (`uv lock --upgrade-package
+cryptography` confirms 44.0.3 is already the newest version satisfying
+all current constraints). Bumping the dev-only `mitmproxy` pin to
+`>=12,<13` (the only way to relax that cap) hits a harder blocker:
+`mitmproxy>=12.0.0` requires Python `>=3.12`, and this project's
+`requires-python = ">=3.11"` — raising the project's own minimum
+Python version is a real, consequential decision for a dev-only test
+dependency's sake, not a tooling-commit change, and even mitmproxy
+12.2.3's own cap (`cryptography<=48.1`) would only cover 4 of the 7
+CVEs (the two requiring 49.0.0/50.0.0 would still be unresolved).
+Reverted; left as a genuinely open item, not silently dropped — the
+actual fix needs a `requires-python` decision made deliberately, on
+its own, not folded into closing this one CVE.
 
 ## Scope rationale
 
