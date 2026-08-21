@@ -121,11 +121,13 @@ executes every line without actually checking the right thing (docs/DESIGN.md
 TDD loop above — reach for them only when a module is **both**
 decision-critical (a bug silently misfiles or misfires on real mail —
 the failure mode §11 exists to bound) **and** already at 100% line
-coverage from ordinary example-based tests. Today that's exactly four
+coverage from ordinary example-based tests. Today that's exactly eight
 modules: `spork.core.rules.engine`, `spork.core.actions.executor`,
-`spork.core.dispatch.combine`, `spork.core.pipeline.default`. A module
-being decision logic, or being fully covered, isn't enough on its own —
-it needs both before either technique is worth the cost.
+`spork.core.dispatch.combine`, `spork.core.pipeline.default`,
+`spork.core.llm.confidence`, `spork.core.classify.keyword`,
+`spork.core.receipts.extract`, `spork.core.pipeline.tier2.escalate`. A
+module being decision logic, or being fully covered, isn't enough on
+its own — it needs both before either technique is worth the cost.
 
 - **Property-based tests (Hypothesis)** are ordinary correctness
   tests — they belong in the normal `uv run pytest` gate, following
@@ -153,7 +155,7 @@ it needs both before either technique is worth the cost.
 - **Mutation testing (`mutmut`)** is a different kind of test than
   correctness — never part of `uv run pytest` or either CI gate, same
   reasoning `benchmarks/` already gets for staying out of the fast
-  loop. Run it manually (`uv run mutmut run`, scoped to the four
+  loop. Run it manually (`uv run mutmut run`, scoped to the eight
   in-scope modules via `pyproject.toml`'s `[tool.mutmut]`) after
   adding or changing tests for one of them, or rely on the weekly
   schedule (`.github/workflows/mutation-testing.yml`). A surviving
@@ -168,11 +170,25 @@ it needs both before either technique is worth the cost.
     downstream reads, or a `None`/`False` swap that only ever appears
     in a boolean context) → record it in `mutation/README.md` with the
     reasoning. Don't leave an unexplained survivor in the list.
-  - Adding a fifth module to scope (once it reaches 100% coverage and
+  - Adding another module to scope (once it reaches 100% coverage and
     proves decision-critical) means adding it to `pyproject.toml`'s
     `only_mutate` list and re-baselining `mutation/README.md` — treat
     that as a real scope decision worth its own commit, not a silent
-    config tweak.
+    config tweak. Scoping a new module in can surface real,
+    non-equivalent survivors on its very first run (`pipeline.tier2.escalate`
+    did, 29 of them) — close those with targeted tests, same as any
+    other coverage gap, before recording the baseline.
+- **Robustness fuzzing** (docs/DESIGN.md §16.3) is a third, separate
+  rationale from the two above — it applies to a module that parses
+  content an external party controls (`spork.core.llm.clean.clean_body()`
+  on raw email bodies is the first example) even when that module has
+  no *decision* to get wrong, so neither of §16.1/§16.2's two
+  preconditions has to hold. Same Hypothesis/`test_<module>_fuzz.py`
+  mechanics and the same ordinary `uv run pytest` gate as §16.1, but
+  the properties assert survival (never raises, output length bounded)
+  rather than correctness — and it's never scoped into mutation
+  testing, since mutmut's model needs a decision to subtly get wrong,
+  which a "never raises" property doesn't have.
 
 ## Conventions
 

@@ -1,0 +1,71 @@
+# Security/dead-code/dependency static analysis — bandit, vulture,
+# deptry, pip-audit (static_analysis/README.md). Deliberately not part
+# of pr-checks.yml/push-format-test.yml: none of these are correctness
+# gates the way ruff/mypy are, and pip-audit in particular can start
+# failing on a newly-disclosed CVE with no code change on this repo's
+# side — the same "different kind of check, doesn't belong in the fast
+# loop" reasoning benchmarks/ and mutation-testing.yml already
+# established. Runs weekly and on demand; never fails the workflow — a
+# finding is a prompt for a human to look (real issue vs. already-
+# triaged pattern), not something that should block anything on a
+# schedule nobody's watching in real time.
+name: Static analysis
+
+on:
+  schedule:
+    - cron: "0 7 * * 1" # Mondays, 07:00 UTC (an hour after mutation testing)
+  workflow_dispatch: {}
+
+jobs:
+  static-analysis:
+    name: bandit, vulture, deptry, pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: bandit
+        run: uv run bandit -c pyproject.toml -r src/spork -f txt -o bandit-results.txt || true
+
+      - name: vulture
+        run: uv run vulture src/spork static_analysis/vulture_whitelist.py > vulture-results.txt || true
+
+      - name: deptry
+        run: uv run deptry . > deptry-results.txt || true
+
+      - name: pip-audit
+        run: |
+          uv export --no-dev --frozen --no-hashes --no-emit-project -o /tmp/prod-reqs.txt
+          uv run pip-audit -r /tmp/prod-reqs.txt --strict > pip-audit-results.txt || true
+
+      - name: Summarize results
+        run: |
+          echo "## Static analysis results" >> "$GITHUB_STEP_SUMMARY"
+          for tool in bandit vulture deptry pip-audit; do
+            echo "### $tool" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat "$tool-results.txt" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "See static_analysis/README.md for the recorded baseline," >> "$GITHUB_STEP_SUMMARY"
+          echo "which findings are already-triaged known-safe patterns," >> "$GITHUB_STEP_SUMMARY"
+          echo "and which are real, open items." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-analysis-results
+          path: |
+            bandit-results.txt
+            vulture-results.txt
+            deptry-results.txt
+            pip-audit-results.txt
+          if-no-files-found: warn

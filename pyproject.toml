@@ -43,6 +43,11 @@ dev = [
     "mypy>=1.11,<2",
     "pdoc>=14.5,<15",
     "mitmproxy>=11,<12",
+    "bandit>=1.9.4",
+    "vulture>=2.16",
+    "deptry>=0.25.1",
+    "pip-audit>=2.10.1",
+    "crosshair-tool>=0.0.110",
 ]
 
 [build-system]
@@ -77,6 +82,12 @@ xfail_strict = true
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# static_analysis/vulture_whitelist.py is deliberately not real Python —
+# vulture only parses its AST for bare name references (its own
+# --make-whitelist format), so every line is an "undefined name"/
+# "useless expression" to ruff. Excluded rather than fought with noqa
+# comments on every line.
+extend-exclude = ["static_analysis/vulture_whitelist.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -102,24 +113,70 @@ ignore_missing_imports = true
 # `uv run mutmut run`, never as part of `uv run pytest` or either CI
 # gate — see mutation/README.md for why.
 [tool.mutmut]
-# source_paths is the whole package (not just the four in-scope files)
-# — mutmut copies whatever it names into mutants/ verbatim, and the
-# four files still need the rest of spork.core importable alongside
+# source_paths is the whole package (not just the in-scope files) —
+# mutmut copies whatever it names into mutants/ verbatim, and the
+# in-scope files still need the rest of spork.core importable alongside
 # them (spork.core.models, etc.). only_mutate is what actually narrows
-# which lines get mutated to the four decision-critical files.
+# which lines get mutated to the eight decision-critical files.
 source_paths = ["src/spork"]
 only_mutate = [
     "src/spork/core/rules/engine.py",
     "src/spork/core/actions/executor.py",
     "src/spork/core/dispatch/combine.py",
     "src/spork/core/pipeline/default.py",
+    "src/spork/core/llm/confidence.py",
+    "src/spork/core/classify/keyword.py",
+    "src/spork/core/receipts/extract.py",
+    "src/spork/core/pipeline/tier2/escalate.py",
 ]
 pytest_add_cli_args_test_selection = [
     "tests/core/rules",
     "tests/core/actions",
     "tests/core/dispatch",
     "tests/core/pipeline",
+    # Not the whole tests/core/llm directory: test_recording.py's
+    # test_live_acceptance_corpus_directory_is_gitignored() walks up to
+    # the repo root via Path(__file__).parents[3] to read .gitignore —
+    # real under a normal pytest run, but mutmut's mutants/ working
+    # copy has no .gitignore at that depth, so the whole run fails
+    # before any mutant is even tried. Named explicitly to stay
+    # decoupled from that landmine.
+    "tests/core/llm/test_confidence.py",
+    "tests/core/llm/test_confidence_edge_cases.py",
+    "tests/core/llm/test_confidence_fuzz.py",
+    "tests/core/classify",
+    "tests/core/receipts",
 ]
+
+# Security static analysis (static_analysis/README.md documents the full
+# baseline). Skips four rule categories confirmed as known-safe patterns
+# by hand, not blindly accepted — B108 (a hardcoded /tmp path with a
+# real, unaddressed symlink-race risk) and B101 (assert-as-invariant,
+# stripped under python -O) are deliberately left unskipped so they stay
+# visible in every run.
+[tool.bandit]
+skips = [
+    "B404", # subprocess import — every call site uses list args, never shell=True
+    "B603", # subprocess call without shell=True — the safe pattern, not the risky one
+    "B406", # xml.sax.saxutils.escape — output-escaping for a PDF, not parsing untrusted XML
+    "B110", # try/except/pass in receipts/pdf.py — already reasoned in a ruff noqa comment
+]
+
+[tool.deptry]
+known_first_party = ["spork"]
+# jmapc/litellm are real, used dependencies — imported via
+# importlib.import_module("...") string literals (spork.core.providers.jmap.client,
+# spork.core.llm.clients.litellm, spork.core.receipts.pdf) specifically so
+# an unconfigured backend's dependency is never imported at module load
+# time (CLAUDE.md "Architecture"). deptry's static import scan can't see
+# a dynamic import by construction — that's the same property the
+# dynamic-loader architecture is *for*, not a real unused-dependency gap.
+[tool.deptry.per_rule_ignores]
+DEP002 = ["jmapc", "litellm"]
+# behave is a real dev dependency, imported by docs/acceptance/steps/*.py
+# (Gherkin step definitions) — deptry scans docs/ as production code
+# since it has no separate "test code" concept for that directory.
+DEP004 = ["behave"]
 
 [tool.uv]
 override-dependencies = ["h11>=0.16"]
