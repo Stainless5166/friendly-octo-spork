@@ -20,47 +20,66 @@ uv run crosshair check verification/contracts/<file>.py --per_condition_timeout 
 
 `verification/contracts/confidence_contract.py` wraps
 `spork.core.llm.confidence.confidence_band()` — the smallest, purest
-function in the mutation-tested set (docs/DESIGN.md §16.1) — with
-three CrossHair contracts. Real, current results:
+function in the mutation-tested set (docs/DESIGN.md §16.1) — with six
+CrossHair contracts. Real, current results:
 
 - **`confidence_band_is_autoact_iff_at_or_above_threshold`** —
   **confirmed over all paths.** For any `alert_threshold <=
-  autoact_threshold`, `"autoact"` comes back exactly when `confidence
-  >= autoact_threshold`. Not "no counterexample in N examples" —
-  proven for every float satisfying the precondition.
-- **`confidence_band_never_raises_for_a_valid_threshold_ordering`** —
-  **confirmed over all paths.**
+  autoact_threshold` and non-NaN arguments, `"autoact"` comes back
+  exactly when `confidence >= autoact_threshold`. Not "no
+  counterexample in N examples" — proven for every float satisfying
+  the precondition.
 - **`confidence_band_is_alert_only_iff_below_alert_threshold`** —
-  **counterexample found:** `confidence_band(float("nan"),
-  alert_threshold=0.0, autoact_threshold=0.0)` returns `"alert_only"`,
-  but `nan < 0.0` is `False` (every NaN comparison is `False` under
-  IEEE 754), so the claimed `(band == "alert_only") == (confidence <
-  alert_threshold)` iff is violated — both of `confidence_band()`'s
-  `>=` checks fail silently on NaN and fall through to the
-  `"alert_only"` default, rather than raising.
+  **confirmed over all paths** (see below — this one found a real gap
+  on its first run, since fixed).
+- **`confidence_band_never_raises_for_a_valid_nonnan_threshold_ordering`**
+  — **confirmed over all paths.**
+- **`confidence_band_raises_on_nan_confidence`** /
+  **`_raises_on_nan_alert_threshold`** / **`_raises_on_nan_autoact_threshold`**
+  — each asserts `confidence_band()` raises `ValueError` when that one
+  argument is NaN. CrossHair's own reporting didn't emit a distinct
+  "confirmed"/counterexample line for these three (a `raises:`-only
+  contract with no `pre:`/`post:` line seems to fall outside what
+  `--report_all` surfaces here) — the concrete evidence for this
+  specific behavior is the three pytest tests in
+  `test_confidence_edge_cases.py`
+  (`test_nan_confidence_raises_value_error_instead_of_silently_alert_only`
+  and its two siblings), all passing.
 
-That third one is real, and it's exactly the kind of thing sampling
-structurally can't find the way proof can: `test_confidence_fuzz.py`
-(§16.1) explicitly sets `allow_nan=False` on its float strategy — a
-reasonable choice for a property test, but it means Hypothesis was
-never going to generate this input no matter how many examples ran.
-CrossHair doesn't sample a distribution; it doesn't have one to avoid
-the edge of.
+**What the first run found, and what closed it:** the second contract
+above originally read (before the fix)
+`(_ == "alert_only") == (confidence < alert_threshold)` with no NaN
+exclusion, and CrossHair found a real counterexample:
+`confidence_band(float("nan"), alert_threshold=0.0,
+autoact_threshold=0.0)` returned `"alert_only"`, but `nan < 0.0` is
+`False` (every NaN comparison is `False` under IEEE 754) — both of
+`confidence_band()`'s `>=` checks failed silently on NaN and fell
+through to the `"alert_only"` default, rather than raising.
 
-**Is it exploitable?** No — verified, not assumed.
-`confidence_band()`'s only real caller
+That gap is exactly the kind of thing sampling structurally can't
+find the way proof can: `test_confidence_fuzz.py` (§16.1) explicitly
+sets `allow_nan=False` on its float strategy — a reasonable choice for
+a property test, but it means Hypothesis was never going to generate
+this input no matter how many examples ran. CrossHair doesn't sample
+a distribution; it doesn't have one to avoid the edge of.
+
+**Was it exploitable?** No — verified, not assumed, before fixing it
+anyway. `confidence_band()`'s only real caller
 (`spork.core.pipeline.tier2.modules.ConfidenceBandSelector.select()`)
 passes `verdict.confidence`, and `Verdict.confidence` is a pydantic
 field with `Field(ge=0.0, le=1.0)` — which, checked directly,
-*rejects* NaN before a `Verdict` can even be constructed
-(`ge`/`le` comparisons against NaN are `False`, so pydantic's own
-range check fails closed). So this is a real gap in
-`confidence_band()`'s own contract, currently defended in depth by its
-one caller's input validation — the same "true in isolation, not
-reachable end-to-end" shape `mutation/README.md`'s recorded-equivalent
-mutants have, but found by proof instead of by a mutant surviving.
-Not fixed here (an application-code change); recorded as a known,
-narrow gap rather than silently left unverified.
+*rejects* NaN before a `Verdict` can even be constructed (`ge`/`le`
+comparisons against NaN are `False`, so pydantic's own range check
+fails closed). But `alert_threshold`/`autoact_threshold` come from
+`TieringConfig`, which carries no such constraint — and TOML's own
+float syntax accepts `nan` — so a hand-edited `config.toml` reaches
+this exact gap for real, unlike the `confidence` argument. **Fixed**:
+`confidence_band()` now raises `ValueError` up front on any NaN
+argument (`src/spork/core/llm/confidence.py`), and the contract file's
+preconditions were updated to state the function's new, intentional
+contract (NaN excluded from the three "normal" properties, asserted
+separately by the three `raises_on_nan_*` contracts) rather than
+silently going stale against it.
 
 ## Which functions, and why — a purity catalog, not a mandate
 
