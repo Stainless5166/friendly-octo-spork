@@ -39,3 +39,28 @@ def test_confidence_of_exactly_zero_and_one_are_handled() -> None:
     Field(ge=0.0, le=1.0)) both classify without error."""
     assert confidence_band(0.0, alert_threshold=0.55, autoact_threshold=0.85) == "alert_only"
     assert confidence_band(1.0, alert_threshold=0.55, autoact_threshold=0.85) == "autoact"
+
+
+def test_nan_confidence_raises_value_error_instead_of_silently_alert_only() -> None:
+    """FOUND BY CROSSHAIR (verification/README.md), not by example or
+    property testing: every NaN comparison is False under IEEE 754, so
+    both `>=` checks used to fall through silently to "alert_only" for
+    a NaN confidence -- never reachable via a real Verdict (pydantic's
+    Field(ge=0.0, le=1.0) already rejects NaN before one can be
+    constructed) but directly reachable via a hand-edited config.toml,
+    since TOML's own float syntax accepts `nan` and TieringConfig's
+    alert_threshold/autoact_threshold carry no such constraint."""
+    with pytest.raises(ValueError, match="NaN"):
+        confidence_band(float("nan"), alert_threshold=0.55, autoact_threshold=0.85)
+
+
+def test_nan_alert_threshold_raises_value_error() -> None:
+    """Same guard, the other reachable path: a hand-edited config.toml
+    with alert_threshold = nan."""
+    with pytest.raises(ValueError, match="NaN"):
+        confidence_band(0.7, alert_threshold=float("nan"), autoact_threshold=0.85)
+
+
+def test_nan_autoact_threshold_raises_value_error() -> None:
+    with pytest.raises(ValueError, match="NaN"):
+        confidence_band(0.7, alert_threshold=0.55, autoact_threshold=float("nan"))
