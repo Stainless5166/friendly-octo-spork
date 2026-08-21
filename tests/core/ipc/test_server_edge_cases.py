@@ -109,14 +109,23 @@ def test_ipc_server_refuses_a_world_writable_socket_directory(tmp_path: Path) ->
     asyncio.run(_body())
 
 
-def test_ipc_server_refuses_a_socket_directory_owned_by_another_user(tmp_path: Path) -> None:
-    """A pre-existing socket directory owned by a different uid than
-    the one running sporkd is refused outright -- proof the check is a
-    real ownership check, not just a permission-bits check."""
+def test_ipc_server_refuses_a_socket_directory_owned_by_another_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-existing socket directory whose owner doesn't match the
+    current process's uid is refused outright -- proof the check is a
+    real ownership check, not just a permission-bits check.
+
+    Patches os.getuid() rather than actually os.chown()-ing the
+    directory to a different uid: real chown to an arbitrary uid needs
+    root/CAP_CHOWN, which this test had (this sandbox runs as root)
+    but a normal CI runner legitimately doesn't -- PermissionError
+    there, not the IpcServerError this test means to prove.
+    """
     socket_dir = tmp_path / "runtime" / "spork"
     socket_dir.mkdir(parents=True, mode=0o700)
-    other_uid = next(uid for uid in (1, 2, 65534) if uid != os.getuid())
-    os.chown(socket_dir, other_uid, os.getgid())
+    real_uid = os.getuid()
+    monkeypatch.setattr(os, "getuid", lambda: real_uid + 1)
     socket_path = socket_dir / "sporkd.sock"
 
     async def _body() -> None:
